@@ -4,6 +4,7 @@ import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   Platform,
   Pressable,
   StyleSheet,
@@ -557,7 +558,9 @@ function ListenerSettings({onNavigate, uid}: {onNavigate: UserNavigate; uid: str
   const [nativeState, setNativeState] = useState(EMPTY_NATIVE_STATE);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
+  const [showTroubleshooting, setShowTroubleshooting] = useState(false);
   const isAuto = consent.consentTier === 'line_auto_sync';
+  const isReady = Platform.OS === 'android' && isAuto && nativeState.permissionGranted;
 
   const refresh = useCallback(async () => {
     const [nextConsent, nextNative] = await Promise.all([
@@ -570,6 +573,30 @@ function ListenerSettings({onNavigate, uid}: {onNavigate: UserNavigate; uid: str
   }, [uid]);
   useEffect(() => { refresh().catch(() => setLoading(false)); }, [refresh]);
 
+  const reconnectAndSync = useCallback(async (showError = false) => {
+    try {
+      await requestLineListenerReconnect();
+      await syncLineAutoImport(uid);
+    } catch (error) {
+      if (showError) {
+        Alert.alert(
+          'ยังเชื่อมต่อไม่สำเร็จ',
+          error instanceof Error ? error.message : 'กรุณาตรวจสิทธิ์ Android แล้วลองอีกครั้ง',
+        );
+      }
+    } finally {
+      await refresh().catch(() => undefined);
+    }
+  }, [refresh, uid]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'android' || !isAuto) return undefined;
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void reconnectAndSync(false);
+    });
+    return () => subscription.remove();
+  }, [isAuto, reconnectAndSync]);
+
   const changeTier = async (tier: ConsentTier) => {
     setWorking(true);
     try {
@@ -577,12 +604,11 @@ function ListenerSettings({onNavigate, uid}: {onNavigate: UserNavigate; uid: str
       const nextNative = await getNativeLineListenerState();
       setNativeState(nextNative);
       setConsent((current) => ({...current, consentTier: result.tier, lineListenerStatus: result.lineListenerStatus}));
-      if (!result.backendMissing) {
-        await refresh();
-      } else {
+      if (!result.backendMissing) await refresh();
+      else {
         Alert.alert(
-          'เปิดสิทธิ์ในเครื่องแล้ว',
-          'MuMu อนุญาตให้ SmartLife อ่านแจ้งเตือน LINE แล้ว แต่ Firebase Functions ของระบบ LINE ยังไม่ได้ deploy จึงยังสร้างรายการรอตรวจบน Firebase ไม่ได้',
+          'ตั้งค่าในเครื่องแล้ว',
+          'ส่วนเชื่อมต่อระบบออนไลน์ยังไม่พร้อม กรุณาลองอีกครั้งภายหลัง',
         );
       }
     } catch (error) {
@@ -593,11 +619,16 @@ function ListenerSettings({onNavigate, uid}: {onNavigate: UserNavigate; uid: str
   };
 
   const enableAuto = () => Alert.alert(
-    'อนุญาตให้อ่านแจ้งเตือน LINE?',
-    'SmartLife จะตรวจเฉพาะแจ้งเตือนจากแอป LINE ที่มีจำนวนเงิน ไม่อ่านแชตย้อนหลัง ไม่อ่านข้อความจากแอปอื่น และไม่บันทึกเป็นธุรกรรมจนกว่าคุณจะยืนยัน',
+    'เปิดรับรายการการเงินอัตโนมัติ?',
+    'SmartLife จะอ่านเฉพาะแจ้งเตือนการเงินใหม่จาก LINE และแอปธนาคารที่รองรับ รายการที่ข้อมูลครบจะบันทึกให้อัตโนมัติ ส่วนรายการที่ไม่ชัดเจนจะรอให้คุณตรวจสอบ',
     [
       {style: 'cancel', text: 'ยังไม่เปิด'},
-      {onPress: () => changeTier('line_auto_sync').then(() => openLineNotificationAccessSettings()), text: 'ยินยอมและไปตั้งค่า'},
+      {
+        onPress: () => changeTier('line_auto_sync')
+          .then(() => openLineNotificationAccessSettings())
+          .catch(() => Alert.alert('เปิดหน้าตั้งค่าไม่สำเร็จ', 'กรุณาลองใหม่อีกครั้ง')),
+        text: 'ยินยอมและเปิดสิทธิ์',
+      },
     ],
   );
 
@@ -612,9 +643,9 @@ function ListenerSettings({onNavigate, uid}: {onNavigate: UserNavigate; uid: str
 
   const status = useMemo(() => {
     if (Platform.OS !== 'android') return {label: 'โหมดอัตโนมัติรองรับ Android เท่านั้น', tone: C.muted};
-    if (!isAuto) return {label: 'ใช้โหมดวาง/แชร์ข้อความ', tone: C.muted};
-    if (!nativeState.permissionGranted) return {label: 'รออนุญาตสิทธิ์แจ้งเตือน', tone: C.warning};
-    return {label: 'เชื่อมต่อและรอตรวจ LINE', tone: C.sage};
+    if (!isAuto) return {label: 'ยังไม่ได้เปิดการทำงานอัตโนมัติ', tone: C.muted};
+    if (!nativeState.permissionGranted) return {label: 'เหลือเปิดสิทธิ์ Android เพียงครั้งเดียว', tone: C.warning};
+    return {label: 'พร้อมรับรายการอัตโนมัติ', tone: C.sage};
   }, [isAuto, nativeState.permissionGranted]);
 
   return <UserShell active="smartlife_profile" onNavigate={onNavigate}>
@@ -625,27 +656,38 @@ function ListenerSettings({onNavigate, uid}: {onNavigate: UserNavigate; uid: str
         {Platform.OS === 'android' && isAuto ? <Text style={styles.infoText}>คิวในเครื่อง {nativeState.queueCount} รายการ · สิทธิ์ระบบ {nativeState.permissionGranted ? 'เปิดแล้ว' : 'ยังไม่เปิด'}</Text> : null}
       </Card>
 
-      <Text style={styles.sectionTitle}>เลือกวิธีนำเข้า</Text>
-      <Pressable onPress={() => isAuto ? disableAuto() : undefined} style={[styles.tierCard, !isAuto && styles.tierActive]}>
-        <View style={styles.tierIcon}><MaterialIcon color={C.sage} name="content_paste" size={22} /></View><View style={{flex: 1}}><Text style={styles.tierTitle}>วางหรือแชร์เอง</Text><Text style={styles.tierText}>ปลอดภัยที่สุดและเป็นค่าเริ่มต้น ใช้ได้ทั้ง Android และ iOS</Text></View>{!isAuto ? <MaterialIcon color={C.sage} name="check_circle" size={22} /> : null}
-      </Pressable>
-      {Platform.OS === 'android' ? <Pressable onPress={isAuto ? undefined : enableAuto} style={[styles.tierCard, isAuto && styles.tierActive]}>
-        <View style={[styles.tierIcon, {backgroundColor: C.violetSoft}]}><MaterialIcon color={C.violet} name="notification_add" size={22} /></View><View style={{flex: 1}}><Text style={styles.tierTitle}>ตรวจแจ้งเตือน LINE อัตโนมัติ</Text><Text style={styles.tierText}>สร้างร่างรอตรวจจากแจ้งเตือนใหม่ โดยยังไม่บันทึกเงิน</Text></View>{isAuto ? <MaterialIcon color={C.sage} name="check_circle" size={22} /> : null}
-      </Pressable> : null}
-
-      {Platform.OS === 'android' && isAuto ? <Card style={styles.permissionCard}>
-        <Text style={styles.infoTitle}>ขั้นตอนที่ Android ต้องให้คุณกดเอง</Text>
-        <Text style={styles.infoText}>1. เปิดสิทธิ์ “การเข้าถึงการแจ้งเตือน” ให้ SmartLife{'\n'}2. ให้ LINE แสดงข้อความตัวอย่างในการแจ้งเตือน{'\n'}3. รายการที่มั่นใจสูงจะถูกบันทึกอัตโนมัติ ส่วนที่ไม่ชัดจะอยู่ในรายการที่ต้องตรวจ{'\n'}4. ปิดการจำกัดแบตเตอรี่ หากเครื่องหยุดแอปเบื้องหลัง</Text>
-        <Pressable disabled={working} onPress={() => openLineNotificationAccessSettings().catch(() => undefined)} style={styles.secondaryButton}><Text style={styles.secondaryText}>เปิดหน้าสิทธิ์ Android</Text></Pressable>
-        <View style={styles.smallActionRow}>
-          <Pressable onPress={() => requestLineListenerReconnect().then(refresh)} style={styles.smallButton}><Text style={styles.smallButtonText}>เชื่อมต่อใหม่</Text></Pressable>
-          <Pressable onPress={() => syncLineAutoImport(uid).then(refresh)} style={styles.smallButton}><Text style={styles.smallButtonText}>ตรวจคิวตอนนี้</Text></Pressable>
+      {Platform.OS === 'android' && !isReady ? <Card colors={['#f4f7ff', '#eef3fb']} style={styles.permissionCard}>
+        <View style={styles.infoRow}>
+          <View style={[styles.tierIcon, {backgroundColor: '#fff'}]}><MaterialIcon color={C.violet} name="notification_add" size={22} /></View>
+          <View style={{flex: 1}}><Text style={styles.infoTitle}>เปิดครั้งเดียว แล้วใช้งานได้ต่อเนื่อง</Text><Text style={styles.infoText}>กดปุ่มด้านล่าง เปิดสวิตช์ SmartLife ในหน้า Android แล้วกลับเข้าแอป ระบบจะเชื่อมต่อและตรวจรายการให้เอง</Text></View>
         </View>
+        <Pressable disabled={working} onPress={enableAuto} style={[styles.secondaryButton, working && styles.disabled]}>
+          {working ? <ActivityIndicator color="#fff" /> : <Text style={styles.secondaryText}>{isAuto ? 'ไปเปิดสิทธิ์ Android' : 'เปิดใช้งานอัตโนมัติ'}</Text>}
+        </Pressable>
       </Card> : null}
+
+      {isReady ? <Card colors={['#eff8ec', '#e7f2e4']} style={styles.permissionCard}>
+        <View style={styles.infoRow}><MaterialIcon color={C.sage} name="verified" size={25} /><View style={{flex: 1}}><Text style={styles.infoTitle}>ตั้งค่าเรียบร้อยแล้ว</Text><Text style={styles.infoText}>จากนี้แค่ให้ LINE หรือแอปธนาคารส่งแจ้งเตือน ระบบจะตรวจและนำเข้ารายการให้อัตโนมัติ</Text></View></View>
+      </Card> : null}
+
+      {Platform.OS === 'android' ? <>
+        <Pressable onPress={() => setShowTroubleshooting((value) => !value)} style={styles.helpToggle}>
+          <MaterialIcon color={C.violet} name="help_outline" size={18} />
+          <Text style={styles.helpToggleText}>มีปัญหาในการเชื่อมต่อ?</Text>
+          <MaterialIcon color={C.violet} name={showTroubleshooting ? 'expand_less' : 'expand_more'} size={20} />
+        </Pressable>
+        {showTroubleshooting ? <Card style={styles.permissionCard}>
+          <Text style={styles.infoTitle}>ช่วยแก้ปัญหา</Text>
+          <Text style={styles.infoText}>ใช้ส่วนนี้เมื่อแจ้งเตือนเข้ามาแล้วแต่รายการไม่ปรากฏใน SmartLife</Text>
+          <Pressable disabled={working} onPress={() => openLineNotificationAccessSettings().catch(() => undefined)} style={styles.secondaryButton}><Text style={styles.secondaryText}>ตรวจสิทธิ์ Android</Text></Pressable>
+          <Pressable disabled={working} onPress={() => reconnectAndSync(true)} style={styles.smallButton}><Text style={styles.smallButtonText}>ลองเชื่อมต่อและตรวจรายการใหม่</Text></Pressable>
+          {isAuto ? <Pressable disabled={working} onPress={disableAuto} style={styles.disableLink}><Text style={styles.disableLinkText}>ปิดการทำงานอัตโนมัติ</Text></Pressable> : null}
+        </Card> : null}
+      </> : null}
 
       <Card colors={['#fffaf4', '#f8f2e8']} style={styles.privacyCard}>
         <Text style={styles.infoTitle}>ความเป็นส่วนตัวและข้อจำกัด</Text>
-        <Text style={styles.infoText}>• กรอง package ให้เหลือเฉพาะ LINE ก่อนอ่านชื่อและข้อความ{'\n'}• ไม่อ่านประวัติแชต รูป หรือแอปธนาคารโดยตรง{'\n'}• ถ้า LINE ซ่อนข้อความ ตัวระบบจะอ่านจำนวนเงินไม่ได้{'\n'}• รูปแบบข้อความธนาคารอาจเปลี่ยน จึงต้องตรวจทุกครั้ง{'\n'}• AI fallback รับเฉพาะข้อความที่ปิดเลขบัญชีแล้ว</Text>
+        <Text style={styles.infoText}>• กรอง package ให้เหลือเฉพาะ LINE และแอปธนาคารที่รองรับก่อนอ่านข้อความแจ้งเตือน{'\n'}• ไม่อ่านประวัติแชต รูป หรือข้อมูลในแอปธนาคารโดยตรง{'\n'}• ถ้า LINE ซ่อนข้อความ ตัวระบบจะอ่านจำนวนเงินไม่ได้{'\n'}• รายการข้อมูลครบจะบันทึกอัตโนมัติ รายการไม่ชัดเจนเท่านั้นที่ต้องตรวจ{'\n'}• AI fallback รับเฉพาะข้อความที่ปิดเลขบัญชีแล้ว</Text>
       </Card>
       <Pressable onPress={() => onNavigate('smartlife_line_import')} style={styles.analyzeButton}><MaterialIcon color="#fff" name="add_card" size={20} /><Text style={styles.analyzeText}>ไปหน้านำเข้ารายการ</Text></Pressable>
     </>}
@@ -680,6 +722,8 @@ const styles = StyleSheet.create({
   dateRow: {flexDirection: 'row', gap: 8},
   dateText: {color: C.ink, fontFamily: F.s, fontSize: 10},
   disabled: {opacity: 0.55},
+  disableLink: {alignItems: 'center', justifyContent: 'center', marginTop: 12, minHeight: 34},
+  disableLinkText: {color: C.danger, fontFamily: F.s, fontSize: 9},
   draftCard: {padding: 14},
   draftHead: {alignItems: 'center', flexDirection: 'row', gap: 9},
   draftTitle: {color: C.ink, fontFamily: F.b, fontSize: 13},
@@ -687,6 +731,8 @@ const styles = StyleSheet.create({
   emptyTitle: {color: C.ink, fontFamily: F.b, fontSize: 14},
   eyebrow: {color: C.sage, fontFamily: F.b, fontSize: 9},
   header: {alignItems: 'center', flexDirection: 'row', gap: 12, marginBottom: 5},
+  helpToggle: {alignItems: 'center', alignSelf: 'center', flexDirection: 'row', gap: 5, marginTop: 12, paddingHorizontal: 12, paddingVertical: 8},
+  helpToggleText: {color: C.violet, fontFamily: F.s, fontSize: 9},
   iconBox: {alignItems: 'center', borderRadius: 13, height: 42, justifyContent: 'center', width: 42},
   infoRow: {alignItems: 'center', flexDirection: 'row', gap: 10},
   infoText: {color: C.muted, fontFamily: F.r, fontSize: 10, lineHeight: 17, marginTop: 2},
@@ -715,7 +761,7 @@ const styles = StyleSheet.create({
   segmentText: {color: C.sage, fontFamily: F.b, fontSize: 10},
   segmentTextActive: {color: '#fff'},
   smallActionRow: {flexDirection: 'row', gap: 8, marginTop: 8},
-  smallButton: {alignItems: 'center', backgroundColor: C.violetSoft, borderRadius: 10, flex: 1, justifyContent: 'center', minHeight: 40},
+  smallButton: {alignItems: 'center', backgroundColor: C.violetSoft, borderRadius: 10, justifyContent: 'center', marginTop: 8, minHeight: 40},
   smallButtonText: {color: C.violet, fontFamily: F.b, fontSize: 9},
   statusCard: {padding: 14},
   statusHead: {alignItems: 'center', flexDirection: 'row', gap: 10},

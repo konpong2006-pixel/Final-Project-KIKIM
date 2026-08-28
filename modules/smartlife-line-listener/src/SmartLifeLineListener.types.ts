@@ -25,3 +25,13 @@ export type LineListenerNativeState = {
   permissionGranted: boolean;
   queueCount: number;
 };
+
+export type SmartLifeHomeWidgetPayload = {
+  budgetLabel: string;
+  dateLabel: string;
+  dayNumber: string;
+  focusTitle: string;
+  headline: string;
+  subheadline: string;
+  updatedAtLabel: string;
+};

@@ -3,6 +3,7 @@ import { NativeModule, registerWebModule } from 'expo';
 import type {
   CapturedLineNotification,
   LineListenerNativeState,
+  SmartLifeHomeWidgetPayload,
   SmartLifeLineListenerModuleEvents,
 } from './SmartLifeLineListener.types';
 
@@ -18,6 +19,15 @@ class SmartLifeLineListenerModule extends NativeModule<SmartLifeLineListenerModu
   async openNotificationAccessSettingsAsync() {}
   async requestRebindAsync() {}
   async setListenerEnabledAsync(_enabled: boolean, _userId: string) {}
+  async updateHomeWidgetAsync(
+    _dateLabel: SmartLifeHomeWidgetPayload['dateLabel'],
+    _dayNumber: SmartLifeHomeWidgetPayload['dayNumber'],
+    _headline: SmartLifeHomeWidgetPayload['headline'],
+    _subheadline: SmartLifeHomeWidgetPayload['subheadline'],
+    _focusTitle: SmartLifeHomeWidgetPayload['focusTitle'],
+    _budgetLabel: SmartLifeHomeWidgetPayload['budgetLabel'],
+    _updatedAtLabel: SmartLifeHomeWidgetPayload['updatedAtLabel'],
+  ) {}
 }
 
 export default registerWebModule(SmartLifeLineListenerModule, 'SmartLifeLineListenerModule');

@@ -95,5 +95,27 @@ class SmartLifeLineListenerModule : Module() {
       val context = requireNotNull(appContext.reactContext)
       LineNotificationStore(context).consumeSharedText()
     }
+
+    AsyncFunction("updateHomeWidgetAsync") {
+      dateLabel: String,
+      dayNumber: String,
+      headline: String,
+      subheadline: String,
+      focusTitle: String,
+      budgetLabel: String,
+      updatedAtLabel: String ->
+      val context = requireNotNull(appContext.reactContext)
+      SmartLifeWidgetProvider.saveWidgetData(
+        context = context,
+        dateLabel = dateLabel,
+        dayNumber = dayNumber,
+        headline = headline,
+        subheadline = subheadline,
+        focusTitle = focusTitle,
+        budgetLabel = budgetLabel,
+        updatedAtLabel = updatedAtLabel
+      )
+      SmartLifeWidgetProvider.updateAllWidgets(context)
+    }
   }
 }

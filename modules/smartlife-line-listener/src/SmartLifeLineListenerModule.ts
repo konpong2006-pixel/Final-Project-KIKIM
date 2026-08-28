@@ -3,6 +3,7 @@ import { NativeModule, requireNativeModule } from 'expo';
 import type {
   CapturedLineNotification,
   LineListenerNativeState,
+  SmartLifeHomeWidgetPayload,
   SmartLifeLineListenerModuleEvents,
 } from './SmartLifeLineListener.types';
 
@@ -15,6 +16,16 @@ declare class SmartLifeLineListenerModule extends NativeModule<SmartLifeLineList
   openNotificationAccessSettingsAsync(): Promise<void>;
   requestRebindAsync(): Promise<void>;
   setListenerEnabledAsync(enabled: boolean, userId: string): Promise<void>;
+  updateHomeWidgetAsync(
+    dateLabel: string,
+    dayNumber: string,
+    headline: string,
+    subheadline: string,
+    focusTitle: string,
+    budgetLabel: string,
+    updatedAtLabel: string,
+  ): Promise<void>;
 }
 
 export default requireNativeModule<SmartLifeLineListenerModule>('SmartLifeLineListener');
+export type {SmartLifeHomeWidgetPayload};

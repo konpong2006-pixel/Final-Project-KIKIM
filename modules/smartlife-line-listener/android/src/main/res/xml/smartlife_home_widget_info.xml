@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+  android:description="@string/smartlife_widget_description"
+  android:initialLayout="@layout/smartlife_home_widget"
+  android:minWidth="260dp"
+  android:minHeight="150dp"
+  android:minResizeWidth="220dp"
+  android:minResizeHeight="130dp"
+  android:previewLayout="@layout/smartlife_home_widget"
+  android:resizeMode="horizontal|vertical"
+  android:targetCellWidth="4"
+  android:targetCellHeight="2"
+  android:updatePeriodMillis="1800000"
+  android:widgetCategory="home_screen" />

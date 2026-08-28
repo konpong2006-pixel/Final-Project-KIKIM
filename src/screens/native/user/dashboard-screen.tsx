@@ -11,6 +11,7 @@ import {calculateDailyAllowance, type DailyAllowance} from '@/services/dynamic-i
 import {loadMonthlyBudget} from '@/services/monthly-budget';
 import {buildNotificationFeed, itemsOf as items, millis, priorityReasons, priorityScore, string, unreadCount, type FeedItem} from '@/services/notification-feed';
 import {activities as activitiesStore, notes as notesStore} from '@/services/firestore';
+import {updateAndroidHomeWidget} from '@/services/android-home-widget';
 import {MaterialIcon, UserGradientBackdrop, UserTabBar} from './user-ui';
 
 type Props = {onNavigate: (page: string) => void; uid: string};
@@ -21,6 +22,9 @@ const showDevTools = __DEV__ || process.env.EXPO_PUBLIC_SMARTLIFE_SHOW_DEV_TOOLS
 
 function time(value: unknown) { const date = new Date(String(value ?? '')); return Number.isNaN(date.getTime()) ? '-' : new Intl.DateTimeFormat('th-TH', {hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Bangkok'}).format(date); }
 function money(value: number) { return `฿${value.toLocaleString('th-TH')}`; }
+function dayKey(date: Date) { return new Intl.DateTimeFormat('en-CA', {day: '2-digit', month: '2-digit', timeZone: 'Asia/Bangkok', year: 'numeric'}).format(date); }
+function shortDateLabel(date: Date) { return new Intl.DateTimeFormat('th-TH', {timeZone: 'Asia/Bangkok', weekday: 'short'}).format(date); }
+function dayNumber(date: Date) { return new Intl.DateTimeFormat('th-TH', {day: 'numeric', timeZone: 'Asia/Bangkok'}).format(date); }
 
 function SoftPress({children, onPress, style}: {children: React.ReactNode; onPress: () => void; style?: object}) {
   return <Pressable onPress={onPress} style={({pressed}) => [style, pressed && styles.pressed]}>{children}</Pressable>;
@@ -93,11 +97,11 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
     stored: notifications as never,
     todayExpenses: items(data?.transactions).filter((item) => item.type === 'expense').map((item) => ({amount: Number(item.amount ?? 0)})),
   }), [budgetAmount, data, monthTransactions, notifications]);
-  const workNotes = notes.filter((item) => item.status !== 'completed' && /งาน|task|assignment|homework/i.test(string(item, 'category', '')));
-  const pending = [
+  const workNotes = useMemo(() => notes.filter((item) => item.status !== 'completed' && /งาน|task|assignment|homework/i.test(string(item, 'category', ''))), [notes]);
+  const pending = useMemo(() => [
     ...activities.filter((item) => item.status !== 'completed').map((item): Item => ({...item, __entity: 'activity'})),
     ...workNotes.map((item): Item => ({...item, __entity: 'note'})),
-  ];
+  ], [activities, workNotes]);
   // Both budget surfaces read from the same allowance, so the tile and the
   // assistant's instant answer can never quote different numbers.
   const allowanceValue = allowance ? money(allowance.amount) : '—';
@@ -112,7 +116,28 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
     ? Math.min(100, Math.max(0, allowance.remainingBudget / allowance.monthlyBudget * 100))
     : 0;
   const unread = unreadCount(feed);
-  const urgent = [...pending].sort((a, b) => priorityScore(b) - priorityScore(a) || millis(a) - millis(b)).slice(0, 2);
+  const urgent = useMemo(() => [...pending].sort((a, b) => priorityScore(b) - priorityScore(a) || millis(a) - millis(b)).slice(0, 2), [pending]);
+  useEffect(() => {
+    if (!data) return;
+    const now = new Date();
+    const today = dayKey(now);
+    const nextSchedule = schedules.find((item) => dayKey(new Date(String(item.startAt ?? ''))) === today && new Date(String(item.startAt ?? '')).getTime() >= now.getTime()) ?? schedules[0];
+    const topTask = urgent[0] ?? pending[0];
+    const headline = nextSchedule ? string(nextSchedule, 'title', 'SmartLife วันนี้') : 'SmartLife วันนี้';
+    const subheadline = nextSchedule ? `${time(nextSchedule.startAt)} · ${string(nextSchedule, 'location', string(nextSchedule, 'courseCode', 'ตารางวันนี้'))}` : 'ไม่มีตารางเรียนที่กำลังจะถึง';
+    const focusTitle = topTask ? `โฟกัส: ${string(topTask, 'title')}` : 'วันนี้ยังไม่มีงานที่ต้องโฟกัส';
+    const budgetLabel = allowance ? `งบวันนี้ ${allowanceValue}` : 'งบวันนี้ยังไม่ได้ตั้ง';
+    const updatedAtLabel = `อัปเดต ${time(now.toISOString())}`;
+    updateAndroidHomeWidget({
+      budgetLabel,
+      dateLabel: shortDateLabel(now),
+      dayNumber: dayNumber(now),
+      focusTitle,
+      headline,
+      subheadline,
+      updatedAtLabel,
+    }).catch((error) => console.warn('[Dashboard] Android widget sync failed', error));
+  }, [allowance, allowanceValue, data, pending, schedules, urgent]);
   const markComplete = useCallback(async (item: Item) => {
     const id = string(item, 'id', '');
     const entity = string(item, '__entity', 'activity');

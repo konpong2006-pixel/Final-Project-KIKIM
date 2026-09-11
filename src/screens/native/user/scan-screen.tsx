@@ -76,6 +76,7 @@ type ScheduleEntry = {
 const REVIEW_FIELD_LABELS: Record<string, string> = {
   buildingName: "ห้อง",
   courseCode: "รหัสวิชา",
+  courseName: "ชื่อวิชา",
   day: "วัน",
   endTime: "เวลาสิ้นสุด",
   room: "ห้อง",
@@ -1265,6 +1266,12 @@ export default function ScanScreen({
   );
   const updateDraft = (key: string, value: string) =>
     setDraft((current) => ({ ...current, [key]: value }));
+  // What a document note saves when the user has not edited it -- the same
+  // precedence as saveOcrResult, so the box shows exactly what will be kept.
+  const scannedDocumentText =
+    typeof result?.parsed?.documentText === "string" && result.parsed.documentText.trim()
+      ? result.parsed.documentText
+      : rawOcrText;
   const receiptItems = normalizeReceiptItems(receipt?.items);
   const updateReceiptItem = (
     index: number,
@@ -1796,12 +1803,16 @@ export default function ScanScreen({
                 />
                 <Text style={localStyles.editNoticeText}>
                   {result.scanType === "document"
-                    ? "เอกสารนี้ไม่ใช่ใบเสร็จหรือตารางเรียน ระบบจึงไม่เดาเป็นรายการเงิน แต่ดึงข้อความออกมาให้ใช้ต่อในโน้ตได้"
+                    ? "เอกสารนี้ไม่ใช่ใบเสร็จหรือตารางเรียน ระบบจึงไม่เดาเป็นรายการเงิน แต่ดึงข้อความออกมาให้ใช้ต่อในโน้ตได้ แตะข้อความเพื่อแก้ไขก่อนบันทึก"
                     : "แตะช่องข้อมูลเพื่อแก้ไขผล OCR ก่อนบันทึก"}
                 </Text>
               </View>
               {result.scanType === "document" ? (
-                <DocumentTextBox text={rawOcrText} />
+                <DocumentTextBox
+                  onChange={(value) => updateDraft("documentText", value)}
+                  original={scannedDocumentText}
+                  text={typeof draft.documentText === "string" ? draft.documentText : scannedDocumentText}
+                />
               ) : null}
               <DocumentTypePicker
                 current={result.scanType}
@@ -2678,27 +2689,96 @@ const shadow = {
  * left the user scrolling the whole page to get past it. A long document now
  * shows a clamped preview that scrolls inside itself and expands on request.
  */
-function DocumentTextBox({ text }: { text: string }) {
+function DocumentTextBox({
+  onChange,
+  original,
+  text,
+}: {
+  onChange: (value: string) => void;
+  /** The text as scanned, so an edit can be undone. */
+  original: string;
+  text: string;
+}) {
   const [expanded, setExpanded] = useState(false);
+  const [editing, setEditing] = useState(false);
   const trimmed = text.trim();
+  const edited = text !== original;
   const isLong = trimmed.length > PREVIEW_CHARS;
   const shown = !isLong || expanded ? trimmed : `${trimmed.slice(0, PREVIEW_CHARS).trimEnd()}...`;
+
+  // OCR is never exact, so the text is the user's to correct before it
+  // becomes a note -- the same as every field on a receipt or a timetable.
+  const header = (
+    <View style={localStyles.documentHeader}>
+      <Text style={localStyles.documentHeaderText}>
+        {edited ? "ข้อความที่แก้ไขแล้ว" : "ข้อความที่อ่านได้"}
+      </Text>
+      {edited ? (
+        <Pressable
+          accessibilityLabel="คืนค่าข้อความที่สแกน"
+          accessibilityRole="button"
+          onPress={() => onChange(original)}
+          style={localStyles.documentAction}
+        >
+          <MaterialIcon color="#5f875f" name="undo" size={15} />
+          <Text style={localStyles.documentActionText}>คืนค่าเดิม</Text>
+        </Pressable>
+      ) : null}
+      <Pressable
+        accessibilityLabel={editing ? "แก้ไขข้อความเสร็จแล้ว" : "แก้ไขข้อความที่สแกน"}
+        accessibilityRole="button"
+        onPress={() => setEditing((current) => !current)}
+        style={localStyles.documentAction}
+      >
+        <MaterialIcon color="#5f875f" name={editing ? "check" : "edit"} size={15} />
+        <Text style={localStyles.documentActionText}>{editing ? "เสร็จ" : "แก้ไข"}</Text>
+      </Pressable>
+    </View>
+  );
+
+  if (editing) {
+    return (
+      <View style={localStyles.documentTextBox}>
+        {header}
+        <TextInput
+          accessibilityLabel="ข้อความของเอกสาร"
+          autoFocus
+          multiline
+          onChangeText={onChange}
+          placeholder="พิมพ์ข้อความของเอกสาร"
+          placeholderTextColor="#9aa596"
+          scrollEnabled
+          style={[localStyles.documentText, localStyles.documentInput]}
+          textAlignVertical="top"
+          value={text}
+        />
+      </View>
+    );
+  }
 
   if (!trimmed) {
     return (
       <View style={localStyles.documentTextBox}>
-        <Text style={localStyles.documentText}>ไม่พบข้อความในภาพนี้</Text>
+        {header}
+        <Text onPress={() => setEditing(true)} style={localStyles.documentText}>
+          {edited ? "ยังไม่มีข้อความ แตะเพื่อพิมพ์" : "ไม่พบข้อความในภาพนี้ แตะเพื่อพิมพ์เอง"}
+        </Text>
       </View>
     );
   }
 
   return (
     <View style={localStyles.documentTextBox}>
+      {header}
       <ScrollView
         nestedScrollEnabled
         style={expanded ? localStyles.documentScrollExpanded : localStyles.documentScroll}
       >
-        <Text selectable style={localStyles.documentText}>
+        <Text
+          accessibilityHint="แตะเพื่อแก้ไขข้อความ"
+          onPress={() => setEditing(true)}
+          style={localStyles.documentText}
+        >
           {shown}
         </Text>
       </ScrollView>
@@ -3015,6 +3095,19 @@ const localStyles = StyleSheet.create({
     fontFamily: "Prompt_400Regular",
     fontSize: 12,
     lineHeight: 19,
+  },
+  documentAction: { alignItems: "center", flexDirection: "row", gap: 3, paddingHorizontal: 6, paddingVertical: 4 },
+  documentActionText: { color: "#5f875f", fontFamily: "Prompt_700Bold", fontSize: 10 },
+  documentHeader: { alignItems: "center", flexDirection: "row", gap: 4, marginBottom: 6 },
+  documentHeaderText: { color: "#7b8a78", flex: 1, fontFamily: "Prompt_700Bold", fontSize: 10 },
+  documentInput: {
+    backgroundColor: "#ffffff",
+    borderColor: "#cfdccb",
+    borderRadius: 10,
+    borderWidth: 1,
+    maxHeight: 340,
+    minHeight: 150,
+    padding: 10,
   },
   documentScroll: { maxHeight: 150 },
   documentScrollExpanded: { maxHeight: 340 },

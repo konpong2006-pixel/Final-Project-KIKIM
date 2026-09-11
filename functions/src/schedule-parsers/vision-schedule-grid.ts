@@ -23,8 +23,8 @@ type VisionWord = {
 type VisionAnnotation = {
   pages?: {blocks?: {paragraphs?: {words?: VisionWord[] | null}[] | null}[] | null}[] | null;
 };
-type Point = {x: number; y: number};
-type Word = {
+export type Point = {x: number; y: number};
+export type Word = {
   bottom: number;
   cx: number;
   cy: number;
@@ -34,7 +34,7 @@ type Word = {
   text: string;
   top: number;
 };
-type CodeWord = {text: string; word: Word; words: Word[]};
+export type CodeWord = {text: string; word: Word; words: Word[]};
 
 export type GridColumn = {endMinutes: number; left: number; minutes: number; right: number; x: number};
 export type GridRow = {day: string; y: number};
@@ -66,29 +66,29 @@ const DAY_LABELS: string[][] = [
 ];
 
 /** A time on its own -- a column header such as "08:00", "8.00" or "8.00-9.00". */
-const TIME_TOKEN = /^\(?([01]?\d|2[0-3])[:.]([0-5]\d)(?:\s*[-–—]\s*(?:[01]?\d|2[0-3])[:.][0-5]\d)?\)?(?:น\.?)?$/;
-const TIME_RANGE = /([01]?\d|2[0-3])\s*[:.]\s*([0-5]\d)\s*[-–—~]\s*([01]?\d|2[0-3])\s*[:.]\s*([0-5]\d)/;
+export const TIME_TOKEN = /^\(?([01]?\d|2[0-3])[:.]([0-5]\d)(?:\s*[-–—]\s*(?:[01]?\d|2[0-3])[:.][0-5]\d)?\)?(?:น\.?)?$/;
+export const TIME_RANGE = /([01]?\d|2[0-3])\s*[:.]\s*([0-5]\d)\s*[-–—~]\s*([01]?\d|2[0-3])\s*[:.]\s*([0-5]\d)/;
 /**
  * Letters running straight into digits ("ACC315-68") or a numeric code
  * ("2110101"). A room such as "SCI-1204" has a separator after its letters,
  * and "410" is too short, so neither qualifies.
  */
-const COURSE_CODE = /^(?:[A-Z]{2,5}\d{3}(?:-?\d{2,3})?|\d{6,8}(?:-\d{1,3})?)$/;
-const SECTION_LABEL = /(?:sec(?:tion)?|กลุ่ม(?:เรียน)?|ตอน(?:เรียน)?|หมู่(?:เรียน)?)\s*[:.#]?\s*([A-Z0-9]{1,4})(?![A-Z0-9])/i;
-const ROOM_LABEL = /(?:ห้อง(?:เรียน)?|room|rm\.?|อาคาร|bldg\.?)\s*[:.#]?\s*([A-Z0-9ก-๙][A-Z0-9ก-๙\-/ ]{0,20})/i;
+export const COURSE_CODE = /^(?:[A-Z]{2,5}\d{3}(?:-?\d{2,3})?|\d{6,8}(?:-\d{1,3})?)$/;
+export const SECTION_LABEL = /(?:sec(?:tion)?|กลุ่ม(?:เรียน)?|ตอน(?:เรียน)?|หมู่(?:เรียน)?)\s*[:.#]?\s*([A-Z0-9]{1,4})(?![A-Z0-9])/i;
+export const ROOM_LABEL = /(?:ห้อง(?:เรียน)?|room|rm\.?|อาคาร|bldg\.?)\s*[:.#]?\s*([A-Z0-9ก-๙][A-Z0-9ก-๙\-/ ]{0,20})/i;
 /** Headings of the course list or exam table that often sits under the grid. */
 const LOWER_TABLE = /รายวิชา|รหัสวิชา|ชื่อวิชา|ตารางสอบ|สอบกลางภาค|สอบปลายภาค|COURSE\s*(?:CODE|NAME|LIST)|EXAM/i;
 
-const median = (values: number[]) => {
+export const median = (values: number[]) => {
   if (!values.length) return 0;
   const sorted = [...values].sort((a, b) => a - b);
   const middle = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 };
-const hhmm = (minutes: number) =>
+export const hhmm = (minutes: number) =>
   `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
 
-function rawWords(annotation: unknown) {
+export function rawWords(annotation: unknown) {
   const pages = (annotation as VisionAnnotation | null)?.pages ?? [];
   const out: {points: Point[]; text: string}[] = [];
   for (const page of pages) {
@@ -106,7 +106,7 @@ function rawWords(annotation: unknown) {
   return out;
 }
 
-function toWord(points: Point[], text: string): Word {
+export function toWord(points: Point[], text: string): Word {
   const xs = points.map((point) => point.x);
   const ys = points.map((point) => point.y);
   const left = Math.min(...xs);
@@ -135,7 +135,7 @@ function skewSlope(words: Word[]) {
   return slopes.length >= 3 ? median(slopes) : 0;
 }
 
-function groupLines(words: Word[]) {
+export function groupLines(words: Word[]) {
   const height = median(words.map((word) => word.height)) || 20;
   const lines: Word[][] = [];
   for (const word of [...words].sort((a, b) => a.cy - b.cy || a.left - b.left)) {
@@ -153,7 +153,7 @@ function groupLines(words: Word[]) {
  * "อ." into two, so spacing is kept only where there was a real gap and never
  * next to the punctuation those pieces break on.
  */
-function joinLine(line: Word[]) {
+export function joinLine(line: Word[]) {
   let out = "";
   let previous: Word | null = null;
   for (const word of line) {
@@ -205,7 +205,7 @@ function headerColumns(words: Word[]) {
   };
 }
 
-function dayIndex(text: string) {
+export function dayIndex(text: string) {
   const label = text.replace(/[.\s]/g, "").replace(/^วัน/, "").toLowerCase();
   return DAY_LABELS.findIndex((labels) => labels.includes(label));
 }
@@ -255,7 +255,7 @@ function dayFor(y: number, rows: {day: number; y: number}[], pitch: number, heig
   return day >= 0 && day < 7 ? day : null;
 }
 
-function findCodes(lines: Word[][]) {
+export function findCodes(lines: Word[][]) {
   const codes: CodeWord[] = [];
   for (const line of lines) {
     for (let index = 0; index < line.length; index += 1) {

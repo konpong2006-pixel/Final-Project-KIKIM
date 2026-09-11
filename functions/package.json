@@ -16,9 +16,12 @@
   "dependencies": {
     "@google-cloud/vision": "^5.3.3",
     "firebase-admin": "^13.4.0",
-    "firebase-functions": "^6.4.0"
+    "firebase-functions": "^6.4.0",
+    "jpeg-js": "^0.4.4",
+    "pngjs": "^7.0.0"
   },
   "devDependencies": {
+    "@types/pngjs": "^6.0.5",
     "typescript": "^5.8.3"
   }
 }

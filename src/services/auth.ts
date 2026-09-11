@@ -106,6 +106,9 @@ async function createSocialUserProfile(user: User) {
 }
 
 export async function ensureUserProfile(user = auth.currentUser) {
+  // Demo mode has no signed-in user and writes nothing to Firestore; every
+  // save path in it stops at this check otherwise.
+  if (isDemoMode) return;
   if (!user) {
     throw new Error('กรุณาเข้าสู่ระบบก่อนบันทึกข้อมูล');
   }

@@ -1,6 +1,7 @@
 import {Timestamp} from 'firebase/firestore';
 
 import {noteFolders, notes, schedules, transactions} from '@/services/firestore';
+import {documentNoteText} from '@/services/document-note-text';
 import type {OcrResult} from '@/services/ocr';
 import {ensureUserProfile} from '@/services/auth';
 import {normalizeExpenseCategory} from '@/config/expense-categories';
@@ -337,12 +338,7 @@ export async function saveOcrResult({
   // it as a *transaction* is the failure this category was added to prevent --
   // saving it at all is not.
   if (result.scanType === 'document') {
-    const scanned = String(
-      (typeof draft.documentText === 'string' && draft.documentText) ||
-      (typeof result.parsed?.documentText === 'string' && result.parsed.documentText) ||
-      result.rawText ||
-      '',
-    ).trim();
+    const scanned = documentNoteText(draft, result.parsed?.documentText, result.rawText);
     if (!scanned) throw new Error('ไม่พบข้อความในเอกสารนี้ จึงบันทึกเป็นโน้ตไม่ได้');
     const title = String(draft.title ?? '').trim() || firstMeaningfulLine(scanned) ||
       `สแกนเมื่อ ${new Date().toLocaleDateString('th-TH')}`;

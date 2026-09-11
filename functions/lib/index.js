@@ -25,6 +25,10 @@ const vision_course_table_1 = require("./schedule-parsers/vision-course-table");
 const vision_exam_table_1 = require("./schedule-parsers/vision-exam-table");
 const vision_grid_table_1 = require("./schedule-parsers/vision-grid-table");
 const vision_schedule_grid_1 = require("./schedule-parsers/vision-schedule-grid");
+const calendar_block_schedule_1 = require("./schedule-parsers/calendar-block-schedule");
+const image_pixels_1 = require("./schedule-parsers/image-pixels");
+const schedule_layout_1 = require("./schedule-parsers/schedule-layout");
+const schedule_strategy_1 = require("./schedule-parsers/schedule-strategy");
 const gemini_grid_crosscheck_1 = require("./schedule-parsers/gemini-grid-crosscheck");
 const functions_1 = require("./adaptive-scheduling/functions");
 const service_probes_1 = require("./health/service-probes");
@@ -759,22 +763,17 @@ function flagUnverifiedModelFields(entries, ocrText) {
     });
 }
 /**
- * Reads a schedule scan, geometry first.
+ * The ruled-grid strategy: days down the side, times across the top.
  *
- * A timetable grid is read from Vision's word boxes -- see
- * vision-schedule-grid.ts for why the text could not be trusted -- and then
- * given a second reading from the image by the model, whose values are
- * accepted only as far as the OCR text bears them out. Anything that is not a
- * day-by-time grid (a registrar's course list, say) goes to the text parsers,
- * which now read ONE transcript: fed the iApp and Vision transcripts joined
- * together, they saw every course twice.
+ * The grid is read from Vision's word boxes -- see vision-schedule-grid.ts for
+ * why the text could not be trusted -- and then given a second reading from
+ * the image by the model, whose values are accepted only as far as the OCR
+ * text bears them out.
  */
-async function parseSchedule(fusedText, annotation, apiKey, imageDataUrl, singleText) {
+async function readCellGridSchedule({ annotation, apiKey, fusedText, imageDataUrl }) {
     const grid = (0, vision_schedule_grid_1.parseScheduleGrid)(annotation);
-    if (!grid.found) {
-        const parsed = await parseScheduleFromText(singleText || fusedText, annotation, apiKey, imageDataUrl);
-        return { ...parsed, entries: flagUnverifiedModelFields(parsed.entries, fusedText) };
-    }
+    if (!grid.found)
+        return null;
     const courseTableLookup = (0, vision_course_table_1.buildCourseTableLookup)(fusedText, annotation);
     const examTable = (0, vision_exam_table_1.parseOptionalExamTable)(fusedText, annotation);
     const gridDays = grid.rows.map((row) => row.day);
@@ -856,6 +855,92 @@ async function parseSchedule(fusedText, annotation, apiKey, imageDataUrl, single
         usedLlm: Boolean(crossCheck) || usedTemporalReview || reviewedCourseCount > 0 || reviewedExamCount > 0,
         usedTemporalReview,
     };
+}
+/** A registrar's course list, or anything else not drawn as a timetable: read as text. */
+async function readTextSchedule({ annotation, apiKey, fusedText, imageDataUrl, singleText }) {
+    // ONE transcript: fed the iApp and Vision transcripts joined together, the
+    // text parsers saw every course twice.
+    const parsed = await parseScheduleFromText(singleText || fusedText, annotation, apiKey, imageDataUrl);
+    return { ...parsed, entries: flagUnverifiedModelFields(parsed.entries, fusedText) };
+}
+/**
+ * The calendar strategy: a week view whose classes are coloured blocks -- see
+ * calendar-block-schedule.ts. Gemini's reading of the blocks is the richer
+ * one, so it always runs; the block edges and header positions measured from
+ * the scan decide what of it is accepted.
+ */
+async function readCalendarBlockSchedule({ apiKey, fusedText, imageDataUrl, layout, pixels }) {
+    const geometry = (0, calendar_block_schedule_1.parseCalendarBlocks)(layout, pixels);
+    const [gemini, temporalReview] = apiKey && imageDataUrl ? await Promise.all([
+        withDeadline((0, calendar_block_schedule_1.extractCalendarBlocksWithGemini)({ apiKey, imageDataUrl, ocrText: fusedText }), SCHEDULE_REVIEW_DEADLINE_MS, "calendar block extraction"),
+        withDeadline((0, gemini_fallback_1.reviewScheduleTemporalFieldsWithGemini)({ apiKey, entries: geometry.entries, imageDataUrl, rawText: fusedText }).catch((error) => {
+            console.warn("[Schedule OCR] Gemini temporal review failed; no semester dates.", error);
+            return null;
+        }), SCHEDULE_REVIEW_DEADLINE_MS, "schedule temporal review"),
+    ]) : [null, null];
+    const checked = (0, calendar_block_schedule_1.crossCheckCalendarBlocks)(geometry, gemini?.courses ?? [], fusedText);
+    if (!checked.entries.length)
+        return null;
+    // Only the semester here: the review's day and time changes are for grids,
+    // and on a calendar the block edges already decided those.
+    const academicYear = temporalReview?.academicYear && fusedText.includes(temporalReview.academicYear) ? temporalReview.academicYear : null;
+    const term = fusedText.match(/ภาคการศึกษา(?:ที่)?\s*(\d)\s*\/\s*(\d{4})/);
+    const literalAcademicYear = academicYear ?? term?.[2] ??
+        fusedText.match(/(?:ปีการศึกษา|พ\.ศ\.)\s*[:\-]?\s*(\d{4})/)?.[1] ?? null;
+    const usedTemporalReview = Boolean(academicYear || temporalReview?.semesterStart || temporalReview?.semesterEnd);
+    console.info("[Schedule OCR] calendar block extraction", {
+        crossCheck: checked.stats,
+        crossCheckModel: gemini?.model ?? null,
+        entries: checked.entries.length,
+        flagged: checked.entries.filter((entry) => (entry.reviewFields ?? []).length).length,
+        timeScale: geometry.timeScale,
+    });
+    return {
+        academicYear: literalAcademicYear,
+        academicYearLiteral: literalAcademicYear,
+        calendarCrossCheck: checked.stats,
+        calendarCrossCheckModel: gemini?.model ?? null,
+        calendarTimeScale: geometry.timeScale,
+        entries: checked.entries,
+        institution: "Weekly calendar",
+        parserConfidence: 0.9,
+        parserSource: "vision-calendar-block",
+        semester: term?.[1] ?? null,
+        semesterEnd: temporalReview?.semesterEnd ?? null,
+        semesterStart: temporalReview?.semesterStart ?? null,
+        usedHighResolutionVision: false,
+        usedLlm: Boolean(gemini) || usedTemporalReview,
+        usedTemporalReview,
+    };
+}
+/**
+ * The layouts a schedule scan can be read as, most specific first. The first
+ * that matches the detected layout and reads any course wins, so a new layout
+ * is a new entry here rather than another branch inside a parser.
+ */
+const SCHEDULE_STRATEGIES = [
+    { extract: readCalendarBlockSchedule, matches: schedule_strategy_1.calendarBlockLayout, name: "calendar-block" },
+    { extract: readCellGridSchedule, matches: schedule_strategy_1.cellGridLayout, name: "cell-grid" },
+    { extract: readTextSchedule, matches: () => true, name: "text" },
+];
+/**
+ * Reads a schedule scan: works out which way the timetable runs and how its
+ * classes are drawn, then hands it to the strategy built for that layout.
+ */
+async function parseSchedule(fusedText, annotation, apiKey, imageDataUrl, singleText) {
+    const page = annotation?.pages?.[0];
+    const pixels = (0, image_pixels_1.decodeScanImage)(imageDataUrl, Number(page?.width ?? 0), Number(page?.height ?? 0));
+    const layout = (0, schedule_layout_1.detectScheduleLayout)(annotation, pixels);
+    const result = await (0, schedule_strategy_1.extractSchedule)({ annotation, apiKey, fusedText, imageDataUrl, layout, pixels, singleText }, SCHEDULE_STRATEGIES);
+    const scheduleLayout = {
+        blocks: layout.blocks.length,
+        codes: layout.codes,
+        codesInBlocks: layout.codesInBlocks,
+        kind: layout.kind,
+        orientation: layout.orientation,
+    };
+    console.info("[Schedule OCR] layout", { ...scheduleLayout, strategy: result.scheduleStrategy, tried: result.scheduleStrategiesTried });
+    return { ...result, scheduleLayout };
 }
 async function parseScheduleFromText(text, annotation, apiKey, imageDataUrl) {
     const fallback = parseScheduleFallback(text);

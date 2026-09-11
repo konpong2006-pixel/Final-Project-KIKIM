@@ -10,6 +10,15 @@ const projectRoot = new URL('../', import.meta.url);
 const candidateSuffixes = ['', '.ts', '.tsx', '.mjs', '.js', '/index.ts', '/index.tsx'];
 
 export async function resolve(specifier, context, nextResolve) {
+  // Relative imports between .ts files are written without an extension
+  // (tsc resolves them; the Cloud Functions sources rely on it). Plain Node
+  // needs the file name, so try the .ts sibling before giving up.
+  if (/^\.\.?\//.test(specifier) && !/\.[cm]?[jt]sx?$|\.json$/.test(specifier) && context.parentURL?.endsWith('.ts')) {
+    for (const suffix of ['.ts', '/index.ts']) {
+      const candidate = new URL(`${specifier}${suffix}`, context.parentURL);
+      if (existsSync(fileURLToPath(candidate))) return nextResolve(candidate.href, context);
+    }
+  }
   if (!specifier.startsWith('@/')) return nextResolve(specifier, context);
 
   const base = specifier.startsWith('@/assets/')

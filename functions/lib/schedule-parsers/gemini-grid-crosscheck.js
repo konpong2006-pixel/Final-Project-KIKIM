@@ -7,6 +7,10 @@ exports.ocrEvidence = ocrEvidence;
 exports.textInOcr = textInOcr;
 exports.inOcr = inOcr;
 exports.crossCheckScheduleEntries = crossCheckScheduleEntries;
+// Schemas here carry no minimum/maximum/maxItems/minItems: /v1/interactions
+// rejects them alongside nullable types ("Request contains an invalid
+// argument"), and the values are range-checked after parsing anyway.
+const gemini_structured_1 = require("./gemini-structured");
 const THAI_DAYS = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์", "เสาร์", "อาทิตย์"];
 const DAY_ALIASES = [
     ["จันทร์", "จ", "mon", "monday"],
@@ -57,69 +61,21 @@ const GRID_SCHEMA = {
     },
     required: ["courses"],
 };
-const MODELS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"];
 /** Reads every class in the grid from the image, or null when the model cannot answer. */
 async function extractScheduleGridWithGemini({ apiKey, imageDataUrl, ocrText, timeoutMs = 18000, }) {
-    const image = imageDataUrl.match(/^data:(image\/[a-z0-9.+-]+);base64,([\s\S]+)$/i);
-    if (!apiKey || !image)
+    const answer = await (0, gemini_structured_1.requestStructuredJson)({
+        apiKey,
+        imageDataUrl,
+        label: "Schedule grid",
+        prompt: exports.GRID_EXTRACTION_PROMPT,
+        schema: GRID_SCHEMA,
+        text: `OCR transcript of the same image (may contain errors):\n${ocrText.slice(0, 20000)}`,
+        timeoutMs,
+    });
+    if (!answer)
         return null;
-    for (const [index, model] of MODELS.entries()) {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
-        try {
-            const response = await fetch("https://generativelanguage.googleapis.com/v1/interactions", {
-                method: "POST",
-                headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-                body: JSON.stringify({
-                    model,
-                    store: false,
-                    system_instruction: exports.GRID_EXTRACTION_PROMPT,
-                    // v1 wants the parts inside a user_input step; bare parts are what
-                    // broke every image request after the move from v1beta.
-                    input: [{
-                            type: "user_input",
-                            content: [
-                                { type: "text", text: `OCR transcript of the same image (may contain errors):\n${ocrText.slice(0, 20000)}` },
-                                { type: "image", data: image[2].replace(/\s+/g, ""), mime_type: image[1] },
-                            ],
-                        }],
-                    response_format: { type: "text", mime_type: "application/json", schema: GRID_SCHEMA },
-                }),
-                signal: controller.signal,
-            });
-            const payload = await response.json();
-            if (!response.ok) {
-                const retryable = response.status === 404 || response.status === 429 || response.status >= 500;
-                if (retryable && index < MODELS.length - 1)
-                    continue;
-                console.warn("[Schedule grid] Gemini refused the extraction.", { message: payload.error?.message, model, status: response.status });
-                return null;
-            }
-            const text = payload.steps
-                ?.filter((step) => step.type === "model_output")
-                .flatMap((step) => step.content ?? [])
-                .filter((content) => content.type === "text")
-                .map((content) => content.text ?? "")
-                .join("")
-                .trim() ?? "";
-            const parsed = JSON.parse(text);
-            const courses = Array.isArray(parsed.courses) ? parsed.courses : [];
-            return { courses, model };
-        }
-        catch (error) {
-            // A timeout is the model being slow, not wrong: a real scan waited out
-            // 30 s on one model while the next would have answered.
-            const timedOut = error instanceof Error && (error.name === "AbortError" || /aborted/i.test(error.message));
-            console.warn("[Schedule grid] Gemini extraction failed.", { error: error instanceof Error ? error.message : String(error), model });
-            if (timedOut && index < MODELS.length - 1)
-                continue;
-            return null;
-        }
-        finally {
-            clearTimeout(timer);
-        }
-    }
-    return null;
+    const courses = Array.isArray(answer.value.courses) ? answer.value.courses : [];
+    return { courses, model: answer.model };
 }
 exports.GRID_FIELD_LABELS = {
     courseCode: "รหัสวิชา",

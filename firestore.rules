@@ -172,7 +172,7 @@ service cloud.firestore {
           'ownerId', 'type', 'amount', 'category', 'merchant', 'note',
           'occurredAt', 'receiptPath', 'accountLast4',
           'balanceAfterReported', 'bank', 'confirmationMethod',
-          'confidence', 'fingerprint', 'items', 'rawTextRetained',
+          'confidence', 'dedupeKeys', 'fingerprint', 'items', 'rawTextRetained',
           'reviewedAt', 'reviewedByUser', 'scanId', 'source', 'status',
           'createdAt', 'updatedAt'
         ])
@@ -188,6 +188,7 @@ service cloud.firestore {
         // /scans and may still be classified as receipts by OCR.
         && (data.receiptPath == '' || data.receiptPath.matches('^users/' + userId + '/(receipts|scans)/.*'))
         && (!('confidence' in data) || (data.confidence is number && data.confidence >= 0 && data.confidence <= 1))
+        && (!('dedupeKeys' in data) || (data.dedupeKeys is list && data.dedupeKeys.size() <= 5))
         && (!('items' in data) || (data.items is list && data.items.size() <= 100))
         && (!('accountLast4' in data) || data.accountLast4 == null || (data.accountLast4 is string && data.accountLast4.matches('^[0-9]{4}$')))
         && (!('balanceAfterReported' in data) || data.balanceAfterReported == null || (data.balanceAfterReported is number && data.balanceAfterReported >= 0 && data.balanceAfterReported <= 1000000000000))

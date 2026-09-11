@@ -1,7 +1,7 @@
 import {Timestamp} from 'firebase/firestore';
 
-import {schedules, transactions} from '@/services/firestore';
-import type {OcrResult} from '@/services/ocr';
+import {schedules} from '@/services/firestore';
+import {saveReviewedReceipt, type OcrResult} from '@/services/ocr';
 import {ensureUserProfile} from '@/services/auth';
 
 type ScheduleEntry = {
@@ -21,6 +21,7 @@ type ScheduleEntry = {
 export type SavedScan = {
   destination: 'smartlife_calendar_month' | 'smartlife_finance_month';
   documentIds: string[];
+  duplicate?: boolean;
 };
 
 const THAI_WEEKDAYS: [number, string[]][] = [
@@ -301,21 +302,22 @@ export async function saveOcrResult({
       ? Number(Math.min(1, Math.max(0, rawConfidence)).toFixed(2))
       : 0;
 
-    const id = await transactions.create(uid, {
+    const saved = await saveReviewedReceipt({
       amount,
       category: text(draft.category) || 'Others',
       confidence,
       items: receiptItemsForStorage(draft.items),
       merchant: text(draft.merchant) || text(draft.merchantName) || text(draft.store) || text(draft.vendor) || '\u0e44\u0e21\u0e48\u0e23\u0e30\u0e1a\u0e38\u0e23\u0e49\u0e32\u0e19\u0e04\u0e49\u0e32',
-      note: '\u0e19\u0e33\u0e40\u0e02\u0e49\u0e32\u0e08\u0e32\u0e01 Smart Scan OCR',
-      occurredAt: Timestamp.fromDate(receiptOccurredAt(draft.date, draft.time)),
-      receiptPath: text(result.storagePath),
-      reviewedByUser: Boolean(result.parsed.needsReview),
+      occurredAt: receiptOccurredAt(draft.date, draft.time).toISOString(),
+      reference: text(draft.reference),
       scanId: result.logId,
-      status: 'verified',
-      type: 'expense',
+      storagePath: text(result.storagePath),
     });
-    return {destination: 'smartlife_finance_month', documentIds: [id]};
+    return {
+      destination: 'smartlife_finance_month',
+      documentIds: [saved.transactionId],
+      duplicate: saved.duplicate,
+    };
   }
 
   const entries = scheduleEntries(draft);

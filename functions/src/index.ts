@@ -1,4 +1,5 @@
 import {ImageAnnotatorClient} from "@google-cloud/vision";
+import {createHash} from "node:crypto";
 import {getApps, initializeApp} from "firebase-admin/app";
 import {getAuth} from "firebase-admin/auth";
 import {DocumentData, FieldValue, getFirestore, QuerySnapshot, Timestamp} from "firebase-admin/firestore";
@@ -1071,6 +1072,10 @@ export const analyzeScan = onCall(
     if (!uid) throw new HttpsError("unauthenticated", "Please sign in before scanning.");
 
     const storagePath = requireString(request.data?.storagePath, "storagePath");
+    const sourceImageHash = assistantString(request.data?.sourceImageHash, 64).toLowerCase();
+    if (sourceImageHash && !/^[a-f0-9]{64}$/.test(sourceImageHash)) {
+      throw new HttpsError("invalid-argument", "sourceImageHash is invalid.");
+    }
     const requestedType = requireString(request.data?.scanType, "scanType") as ScanRequestType;
     if (requestedType !== "auto" && requestedType !== "receipt" && requestedType !== "schedule") {
       throw new HttpsError("invalid-argument", "scanType must be auto, receipt, or schedule.");
@@ -1086,6 +1091,7 @@ export const analyzeScan = onCall(
       ownerId: uid,
       kind: requestedType,
       imagePath: storagePath,
+      ...(sourceImageHash ? {sourceImageHash} : {}),
       status: "processing",
       extractedText: "",
       errorMessage: "",
@@ -1424,6 +1430,42 @@ type ReviewedReceiptItem = {
   unitPrice: number;
 };
 
+function receiptDedupeKeys({
+  amount,
+  items,
+  merchant,
+  occurredAt,
+  reference,
+  sourceImageHash,
+}: {
+  amount: number;
+  items: ReviewedReceiptItem[];
+  merchant: string;
+  occurredAt: Date;
+  reference: string;
+  sourceImageHash: string;
+}) {
+  const normalized = (value: string) => value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "")
+    .slice(0, 180);
+  const normalizedReference = normalized(reference);
+  const minute = occurredAt.toISOString().slice(0, 16);
+  const itemSignature = items
+    .slice(0, 20)
+    .map((item) => `${normalized(item.name)}:${item.quantity}:${item.finalPrice.toFixed(2)}`)
+    .join("|");
+  const rawKeys = [
+    sourceImageHash ? `image:${sourceImageHash}` : "",
+    normalizedReference ? `reference:${normalizedReference}:${amount.toFixed(2)}` : "",
+    `semantic:${normalized(merchant)}:${amount.toFixed(2)}:${minute}:${itemSignature}`,
+  ].filter(Boolean);
+  return [...new Set(rawKeys.map((value) =>
+    createHash("sha256").update(value).digest("hex"),
+  ))];
+}
+
 function reviewedReceiptNumber(value: unknown, label: string, maximum: number) {
   const number = Number(value);
   if (!Number.isFinite(number) || number < 0 || number > maximum) {
@@ -1495,6 +1537,7 @@ export const saveReviewedReceipt = onCall(
     }
     const confidence = reviewedReceiptNumber(request.data?.confidence, "confidence", 1);
     const items = reviewedReceiptItems(request.data?.items ?? []);
+    const reference = assistantString(request.data?.reference, 180);
     const occurredAtDate = new Date(requireString(request.data?.occurredAt, "occurredAt"));
     const earliest = Date.UTC(2000, 0, 1);
     const latest = Date.UTC(2100, 0, 1);
@@ -1515,7 +1558,38 @@ export const saveReviewedReceipt = onCall(
         throw new HttpsError("permission-denied", "This OCR scan cannot be saved by the current user.");
       }
       if (typeof scan.correctedTransactionId === "string" && scan.correctedTransactionId) {
-        return scan.correctedTransactionId;
+        return {duplicate: true, transactionId: scan.correctedTransactionId};
+      }
+
+      const sourceImageHash = assistantString(scan.sourceImageHash, 64).toLowerCase();
+      const dedupeKeys = receiptDedupeKeys({
+        amount,
+        items,
+        merchant,
+        occurredAt: occurredAtDate,
+        reference,
+        sourceImageHash: /^[a-f0-9]{64}$/.test(sourceImageHash) ? sourceImageHash : "",
+      });
+      const dedupeCollection = db.collection("users").doc(uid).collection("receiptDedupe");
+      for (const key of dedupeKeys) {
+        const marker = await write.get(dedupeCollection.doc(key));
+        const existingTransactionId = marker.exists ? marker.get("transactionId") : undefined;
+        if (typeof existingTransactionId === "string" && existingTransactionId) {
+          const existingTransaction = await write.get(
+            db.collection("users").doc(uid).collection("transactions").doc(existingTransactionId),
+          );
+          if (!existingTransaction.exists) continue;
+          const now = FieldValue.serverTimestamp();
+          write.update(scanRef, {
+            correctedAt: now,
+            correctedByUser: true,
+            correctedTransactionId: existingTransactionId,
+            needsReview: false,
+            verificationStatus: "verified",
+            updatedAt: now,
+          });
+          return {duplicate: true, transactionId: existingTransactionId};
+        }
       }
 
       const now = FieldValue.serverTimestamp();
@@ -1524,6 +1598,8 @@ export const saveReviewedReceipt = onCall(
         category,
         confidence,
         createdAt: now,
+        dedupeKeys,
+        fingerprint: dedupeKeys[0],
         items,
         merchant,
         note: "นำเข้าจาก Smart Scan OCR",
@@ -1532,6 +1608,7 @@ export const saveReviewedReceipt = onCall(
         receiptPath: storagePath,
         reviewedByUser: true,
         scanId,
+        source: "receipt_scan",
         status: "verified",
         type: "expense",
         updatedAt: now,
@@ -1552,9 +1629,14 @@ export const saveReviewedReceipt = onCall(
         verificationStatus: "verified",
         updatedAt: now,
       });
-      return transactionRef.id;
+      dedupeKeys.forEach((key) => write.set(dedupeCollection.doc(key), {
+        createdAt: now,
+        ownerId: uid,
+        transactionId: transactionRef.id,
+      }));
+      return {duplicate: false, transactionId: transactionRef.id};
     });
-    return {transactionId};
+    return transactionId;
   },
 );
 

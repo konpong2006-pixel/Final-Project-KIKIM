@@ -29,7 +29,7 @@ export type UploadedOcrResult = OcrResult & {
 
 const functions = getFunctions(firebaseApp, 'asia-southeast1');
 const analyzeScan = httpsCallable<
-  {scanType: ScanType; storagePath: string},
+  {scanType: ScanType; sourceImageHash: string; storagePath: string},
   OcrResult
 >(functions, 'analyzeScan');
 
@@ -46,20 +46,21 @@ export type ReviewedReceiptPayload = {
   }[];
   merchant: string;
   occurredAt: string;
+  reference?: string;
   scanId: string;
   storagePath: string;
 };
 
 const saveReviewedReceiptCall = httpsCallable<
   ReviewedReceiptPayload,
-  {transactionId: string}
+  {duplicate: boolean; transactionId: string}
 >(functions, 'saveReviewedReceipt');
 
 export async function saveReviewedReceipt(payload: ReviewedReceiptPayload) {
-  if (isDemoMode) return `demo-transaction-${Date.now()}`;
+  if (isDemoMode) return {duplicate: false, transactionId: `demo-transaction-${Date.now()}`};
   await ensureAppCheckReady();
   const response = await saveReviewedReceiptCall(payload);
-  return response.data.transactionId;
+  return response.data;
 }
 
 export async function uploadAndAnalyzeScan({
@@ -101,6 +102,10 @@ export async function uploadAndAnalyzeScan({
   }
   const kind: UploadKind = scanType === 'auto' ? 'scans' : scanType === 'receipt' ? 'receipts' : 'schedules';
   const upload = await uploadUserImage({contentType, kind, uid, uri});
-  const response = await analyzeScan({scanType, storagePath: upload.path});
+  const response = await analyzeScan({
+    scanType,
+    sourceImageHash: upload.imageHash,
+    storagePath: upload.path,
+  });
   return {...response.data, downloadUrl: upload.downloadUrl, storagePath: upload.path};
 }

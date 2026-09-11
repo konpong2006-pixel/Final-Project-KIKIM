@@ -1,4 +1,5 @@
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
+import * as Crypto from 'expo-crypto';
 
 import { storage } from '@/lib/firebase';
 
@@ -90,6 +91,13 @@ export async function uploadUserImage({
 }) {
   console.log('[SmartScan] Preparing Firebase Storage upload', {contentType, kind, uriScheme: uri.split(':')[0]});
   const blob = await localImageUriToBlob(uri);
+  const imageHashBuffer = await Crypto.digest(
+    Crypto.CryptoDigestAlgorithm.SHA256,
+    await blob.arrayBuffer(),
+  );
+  const imageHash = Array.from(new Uint8Array(imageHashBuffer), (byte) =>
+    byte.toString(16).padStart(2, '0'),
+  ).join('');
   const extension = extensionFromContentType(contentType);
   const fileName = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${extension}`;
   const path = `users/${uid}/${kind}/${fileName}`;
@@ -101,7 +109,7 @@ export async function uploadUserImage({
     throw error;
   }
 
-  return { downloadUrl: await getDownloadURL(storageRef), path };
+  return { downloadUrl: await getDownloadURL(storageRef), imageHash, path };
 }
 
 export async function uploadAssistantFile({

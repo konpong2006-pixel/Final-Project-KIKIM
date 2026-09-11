@@ -365,6 +365,7 @@ function ReceiptScanDashboard({
   imageUri,
   onDraftChange,
   onNavigate,
+  pendingCount,
   pick,
   result,
   saving,
@@ -375,6 +376,7 @@ function ReceiptScanDashboard({
   imageUri: string;
   onDraftChange: (key: string, value: string) => void;
   onNavigate: UserNavigate;
+  pendingCount: number;
   pick: (source: "camera" | "library") => Promise<void>;
   result: OcrResult | null;
   saving: boolean;
@@ -502,6 +504,14 @@ function ReceiptScanDashboard({
           </>
         ) : (
           <>
+            {pendingCount > 0 ? (
+              <View style={receiptStyles.batchNotice}>
+                <MaterialIcon color="#6573ad" name="photo_library" size={19} />
+                <Text style={receiptStyles.batchNoticeText}>
+                  มีใบเสร็จรอประมวลผลอีก {pendingCount} รูป
+                </Text>
+              </View>
+            ) : null}
             <View style={receiptStyles.sourceImageCard}>
               <View style={receiptStyles.sourceImageHeader}>
                 <View style={{ flex: 1 }}>
@@ -763,7 +773,11 @@ function ReceiptScanDashboard({
               >
                 <MaterialIcon color="#fff" name="check" size={19} />
                 <Text style={receiptStyles.saveText}>
-                  {saving ? "กำลังบันทึก..." : "บันทึกรายจ่ายนี้"}
+                  {saving
+                    ? "กำลังบันทึก..."
+                    : pendingCount > 0
+                      ? `บันทึกและไปใบถัดไป (เหลือ ${pendingCount})`
+                      : "บันทึกรายจ่ายนี้"}
                 </Text>
               </LinearGradient>
             </Pressable>
@@ -793,6 +807,17 @@ function ReceiptDetail({ label, value }: { label: string; value: string }) {
 }
 
 const receiptStyles = StyleSheet.create({
+  batchNotice: {
+    alignItems: "center",
+    backgroundColor: "#eef0fb",
+    borderRadius: 14,
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 13,
+    paddingHorizontal: 13,
+    paddingVertical: 11,
+  },
+  batchNoticeText: { color: "#59669d", flex: 1, fontFamily: F.s, fontSize: 12 },
   analysis: {
     backgroundColor: "#fff",
     borderRadius: 20,
@@ -1072,6 +1097,7 @@ export default function ScanScreen({
   const [result, setResult] = useState<OcrResult | null>(null);
   const [draft, setDraft] = useState<Record<string, unknown>>({});
   const [imageUri, setImageUri] = useState("");
+  const [pendingAssets, setPendingAssets] = useState<ImagePicker.ImagePickerAsset[]>([]);
   const [imageAspectRatio, setImageAspectRatio] = useState(1);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -1108,7 +1134,7 @@ export default function ScanScreen({
       feedbackTimer.current = setTimeout(() => setFeedback(null), hideAfter);
   };
 
-  const handleClearData = () => {
+  const resetCurrentScan = (clearPendingAssets: boolean) => {
     if (feedbackTimer.current) clearTimeout(feedbackTimer.current);
     feedbackTimer.current = null;
     scanGeneration.current += 1;
@@ -1128,6 +1154,81 @@ export default function ScanScreen({
     setSaveComplete(false);
     setSaving(false);
     setFeedback(null);
+    if (clearPendingAssets) setPendingAssets([]);
+  };
+
+  const handleClearData = () => resetCurrentScan(true);
+
+  const analyzeAsset = async (
+    asset: ImagePicker.ImagePickerAsset,
+    generation: number,
+  ) => {
+    try {
+      const contentType = contentTypeForAsset(asset);
+      console.log("[SmartScan] Image selected", {
+        contentType,
+        fileName: asset.fileName,
+        fileSize: asset.fileSize,
+        height: asset.height,
+        uriScheme: asset.uri.split(":")[0],
+        width: asset.width,
+      });
+      setImageUri(asset.uri);
+      setImageAspectRatio(
+        asset.width && asset.height ? asset.width / asset.height : 1,
+      );
+      setResult(null);
+      setSaveComplete(false);
+      showFeedback({
+        phase: "loading",
+        subtitle:
+          page === "smartlife_scan_finance"
+            ? "iApp กำลังอ่านร้านค้า รายการสินค้า และยอดชำระ"
+            : "กำลังตรวจชนิดเอกสารและแยกข้อความ",
+        title: "กำลังอ่านเอกสาร",
+      });
+
+      const response = await uploadAndAnalyzeScan({
+        uid,
+        scanType: page === "smartlife_scan_finance" ? "receipt" : "auto",
+        uri: asset.uri,
+        contentType,
+      });
+      if (generation !== scanGeneration.current) return false;
+      setResult(response);
+      setRawOcrText(response.rawText ?? "");
+      setDraft(
+        response.scanType === "schedule"
+          ? scheduleDraft(response.parsed, institutionType, schoolTerm)
+          : {
+              ...response.parsed,
+              items: normalizeReceiptItems(response.parsed.items),
+              total: firstPresentValue(
+                response.parsed.total,
+                response.parsed.amount,
+                response.parsed.totalAmount,
+              ) ?? "",
+            },
+      );
+      showFeedback(
+        {
+          phase: "success",
+          subtitle:
+            response.scanType === "receipt"
+              ? "ตรวจพบสลิปหรือใบเสร็จ"
+              : `ตรวจพบตารางเรียน${institutionType === "high-school" ? "มัธยมศึกษา" : "มหาวิทยาลัย"}`,
+          title: "อ่านเอกสารสำเร็จ",
+        },
+        950,
+      );
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[SmartScan] Read, upload, or OCR failed", {error, message});
+      showFeedback(null);
+      Alert.alert("สแกนไม่สำเร็จ", message || "กรุณาถ่ายภาพใหม่ให้ชัดขึ้น");
+      return false;
+    }
   };
 
   const pick = async (source: "camera" | "library") => {
@@ -1163,73 +1264,19 @@ export default function ScanScreen({
             })
           : await ImagePicker.launchImageLibraryAsync({
               allowsEditing: false,
+              allowsMultipleSelection: page === "smartlife_scan_finance",
               mediaTypes: ["images"],
               quality: 0.9,
+              selectionLimit: page === "smartlife_scan_finance" ? 10 : 1,
             });
       if (picked.canceled || !picked.assets?.[0]) {
         console.log("[SmartScan] Image selection canceled", { source });
         return;
       }
 
-      const asset = picked.assets[0];
-      const contentType = contentTypeForAsset(asset);
-      console.log("[SmartScan] Image selected", {
-        contentType,
-        fileName: asset.fileName,
-        fileSize: asset.fileSize,
-        height: asset.height,
-        uriScheme: asset.uri.split(":")[0],
-        width: asset.width,
-      });
-      setImageUri(asset.uri);
-      setImageAspectRatio(
-        asset.width && asset.height ? asset.width / asset.height : 1,
-      );
-      setResult(null);
-      setSaveComplete(false);
-      showFeedback({
-        phase: "loading",
-        subtitle:
-          page === "smartlife_scan_finance"
-            ? "iApp กำลังอ่านร้านค้า รายการสินค้า และยอดชำระ"
-            : "กำลังตรวจชนิดเอกสารและแยกข้อความ",
-        title: "กำลังอ่านเอกสาร",
-      });
-
-      const response = await uploadAndAnalyzeScan({
-        uid,
-        // Finance is a dedicated receipt flow. Planner scans remain automatic.
-        scanType: page === "smartlife_scan_finance" ? "receipt" : "auto",
-        uri: asset.uri,
-        contentType,
-      });
-      if (generation !== scanGeneration.current) return;
-      setResult(response);
-      setRawOcrText(response.rawText ?? "");
-      setDraft(
-        response.scanType === "schedule"
-          ? scheduleDraft(response.parsed, institutionType, schoolTerm)
-          : {
-              ...response.parsed,
-              items: normalizeReceiptItems(response.parsed.items),
-              total: firstPresentValue(
-                response.parsed.total,
-                response.parsed.amount,
-                response.parsed.totalAmount,
-              ) ?? "",
-            },
-      );
-      showFeedback(
-        {
-          phase: "success",
-          subtitle:
-            response.scanType === "receipt"
-              ? "ตรวจพบสลิปหรือใบเสร็จ"
-              : `ตรวจพบตารางเรียน${institutionType === "high-school" ? "มัธยมศึกษา" : "มหาวิทยาลัย"}`,
-          title: "อ่านเอกสารสำเร็จ",
-        },
-        950,
-      );
+      const assets = source === "library" ? picked.assets : [picked.assets[0]];
+      setPendingAssets(assets.slice(1));
+      await analyzeAsset(assets[0], generation);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error("[SmartScan] Pick, read, upload, or OCR failed", {
@@ -1376,6 +1423,7 @@ export default function ScanScreen({
 
   const persistOcrResult = async () => {
     if (!result || saving) return;
+    const nextAsset = pendingAssets[0];
     setSaving(true);
     showFeedback({
       phase: "loading",
@@ -1393,11 +1441,19 @@ export default function ScanScreen({
         phase: "success",
         subtitle:
           result.scanType === "receipt"
-            ? "เพิ่มรายการไปยังหน้าการเงินแล้ว"
+            ? saved.duplicate
+              ? "ตรวจพบรายการเดิม จึงไม่เพิ่มยอดซ้ำ"
+              : "เพิ่มรายการไปยังหน้าการเงินแล้ว"
             : "เพิ่มรายวิชาไปยังปฏิทินแล้ว",
-        title: "บันทึกสำเร็จ",
+        title: saved.duplicate ? "ข้ามรายการซ้ำแล้ว" : "บันทึกสำเร็จ",
       });
       setTimeout(() => {
+        if (result.scanType === "receipt" && nextAsset) {
+          setPendingAssets((current) => current.slice(1));
+          resetCurrentScan(false);
+          void analyzeAsset(nextAsset, scanGeneration.current);
+          return;
+        }
         handleClearData();
         onNavigate(
           result.scanType === "receipt"
@@ -1458,6 +1514,7 @@ export default function ScanScreen({
         imageUri={imageUri}
         onDraftChange={updateDraft}
         onNavigate={onNavigate}
+        pendingCount={pendingAssets.length}
         pick={pick}
         result={result}
         saving={saving}

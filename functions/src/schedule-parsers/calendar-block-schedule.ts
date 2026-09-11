@@ -6,6 +6,7 @@ import {ruledLines, type ScanPixels} from "./image-pixels";
 import type {DayMark, ScheduleLayout, TimeMark} from "./schedule-layout";
 import type {StandardScheduleEntry} from "./types";
 import {
+  COURSE_CODE,
   findCodes,
   groupLines,
   hhmm,
@@ -15,6 +16,7 @@ import {
   SECTION_LABEL,
   THAI_DAYS,
   TIME_RANGE,
+  toWord,
   type Word,
 } from "./vision-schedule-grid";
 
@@ -67,6 +69,12 @@ export type BlockEvidence = {
   measuredStart: boolean;
   /** A time range was printed inside the block. */
   printed: boolean;
+  /**
+   * No trustworthy time scale reaches this class -- the label fit was refused,
+   * or the class lies outside the grid the labels span -- so its times were
+   * not measured at all, rather than measured wrongly.
+   */
+  unmeasurable: boolean;
 };
 export type CalendarBlockGeometry = {
   blocks: number;
@@ -94,41 +102,50 @@ function joinWrapped(parts: string[]) {
 }
 
 /**
- * Which day a position on the day axis falls in. A header that starts the
- * week on Sunday puts อา. first, so Sunday counts as day -1 there to keep the
- * header in order; a header OCR missed is recovered from the even spacing of
- * the others, and with no even spacing only a position close to a header is
- * trusted.
+ * Which day a position on the day axis falls in.
+ *
+ * The columns come from where the headers sit, not from what they say: their
+ * spacing gives the column width, and each header gets a slot number. Which
+ * weekday slot 0 is is then decided by vote -- the start day most headers
+ * agree with -- so one misread header cannot scramble the week. On a phone
+ * screenshot Vision read the narrow "จ." as "ส.", and trusting labels one by
+ * one left every Monday class with no day at all. Weeks starting on Sunday
+ * or Monday need no special case.
  */
 function dayScale(marks: DayMark[], at: (box: Box) => number) {
-  const monday = marks.find((mark) => mark.day === 0);
-  const points = marks.map((mark) => {
-    const pos = at(mark.word);
-    const sundayFirst = mark.day === 6 && (monday ? pos < at(monday.word) : marks.every((other) => other === mark || pos < at(other.word)));
-    return {ordinal: sundayFirst ? -1 : mark.day, pos, size: Math.max(mark.word.right - mark.word.left, mark.word.bottom - mark.word.top)};
-  }).sort((a, b) => a.pos - b.pos)
-    .filter((point, index, all) => all.findIndex((other) => other.ordinal === point.ordinal) === index);
-  const steps: number[] = [];
-  let ordered = true;
-  for (let index = 1; index < points.length; index += 1) {
-    const days = points[index].ordinal - points[index - 1].ordinal;
-    if (days <= 0) ordered = false;
-    else steps.push((points[index].pos - points[index - 1].pos) / days);
+  const none = {at: (): number | null => null, extent: null as {from: number; to: number} | null, pitch: 0};
+  const points = marks.map((mark) => ({day: mark.day, pos: at(mark.word)})).sort((a, b) => a.pos - b.pos);
+  if (points.length < 3) return none;
+  const gaps = points.slice(1).map((point, index) => point.pos - points[index].pos);
+  const typical = median(gaps);
+  // Pieces of one header ("พ" + "ฤ") sit far closer than any two columns.
+  const real = gaps.filter((gap) => gap >= typical * 0.4);
+  if (!real.length) return none;
+  const smallest = Math.min(...real);
+  const pitch = median(real.filter((gap) => gap <= smallest * 1.35));
+  if (!(pitch > 0)) return none;
+  const origin = points[0].pos;
+  const slots = points
+    .map((point) => ({day: point.day, exact: (point.pos - origin) / pitch}))
+    .map((point) => ({...point, slot: Math.round(point.exact)}))
+    .filter((point) => Math.abs(point.exact - point.slot) <= 0.3);
+  let best = {agree: -1, first: 0};
+  for (let first = 0; first < 7; first += 1) {
+    const agree = slots.filter((point) => (first + point.slot) % 7 === point.day).length;
+    if (agree > best.agree) best = {agree, first};
   }
-  const typical = median(steps);
-  const pitch = ordered && steps.length && steps.every((step) => Math.abs(step - typical) <= typical * 0.25) ? typical : 0;
+  if (best.agree < Math.max(3, Math.ceil(slots.length / 2))) return none;
+  const lastSlot = Math.max(...slots.map((point) => point.slot));
   return {
     at(pos: number): number | null {
-      if (!points.length) return null;
-      const nearest = points.reduce((best, point) => (Math.abs(point.pos - pos) < Math.abs(best.pos - pos) ? point : best));
-      if (!pitch) return Math.abs(nearest.pos - pos) <= nearest.size * 3 ? ((nearest.ordinal % 7) + 7) % 7 : null;
-      const offset = (pos - nearest.pos) / pitch;
-      const steps = Math.round(offset);
-      if (Math.abs(offset - steps) > 0.45) return null;
-      const ordinal = nearest.ordinal + steps;
-      return ordinal < -1 || ordinal > 6 ? null : ((ordinal % 7) + 7) % 7;
+      const exact = (pos - origin) / pitch;
+      const slot = Math.round(exact);
+      // A week has seven columns: never more than that, counting any the
+      // header missed at either end.
+      if (Math.abs(exact - slot) > 0.45 || slot < lastSlot - 6 || slot > 6) return null;
+      return (((best.first + slot) % 7) + 7) % 7;
     },
-    extent: points.length ? {from: points[0].pos - (pitch || points[0].size) / 2, to: points[points.length - 1].pos + (pitch || points[0].size) / 2} : null,
+    extent: {from: origin - pitch / 2, to: origin + (lastSlot + 0.5) * pitch},
     pitch,
   };
 }
@@ -142,9 +159,57 @@ function dayScale(marks: DayMark[], at: (box: Box) => number) {
  * lines can be seen, each label is pinned to the line it names -- the line
  * before it when labels sit mid-cell, the nearest line otherwise.
  */
+/** Least-squares minutes = a + b * position, with its residuals in minutes. */
+function fitLine(anchors: {minutes: number; pos: number}[]) {
+  const n = anchors.length;
+  const meanPos = anchors.reduce((sum, anchor) => sum + anchor.pos, 0) / n;
+  const meanMinutes = anchors.reduce((sum, anchor) => sum + anchor.minutes, 0) / n;
+  const spread = anchors.reduce((sum, anchor) => sum + (anchor.pos - meanPos) ** 2, 0);
+  const b = spread ? anchors.reduce((sum, anchor) => sum + (anchor.pos - meanPos) * (anchor.minutes - meanMinutes), 0) / spread : 0;
+  const a = meanMinutes - b * meanPos;
+  const residuals = anchors.map((anchor) => a + b * anchor.pos - anchor.minutes);
+  return {
+    a,
+    b,
+    max: Math.max(...residuals.map(Math.abs)),
+    rms: Math.sqrt(residuals.reduce((sum, r) => sum + r * r, 0) / n),
+  };
+}
+
+/**
+ * The time scale, or null when it cannot be trusted.
+ *
+ * Only labels that fall on one straight line count: every pair of labels
+ * proposes a line, and the one most labels agree with wins. A phone
+ * screenshot's status-bar clock ("14:40", above the grid, in the same column
+ * as the hour labels) agrees with none of them, where before it was taken as
+ * a label and put every morning class at 14:50. The survivors are pinned to
+ * the ruled lines where those can be seen, then fitted by least squares; a
+ * fit with a large residual, a backwards slope or times outside the day is
+ * refused rather than used -- a wrong time stated confidently is worse than
+ * one the user is asked for.
+ */
 function timeScale(marks: TimeMark[], at: (box: Box) => number, lines: number[], labelsMarkLines: boolean) {
-  const points = marks.map((mark) => ({minutes: mark.minutes, pos: at(mark.word)})).sort((a, b) => a.pos - b.pos);
-  if (points.length < 2) return null;
+  const all = marks.map((mark) => ({minutes: mark.minutes, pos: at(mark.word)})).sort((a, b) => a.pos - b.pos);
+  if (all.length < 3) return null;
+  let points: {minutes: number; pos: number}[] = [];
+  for (let i = 0; i < all.length; i += 1) {
+    for (let j = i + 1; j < all.length; j += 1) {
+      if (all[j].pos === all[i].pos) continue;
+      const b = (all[j].minutes - all[i].minutes) / (all[j].pos - all[i].pos);
+      if (!(b > 0)) continue;
+      const a = all[i].minutes - b * all[i].pos;
+      const agree = all.filter((point) => Math.abs(a + b * point.pos - point.minutes) <= 7);
+      if (agree.length > points.length) points = agree;
+    }
+  }
+  // Most labels must agree. A real scale has nearly every hour label on its
+  // line and a status-bar clock is one stray; a line only a few labels share
+  // is a coincidence, however straight.
+  if (points.length < Math.max(3, Math.ceil(all.length * 0.6))) {
+    console.warn("[Schedule calendar] Time labels do not form one scale.", {agreeing: points.length, labels: all.length});
+    return null;
+  }
   const rates = points.slice(1).map((point, index) => (point.pos - points[index].pos) / (point.minutes - points[index].minutes)).filter((rate) => rate > 0);
   const pxPerMinute = median(rates);
   if (!(pxPerMinute > 0)) return null;
@@ -174,15 +239,26 @@ function timeScale(marks: TimeMark[], at: (box: Box) => number, lines: number[],
     anchors = points.map((point) => ({minutes: point.minutes, pos: point.pos - pxPerMinute * stepMinutes / 2}));
   }
   anchors = anchors.filter((anchor, index) => !index || anchor.pos > anchors[index - 1].pos + 1);
-  if (anchors.length < 2) return null;
+  if (anchors.length < 3) return null;
+  let fit = fitLine(anchors);
+  // Pinning to a wrong line would show up here; the labels alone may still fit.
+  if (source === "gridlines" && (fit.rms > 4 || fit.max > 8)) {
+    anchors = points;
+    source = "labels";
+    fit = fitLine(anchors);
+  }
+  const first = Math.min(...anchors.map((anchor) => anchor.minutes));
+  const last = Math.max(...anchors.map((anchor) => anchor.minutes));
+  if (!(fit.b > 0) || fit.rms > 4 || fit.max > 8 || first < 0 || last > 24 * 60) {
+    console.warn("[Schedule calendar] Time scale refused.", {labels: anchors.length, max: fit.max, rms: fit.rms, slope: fit.b});
+    return null;
+  }
+  const stepPx = stepMinutes / fit.b;
   return {
-    minutesAt(pos: number) {
-      let index = anchors.findIndex((anchor, k) => k < anchors.length - 1 && pos <= anchors[k + 1].pos);
-      if (index < 0) index = anchors.length - 2;
-      const a = anchors[index];
-      const b = anchors[index + 1];
-      return a.minutes + (pos - a.pos) * (b.minutes - a.minutes) / (b.pos - a.pos);
-    },
+    /** How far the fitted labels reach, a step either side: the grid itself. */
+    grid: {from: Math.min(...anchors.map((anchor) => anchor.pos)) - stepPx, to: Math.max(...anchors.map((anchor) => anchor.pos)) + stepPx},
+    minutesAt: (pos: number) => fit.a + fit.b * pos,
+    rms: Number(fit.rms.toFixed(2)),
     source,
   };
 }
@@ -214,7 +290,10 @@ function readBlockText(lines: string[]) {
     line = line.replace(/^[\s|:–—-]+|[\s|:–—-]+$/g, "").replace(/\s{2,}/g, " ");
     if (line) name.push(line);
   }
-  return {name: name.length ? joinWrapped(name) : null, room, section, time};
+  // Vision splits Thai into words, and a gap it leaves between two of them is
+  // not a space the portal printed ("เสนอ ทาง" on the real scan).
+  const joined = name.length ? joinWrapped(name).replace(/([฀-๿])\s+(?=[฀-๿])/g, "$1") : null;
+  return {name: joined, room, section, time};
 }
 
 export function parseCalendarBlocks(layout: ScheduleLayout, pixels: ScanPixels | null): CalendarBlockGeometry {
@@ -243,6 +322,30 @@ export function parseCalendarBlocks(layout: ScheduleLayout, pixels: ScanPixels |
 
   const gridWords = words.filter((word) => axes.timeCenter(word) > headerEdge && axes.dayCenter(word) > labelEdge);
   const codes = findCodes(groupLines(gridWords));
+  // A code wrapped in a narrow column: the real portal printed "IST20" over
+  // "1506 |", and neither piece is a code on its own. A piece whose
+  // continuation sits right under it is joined -- only where the portal's
+  // "CODE | NAME" separator follows, so a room number is never glued on.
+  const taken = new Set(codes.flatMap((code) => code.words));
+  for (const upper of gridWords) {
+    if (taken.has(upper) || !/^(?:[A-Z]{2,5}\d{0,6}|\d{3,7})$/i.test(upper.text)) continue;
+    const lower = gridWords.find((word) => !taken.has(word) && word !== upper && /^\d{1,6}\|?$/.test(word.text) &&
+      // The next line down: small block text has a line gap as tall as the
+      // text itself (10 px under 9 px letters on the real scan).
+      Math.abs(word.left - upper.left) <= upper.height && word.top > upper.top && word.top - upper.bottom <= upper.height * 1.6);
+    if (!lower) continue;
+    const text = `${upper.text}${lower.text.replace(/\|$/, "")}`.toUpperCase();
+    const separated = lower.text.endsWith("|") || gridWords.some((word) => word.text === "|" &&
+      Math.abs(word.cy - lower.cy) < lower.height && word.left >= lower.right - 2 && word.left - lower.right < lower.height);
+    if (!COURSE_CODE.test(text) || !separated) continue;
+    codes.push({
+      text,
+      word: toWord([{x: Math.min(upper.left, lower.left), y: upper.top}, {x: Math.max(upper.right, lower.right), y: lower.bottom}], text),
+      words: [upper, lower],
+    });
+    taken.add(upper);
+    taken.add(lower);
+  }
   const codeWords = new Set(codes.flatMap((code) => code.words));
   const contains = (box: Box, word: Word, pad = 2) =>
     word.cx >= box.left - pad && word.cx <= box.right + pad && word.cy >= box.top - pad && word.cy <= box.bottom + pad;
@@ -255,15 +358,17 @@ export function parseCalendarBlocks(layout: ScheduleLayout, pixels: ScanPixels |
   // included.
   const classBlocks = layout.blocks.filter((block) => codes.some((code) => contains(block, code.word, 0)));
   const spacing = lines.length >= 2 ? median(lines.slice(1).map((line, index) => line - lines[index])) : 0;
+  // Either way: the real portal's blocks carry a border that overhangs the
+  // hour line by a few pixels, which read every end five to ten minutes late.
   const inset = (edge: (box: Box) => number, sign: 1 | -1) => {
     if (!spacing) return 0;
     const gaps = classBlocks.flatMap((block) => {
       const at = edge(block);
       const nearest = lines.reduce((best, line) => (Math.abs(line - at) < Math.abs(best - at) ? line : best));
-      const gap = (at - nearest) * sign;
-      return Math.abs(at - nearest) <= spacing * 0.12 && gap >= 0 ? [gap] : [];
+      return Math.abs(at - nearest) <= spacing * 0.12 ? [(at - nearest) * sign] : [];
     });
-    return gaps.length ? Math.min(median(gaps), spacing * 0.12) : 0;
+    const typical = gaps.length ? median(gaps) : 0;
+    return Math.max(-spacing * 0.12, Math.min(typical, spacing * 0.12));
   };
   const startInset = inset(axes.timeStart, 1);
   const endInset = inset(axes.timeEnd, -1);
@@ -301,16 +406,30 @@ export function parseCalendarBlocks(layout: ScheduleLayout, pixels: ScanPixels |
     // The code's own line first (its text runs straight on after the code),
     // then the wrapped lines below, each rebuilt from words that overlap in y.
     const textLines = groupLines(region).map(joinLine);
+    // A code wrapped in a narrow column -- "IST20150" on one line, "6 |
+    // สุขภาพองค์รวม" on the next. What comes before the "|" is the code's.
+    let codeText = code.text;
+    const tail = textLines[0]?.match(/^([A-Z0-9]{1,4})\s*\|/i);
+    if (tail && COURSE_CODE.test(`${codeText}${tail[1].toUpperCase()}`)) {
+      codeText = `${codeText}${tail[1].toUpperCase()}`;
+      textLines[0] = textLines[0].slice(tail[1].length);
+    }
     const cell = readBlockText(textLines);
 
     let start: number | null = null;
     let end: number | null = null;
-    const facts: BlockEvidence = {cut: false, measuredEnd: false, measuredStart: false, printed: false};
+    const facts: BlockEvidence = {cut: false, measuredEnd: false, measuredStart: false, printed: false, unmeasurable: false};
+    const leading = axes.timeStart(block ?? code.word);
     if (cell.time && cell.time.end > cell.time.start) {
       start = cell.time.start;
       end = cell.time.end;
       facts.printed = facts.measuredStart = facts.measuredEnd = true;
-    } else if (block && scale) {
+    } else if (!scale || leading < scale.grid.from || leading > scale.grid.to) {
+      // Nothing trustworthy to measure against: the label fit was refused,
+      // or this sits outside the grid the labels span (a screen header, a
+      // tab bar). Left unmeasured, and the cross-check says so.
+      facts.unmeasurable = true;
+    } else if (block) {
       start = round5(scale.minutesAt(axes.timeStart(block) - startInset));
       facts.measuredStart = true;
       facts.cut = pageEnd - axes.timeEnd(block) <= 3 / (pixels?.scale ?? 1) + 1;
@@ -318,7 +437,7 @@ export function parseCalendarBlocks(layout: ScheduleLayout, pixels: ScanPixels |
         end = round5(scale.minutesAt(axes.timeEnd(block) + endInset));
         facts.measuredEnd = true;
       }
-    } else if (scale) {
+    } else {
       // Text starts a little inside its block; this is only an estimate, and
       // the cross-check says so unless the model agrees.
       start = round5(scale.minutesAt(axes.timeStart(code.word) - height * 0.35));
@@ -332,18 +451,18 @@ export function parseCalendarBlocks(layout: ScheduleLayout, pixels: ScanPixels |
     const day = dayNumber === null ? null : THAI_DAYS[dayNumber];
     const startTime = start === null ? null : hhmm(start);
     const endTime = end === null ? null : hhmm(end);
-    const key = `${code.text}|${day}|${startTime}`;
+    const key = `${codeText}|${day}|${startTime}`;
     if (seen.has(key)) continue;
     seen.add(key);
     entries.push({
       buildingName: cell.room,
       classTime: startTime && endTime ? `${startTime}-${endTime}` : null,
-      courseCode: code.text,
+      courseCode: codeText,
       courseName: cell.name,
       day,
       endTime,
       parserSource: "vision-calendar-block",
-      raw: [code.text, ...textLines].join("\n"),
+      raw: [codeText, ...textLines].join("\n"),
       reviewFields: [],
       reviewNotes: [],
       room: cell.room,
@@ -464,6 +583,19 @@ const squash = (value: unknown) => String(value ?? "").toUpperCase().replace(/[^
  * the OCR text, not mark for mark.
  */
 const foldThai = (value: string) => value.normalize("NFKD").replace(/[็-๎]/g, "").replace(/า{2,}/g, "า");
+/** Share of letters two readings have in common: 1 - edit distance / the longer length. */
+function letterAgreement(a: string, b: string) {
+  if (!a || !b) return 0;
+  let previous = Array.from({length: b.length + 1}, (_, index) => index);
+  for (let i = 1; i <= a.length; i += 1) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j += 1) {
+      current[j] = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    previous = current;
+  }
+  return 1 - previous[b.length] / Math.max(a.length, b.length);
+}
 const minutesOf = (value: unknown) => {
   const match = String(value ?? "").trim().match(/^([01]?\d|2[0-3])[:.]([0-5]\d)$/);
   return match ? Number(match[1]) * 60 + Number(match[2]) : null;
@@ -529,7 +661,11 @@ export function crossCheckCalendarBlocks(
     const verified = offeredLetters.length >= 3 && ocrLetters.includes(offeredLetters);
     if (current) {
       if (squash(current) === squash(offered)) stats.agreed += 1;
-      else if (foldThai(squash(current)) === offeredLetters) {
+      else if (letterAgreement(foldThai(squash(current)), offeredLetters) >= 0.85) {
+        // OCR confirms nearly every letter of the model's reading; what
+        // differs is what OCR is known to get wrong in Thai -- a mark, one
+        // misread letter (the real scan read "นำ" as "บ้า"), one dropped
+        // syllable ("ผู้" of "ผู้ประกอบการธุรกิจ").
         entry.courseName = offered;
         stats.correctedNames += 1;
       } else if (verified) {
@@ -553,6 +689,15 @@ export function crossCheckCalendarBlocks(
       const offeredText = offered === null ? null : hhmm(offered);
       const current = minutesOf(entry[field]);
       const measured = Boolean(facts && (field === "startTime" ? facts.measuredStart : facts.measuredEnd));
+      if (facts?.unmeasurable) {
+        // The scan gave nothing to hold the model's time to, so it is
+        // offered in the note, never filled in as if it had been checked.
+        entry[field] = null;
+        flag(entry, field, offeredText ?
+          `${label}: วัดเวลาจากภาพไม่ได้ AI อ่านได้ "${offeredText}" แต่ยืนยันไม่ได้ จึงยังไม่กรอกให้` :
+          `${label}: วัดเวลาจากภาพไม่ได้ กรุณากรอกเอง`);
+        continue;
+      }
       if (field === "endTime" && facts?.cut) {
         entry.endTime = null;
         flag(entry, field, offeredText ?

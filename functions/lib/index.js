@@ -884,7 +884,8 @@ async function readCalendarBlockSchedule({ apiKey, fusedText, imageDataUrl, layo
     // Only the semester here: the review's day and time changes are for grids,
     // and on a calendar the block edges already decided those.
     const academicYear = temporalReview?.academicYear && fusedText.includes(temporalReview.academicYear) ? temporalReview.academicYear : null;
-    const term = fusedText.match(/ภาคการศึกษา(?:ที่)?\s*(\d)\s*\/\s*(\d{4})/);
+    // "ภาคการศึกษา 1/2569", or the real portal's "ภาคการศึกษา : 1/2569".
+    const term = fusedText.match(/ภาคการศึกษา(?:ที่)?\s*[:：]?\s*(\d)\s*\/\s*(\d{4})/);
     const literalAcademicYear = academicYear ?? term?.[2] ??
         fusedText.match(/(?:ปีการศึกษา|พ\.ศ\.)\s*[:\-]?\s*(\d{4})/)?.[1] ?? null;
     const usedTemporalReview = Boolean(academicYear || temporalReview?.semesterStart || temporalReview?.semesterEnd);

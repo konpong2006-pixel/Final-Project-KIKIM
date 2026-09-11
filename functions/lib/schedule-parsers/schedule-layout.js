@@ -74,12 +74,29 @@ function timeMarks(words) {
         return match ? [{ minutes: Number(match[1]) * 60 + Number(match[2]), word }] : [];
     });
 }
-/** The longest run of labels whose times rise in reading order -- a scale, not scattered times. */
+/**
+ * The longest run of labels whose times rise in reading order -- a scale, not
+ * scattered times. Longest, not first-come: a phone screenshot's status-bar
+ * clock ("14:40") sits above the 06:00 label in the same column, and taking
+ * labels greedily from the top kept the clock and threw away 06:00-14:00.
+ */
 function rising(marks) {
+    const length = marks.map(() => 1);
+    const previous = marks.map(() => -1);
+    for (let i = 0; i < marks.length; i += 1) {
+        for (let j = 0; j < i; j += 1) {
+            if (marks[j].minutes < marks[i].minutes && length[j] + 1 > length[i]) {
+                length[i] = length[j] + 1;
+                previous[i] = j;
+            }
+        }
+    }
+    let at = length.indexOf(Math.max(0, ...length));
     const kept = [];
-    for (const mark of marks)
-        if (!kept.length || mark.minutes > kept[kept.length - 1].minutes)
-            kept.push(mark);
+    while (at >= 0) {
+        kept.unshift(marks[at]);
+        at = previous[at];
+    }
     return kept;
 }
 function detectScheduleLayout(annotation, pixels) {

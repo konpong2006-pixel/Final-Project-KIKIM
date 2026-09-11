@@ -82,27 +82,6 @@ function decodeScanImage(dataUrl, sourceWidth = 0, sourceHeight = 0, maxSide = 1
     }
     return { data, height: h, scale: w / srcW, sourceHeight: srcH, sourceWidth: srcW, width: w };
 }
-/** The page colour: the most common colour, so a warm-lit photo's paper counts as background too. */
-function background(pixels) {
-    const counts = new Uint32Array(4096);
-    const sums = new Float64Array(4096 * 3);
-    for (let i = 0; i < pixels.width * pixels.height; i += 1) {
-        const r = pixels.data[i * 3];
-        const g = pixels.data[i * 3 + 1];
-        const b = pixels.data[i * 3 + 2];
-        const bin = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
-        counts[bin] += 1;
-        sums[bin * 3] += r;
-        sums[bin * 3 + 1] += g;
-        sums[bin * 3 + 2] += b;
-    }
-    let best = 0;
-    for (let bin = 1; bin < 4096; bin += 1)
-        if (counts[bin] > counts[best])
-            best = bin;
-    const n = counts[best] || 1;
-    return [sums[best * 3] / n, sums[best * 3 + 1] / n, sums[best * 3 + 2] / n];
-}
 /**
  * Filled, coloured rectangles -- the class blocks of a calendar view.
  *
@@ -114,17 +93,71 @@ function background(pixels) {
  */
 function colouredBlocks(pixels) {
     const { data, height: h, width: w } = pixels;
-    const bg = background(pixels);
+    // The background is taken row by row (the median colour of the row), not
+    // once for the page: the real portal fades its grid from white to peach,
+    // and against a single page colour the lower half of the grid counted as
+    // "coloured" and swallowed a pale peach class block, moving its top edge.
+    const step = Math.max(1, Math.floor(w / 200));
+    const rowBackground = Array.from({ length: h }, (_, y) => {
+        const channels = [[], [], []];
+        for (let x = 0; x < w; x += step) {
+            const i = (y * w + x) * 3;
+            channels[0].push(data[i]);
+            channels[1].push(data[i + 1]);
+            channels[2].push(data[i + 2]);
+        }
+        return channels.map((values) => values.sort((a, b) => a - b)[Math.floor(values.length / 2)]);
+    });
     const mask = new Uint8Array(w * h);
     for (let i = 0; i < w * h; i += 1) {
         const r = data[i * 3];
         const g = data[i * 3 + 1];
         const b = data[i * 3 + 2];
+        const bg = rowBackground[Math.floor(i / w)];
         const max = Math.max(r, g, b);
         const chroma = max - Math.min(r, g, b);
         const distance = Math.abs(r - bg[0]) + Math.abs(g - bg[1]) + Math.abs(b - bg[2]);
         if (chroma >= 16 && max >= 70 && distance >= 36)
             mask[i] = 1;
+    }
+    // Thin coloured lines are not blocks. A portal that rules its grid in
+    // orange joined every block to every line, and the one grid-sized region
+    // that made was discarded as a tinted page -- so the real scan found no
+    // blocks at all. An opening (erode, then grow back) removes anything
+    // thinner than the kernel and leaves filled blocks their shape.
+    const radius = Math.max(2, Math.round(Math.min(w, h) * 0.004));
+    const eroded = new Uint8Array(w * h);
+    for (let y = radius; y < h - radius; y += 1) {
+        for (let x = radius; x < w - radius; x += 1) {
+            let keep = 1;
+            for (let dy = -radius; dy <= radius && keep; dy += 1) {
+                const row = (y + dy) * w;
+                if (!mask[row + x - radius] || !mask[row + x + radius] || !mask[row + x])
+                    keep = 0;
+            }
+            for (let dx = -radius; dx <= radius && keep; dx += 1) {
+                if (!mask[y * w + x + dx])
+                    keep = 0;
+            }
+            eroded[y * w + x] = keep;
+        }
+    }
+    mask.fill(0);
+    for (let y = 0; y < h; y += 1) {
+        for (let x = 0; x < w; x += 1) {
+            if (!eroded[y * w + x])
+                continue;
+            for (let dy = -radius; dy <= radius; dy += 1) {
+                const yy = y + dy;
+                if (yy < 0 || yy >= h)
+                    continue;
+                for (let dx = -radius; dx <= radius; dx += 1) {
+                    const xx = x + dx;
+                    if (xx >= 0 && xx < w)
+                        mask[yy * w + xx] = 1;
+                }
+            }
+        }
     }
     const queue = new Int32Array(w * h);
     const boxes = [];
@@ -191,13 +224,14 @@ function colouredBlocks(pixels) {
  * `span` is the band across the lines and `range` the stretch searched along
  * them, both in source coordinates; returned positions are too.
  *
- * A row of pixels is a line when most of its uncoloured pixels are a little
- * darker than the page -- measured over uncoloured pixels only, since class
- * blocks cover part of every line.
+ * A line is a thin band whose typical colour -- the median across the span --
+ * differs from the rows just before and after it. The median ignores class
+ * blocks (they never cover most of a row) and the comparison with close
+ * neighbours ignores a background that slowly changes colour, so grey,
+ * orange or any other ruling is found; the first version looked only for
+ * grey lines darker than the page, and a real portal rules its grid in orange.
  */
 function ruledLines(pixels, direction, span, range) {
-    const bg = background(pixels);
-    const bgLuma = 0.299 * bg[0] + 0.587 * bg[1] + 0.114 * bg[2];
     const s = pixels.scale;
     const across = direction === "horizontal" ? pixels.width : pixels.height;
     const along = direction === "horizontal" ? pixels.height : pixels.width;
@@ -207,25 +241,33 @@ function ruledLines(pixels, direction, span, range) {
     const rangeTo = Math.min(along - 1, Math.ceil(range.to * s));
     if (spanTo - spanFrom < 10 || rangeTo <= rangeFrom)
         return [];
-    const hits = [];
-    for (let line = rangeFrom; line <= rangeTo; line += 1) {
-        let plain = 0;
-        let dark = 0;
-        for (let t = spanFrom; t <= spanTo; t += 1) {
+    const step = Math.max(1, Math.floor((spanTo - spanFrom) / 200));
+    const medianOf = (line) => {
+        if (line < 0 || line >= along)
+            return null;
+        const channels = [[], [], []];
+        for (let t = spanFrom; t <= spanTo; t += step) {
             const x = direction === "horizontal" ? t : line;
             const y = direction === "horizontal" ? line : t;
             const i = (y * pixels.width + x) * 3;
-            const r = pixels.data[i];
-            const g = pixels.data[i + 1];
-            const b = pixels.data[i + 2];
-            if (Math.max(r, g, b) - Math.min(r, g, b) >= 24)
-                continue;
-            plain += 1;
-            const luma = 0.299 * r + 0.587 * g + 0.114 * b;
-            if (luma <= bgLuma - 8 && luma >= bgLuma - 130)
-                dark += 1;
+            channels[0].push(pixels.data[i]);
+            channels[1].push(pixels.data[i + 1]);
+            channels[2].push(pixels.data[i + 2]);
         }
-        if (plain >= (spanTo - spanFrom) * 0.2 && dark >= plain * 0.6)
+        return channels.map((values) => values.sort((a, b) => a - b)[Math.floor(values.length / 2)]);
+    };
+    const medians = new Map();
+    const at = (line) => {
+        if (!medians.has(line))
+            medians.set(line, medianOf(line));
+        return medians.get(line) ?? null;
+    };
+    const apart = (a, b) => !a || !b ? 0 : Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]);
+    const k = 3;
+    const hits = [];
+    for (let line = rangeFrom; line <= rangeTo; line += 1) {
+        const here = at(line);
+        if (apart(here, at(line - k)) >= 18 && apart(here, at(line + k)) >= 18)
             hits.push(line);
     }
     const lines = [];

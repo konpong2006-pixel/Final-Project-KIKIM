@@ -264,7 +264,8 @@ export function findCodes(lines: Word[][]) {
       for (let length = 1; length <= 3 && index + length <= line.length; length += 1) {
         const parts = line.slice(index, index + length);
         const gapsTight = parts.every((part, at) => !at || part.left - parts[at - 1].right < part.height * 0.6);
-        const text = parts.map((part) => part.text).join("").toUpperCase();
+        // A trailing "|" is the "CODE | NAME" separator Vision sometimes glues on.
+        const text = parts.map((part) => part.text).join("").toUpperCase().replace(/\|+$/, "");
         if (!gapsTight || !COURSE_CODE.test(text)) continue;
         codes.push({text, word: toWord(parts.flatMap((part) => [{x: part.left, y: part.top}, {x: part.right, y: part.bottom}]), text), words: parts});
         index += length - 1;

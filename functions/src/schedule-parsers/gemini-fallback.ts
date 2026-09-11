@@ -1,3 +1,6 @@
+// Schemas here carry no minimum/maximum/maxItems/minItems: /v1/interactions
+// rejects them alongside nullable types ("Request contains an invalid
+// argument"), and the values are range-checked after parsing anyway.
 import type {StandardScheduleEntry} from "./types";
 
 export const SCHEDULE_TEMPORAL_REVIEW_SYSTEM_PROMPT = `You are a high-precision temporal verifier for Thai class schedules.
@@ -24,7 +27,7 @@ const SCHEDULE_TEMPORAL_SCHEMA = {
     academic_year: nullableString,
     semester_start: nullableString,
     semester_end: nullableString,
-    calendar_confidence: {type: "number", minimum: 0, maximum: 1},
+    calendar_confidence: {type: "number"},
     calendar_evidence: nullableString,
     entries: {
       type: "array",
@@ -32,11 +35,11 @@ const SCHEDULE_TEMPORAL_SCHEMA = {
         type: "object",
         additionalProperties: false,
         properties: {
-          entry_index: {type: "integer", minimum: 0},
+          entry_index: {type: "integer"},
           day: nullableString,
           start_time: nullableString,
           end_time: nullableString,
-          confidence: {type: "number", minimum: 0, maximum: 1},
+          confidence: {type: "number"},
           evidence: nullableString,
         },
         required: [
@@ -266,7 +269,7 @@ export async function reviewScheduleTemporalFieldsWithGemini({
   }
   const image = parseImageDataUrl(imageDataUrl);
   const response = await fetch(
-    "https://generativelanguage.googleapis.com/v1beta/interactions",
+    "https://generativelanguage.googleapis.com/v1/interactions",
     {
       method: "POST",
       headers: {
@@ -277,7 +280,11 @@ export async function reviewScheduleTemporalFieldsWithGemini({
         model: process.env.GEMINI_SCHEDULE_MODEL ?? "gemini-3.5-flash",
         store: false,
         system_instruction: SCHEDULE_TEMPORAL_REVIEW_SYSTEM_PROMPT,
-        input: [
+        // /v1/interactions takes content parts only inside a user_input step. These
+        // were sent bare, which v1beta accepted and v1 rejects ("The value 'image'
+        // is not supported for 'type'"), so after the 2026-08-07 move to v1 every
+        // one of these reviews failed and the scan kept its unreviewed values.
+        input: [{type: "user_input", content: [
           {
             type: "text",
             text: `Verify only temporal fields for these indexed candidates:\n${JSON.stringify(temporalCandidates(entries))}\n\nOCR hints:\n${rawText.slice(0, 30000)}`,
@@ -287,7 +294,7 @@ export async function reviewScheduleTemporalFieldsWithGemini({
             data: image.data,
             mime_type: image.mimeType,
           },
-        ],
+        ]}],
         response_format: {
           type: "text",
           mime_type: "application/json",

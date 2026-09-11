@@ -24,6 +24,8 @@ const gemini_course_exam_review_1 = require("./schedule-parsers/gemini-course-ex
 const vision_course_table_1 = require("./schedule-parsers/vision-course-table");
 const vision_exam_table_1 = require("./schedule-parsers/vision-exam-table");
 const vision_grid_table_1 = require("./schedule-parsers/vision-grid-table");
+const vision_schedule_grid_1 = require("./schedule-parsers/vision-schedule-grid");
+const gemini_grid_crosscheck_1 = require("./schedule-parsers/gemini-grid-crosscheck");
 const functions_1 = require("./adaptive-scheduling/functions");
 const service_probes_1 = require("./health/service-probes");
 var line_import_1 = require("./line-import");
@@ -626,7 +628,236 @@ async function readStorageDocumentWithVision(storagePath) {
     });
     return result;
 }
-async function parseSchedule(text, annotation, apiKey, imageDataUrl) {
+const GROUNDED_TEXT_FIELDS = [
+    ["courseName", "ชื่อวิชา"],
+    ["midtermExam", "สอบกลางภาค"],
+    ["finalExam", "สอบปลายภาค"],
+];
+const SCHEDULE_REVIEW_DEADLINE_MS = 40_000;
+const RECEIPT_TIMESTAMP_DEADLINE_MS = 20_000;
+const RECEIPT_REVIEW_DEADLINE_MS = 25_000;
+/**
+ * Resolves to null if `work` has not settled within `ms`.
+ *
+ * Every Gemini review in the scan pipeline failed in under a second from the
+ * 2026-08-07 move to /v1 until 2026-09-11, so no scan ever waited on one.
+ * Now they run, they have no timeouts of their own, and the app gives up on a
+ * scan after a fixed wait -- a slow model must cost its review, not the scan.
+ */
+async function withDeadline(work, ms, label) {
+    let timer;
+    const late = new Promise((resolve) => {
+        timer = setTimeout(() => {
+            console.warn(`[Scan] ${label} exceeded ${ms} ms; continuing without it.`);
+            resolve(null);
+        }, ms);
+    });
+    try {
+        return await Promise.race([work, late]);
+    }
+    finally {
+        clearTimeout(timer);
+    }
+}
+const trimmed = (value) => (typeof value === "string" ? value.trim() : "");
+/**
+ * Layers a model review onto the entries, keeping only what the OCR text
+ * bears out.
+ *
+ * The course/exam and temporal reviewers overwrite a course's code, day and
+ * times whenever the model claims enough confidence and quotes some evidence;
+ * nothing checked that the evidence was on the page. So for each field the
+ * reviewer changed (comparing its output with the `before` it was given):
+ * a value already present -- read by the grid, or filled by the verified
+ * cross-check -- is never overwritten, and a disagreement is flagged when the
+ * reviewer's version is itself on the page; an empty field is filled only
+ * with a value the OCR text contains, and otherwise stays empty and flagged.
+ */
+function applyGroundedReview(current, before, after, ocrText, gridDays) {
+    const evidence = (0, gemini_grid_crosscheck_1.ocrEvidence)(ocrText, gridDays);
+    const squashed = (value) => value.toUpperCase().replace(/[^A-Z0-9ก-๙]/g, "");
+    return current.map((entry, index) => {
+        const original = before[index];
+        const reviewed = after[index];
+        if (!original || !reviewed)
+            return entry;
+        const next = {
+            ...entry,
+            reviewFields: [...(entry.reviewFields ?? [])],
+            reviewNotes: [...(entry.reviewNotes ?? [])],
+        };
+        const flag = (field, message) => {
+            next.reviewFields = [...new Set([...(next.reviewFields ?? []), field])];
+            next.reviewNotes = [...(next.reviewNotes ?? []), message];
+        };
+        for (const field of ["courseCode", "day", "startTime", "endTime", "room", "section"]) {
+            const now = trimmed(reviewed[field]);
+            if (!now || now === trimmed(original[field]))
+                continue;
+            const label = gemini_grid_crosscheck_1.GRID_FIELD_LABELS[field];
+            const value = field === "day" ? (0, gemini_grid_crosscheck_1.normalizeGridDay)(now) ?? now : now;
+            const verified = (0, gemini_grid_crosscheck_1.inOcr)(field, value, evidence);
+            const have = trimmed(next[field]);
+            if (have) {
+                if (verified && squashed(have) !== squashed(value))
+                    flag(field, `${label}: ระบบอ่านได้ "${have}" แต่ AI ตรวจทานเป็น "${value}"`);
+                continue;
+            }
+            if (verified) {
+                next[field] = value;
+                if (field === "room")
+                    next.buildingName = value;
+            }
+            else {
+                flag(field, `${label}: AI อ่านได้ "${value}" แต่ไม่พบในข้อความที่สแกน จึงยังไม่กรอกให้`);
+            }
+        }
+        for (const [field, label] of GROUNDED_TEXT_FIELDS) {
+            const was = trimmed(original[field]);
+            const now = trimmed(reviewed[field]);
+            if (now === was)
+                continue;
+            if (!now) {
+                // The reviewer cleared it -- an exam column printed as "-", or a name
+                // that belonged to another row. Removing an unsupported value is safe.
+                next[field] = null;
+                continue;
+            }
+            if ((0, gemini_grid_crosscheck_1.textInOcr)(now, evidence))
+                next[field] = now;
+            else
+                flag(field, `${label}: AI อ่านได้ "${now}" แต่ไม่พบในข้อความที่สแกน จึงยังไม่กรอกให้`);
+        }
+        if (next.startTime && next.endTime && next.startTime < next.endTime)
+            next.classTime = `${next.startTime}-${next.endTime}`;
+        return next;
+    });
+}
+/**
+ * For text-parsed schedules: any field a model reviewer touched is checked
+ * against the OCR text after the fact, since the text path has no "before".
+ */
+function flagUnverifiedModelFields(entries, ocrText) {
+    const evidence = (0, gemini_grid_crosscheck_1.ocrEvidence)(ocrText);
+    return entries.map((entry) => {
+        if (!String(entry.parserSource ?? "").includes("gemini"))
+            return entry;
+        const flagged = {
+            ...entry,
+            reviewFields: [...(entry.reviewFields ?? [])],
+            reviewNotes: [...(entry.reviewNotes ?? [])],
+        };
+        for (const field of ["courseCode", "day", "startTime", "endTime"]) {
+            const value = typeof entry[field] === "string" ? String(entry[field]).trim() : "";
+            const checked = field === "day" ? (0, gemini_grid_crosscheck_1.normalizeGridDay)(value) ?? value : value;
+            if (!value || (0, gemini_grid_crosscheck_1.inOcr)(field, checked, evidence))
+                continue;
+            flagged.reviewFields = [...new Set([...(flagged.reviewFields ?? []), field])];
+            flagged.reviewNotes = [...(flagged.reviewNotes ?? []), `${gemini_grid_crosscheck_1.GRID_FIELD_LABELS[field]}: "${value}" ไม่พบในข้อความที่สแกน`];
+        }
+        return flagged;
+    });
+}
+/**
+ * Reads a schedule scan, geometry first.
+ *
+ * A timetable grid is read from Vision's word boxes -- see
+ * vision-schedule-grid.ts for why the text could not be trusted -- and then
+ * given a second reading from the image by the model, whose values are
+ * accepted only as far as the OCR text bears them out. Anything that is not a
+ * day-by-time grid (a registrar's course list, say) goes to the text parsers,
+ * which now read ONE transcript: fed the iApp and Vision transcripts joined
+ * together, they saw every course twice.
+ */
+async function parseSchedule(fusedText, annotation, apiKey, imageDataUrl, singleText) {
+    const grid = (0, vision_schedule_grid_1.parseScheduleGrid)(annotation);
+    if (!grid.found) {
+        const parsed = await parseScheduleFromText(singleText || fusedText, annotation, apiKey, imageDataUrl);
+        return { ...parsed, entries: flagUnverifiedModelFields(parsed.entries, fusedText) };
+    }
+    const courseTableLookup = (0, vision_course_table_1.buildCourseTableLookup)(fusedText, annotation);
+    const examTable = (0, vision_exam_table_1.parseOptionalExamTable)(fusedText, annotation);
+    const gridDays = grid.rows.map((row) => row.day);
+    let entries = (0, vision_exam_table_1.mergeExamFields)((0, vision_course_table_1.mergeCourseTableNames)(grid.entries, courseTableLookup), examTable);
+    let crossCheck = null;
+    let crossCheckModel = null;
+    let academicYear = null;
+    let semesterEnd = null;
+    let semesterStart = null;
+    let reviewedCourseCount = 0;
+    let reviewedExamCount = 0;
+    let usedTemporalReview = false;
+    if (apiKey && imageDataUrl) {
+        const geometry = entries;
+        // Independent readings of the same grid, so they run side by side under
+        // one deadline: one after another they could take well over a minute.
+        const [gemini, courseReview, temporalReview] = await Promise.all([
+            withDeadline((0, gemini_grid_crosscheck_1.extractScheduleGridWithGemini)({ apiKey, imageDataUrl, ocrText: fusedText }), SCHEDULE_REVIEW_DEADLINE_MS, "schedule grid cross-check"),
+            withDeadline((0, gemini_course_exam_review_1.reviewScheduleCoursesAndExamsWithGemini)({ apiKey, entries: geometry, imageDataUrl, rawText: fusedText }).catch((error) => {
+                console.warn("[Schedule OCR] Gemini course/exam review failed; keeping grid fields.", error);
+                return null;
+            }), SCHEDULE_REVIEW_DEADLINE_MS, "schedule course/exam review"),
+            withDeadline((0, gemini_fallback_1.reviewScheduleTemporalFieldsWithGemini)({ apiKey, entries: geometry, imageDataUrl, rawText: fusedText }).catch((error) => {
+                console.warn("[Schedule OCR] Gemini temporal review failed; keeping grid fields.", error);
+                return null;
+            }), SCHEDULE_REVIEW_DEADLINE_MS, "schedule temporal review"),
+        ]);
+        if (gemini) {
+            const checked = (0, gemini_grid_crosscheck_1.crossCheckScheduleEntries)(entries, gemini.courses, fusedText, gridDays);
+            entries = checked.entries;
+            crossCheck = checked.stats;
+            crossCheckModel = gemini.model;
+        }
+        if (courseReview) {
+            entries = applyGroundedReview(entries, geometry, courseReview.entries, fusedText, gridDays);
+            reviewedCourseCount = courseReview.appliedCourseCount;
+            reviewedExamCount = courseReview.appliedExamCount;
+        }
+        if (temporalReview) {
+            entries = applyGroundedReview(entries, geometry, temporalReview.entries, fusedText, gridDays);
+            // A year the page does not print is not taken on the model's word.
+            academicYear = temporalReview.academicYear && fusedText.includes(temporalReview.academicYear) ? temporalReview.academicYear : null;
+            semesterEnd = temporalReview.semesterEnd;
+            semesterStart = temporalReview.semesterStart;
+            usedTemporalReview = temporalReview.appliedEntryCount > 0 || Boolean(academicYear || semesterStart || semesterEnd);
+        }
+    }
+    const literalAcademicYear = academicYear ??
+        fusedText.match(/(?:ปีการศึกษา|พ\.ศ\.)\s*[:\-]?\s*(\d{4})/)?.[1] ?? null;
+    const literalDateRange = fusedText.match(/\b\d{1,2}\s*\/\s*\d{1,2}\s*\/\s*\d{4}\s*(?:-|–|—|ถึง)\s*\d{1,2}\s*\/\s*\d{1,2}\s*\/\s*\d{4}\b/)?.[0]?.replace(/\s+/g, " ") ?? null;
+    console.info("[Schedule OCR] grid geometry extraction", {
+        crossCheck,
+        crossCheckModel,
+        entries: entries.length,
+        flagged: entries.filter((entry) => (entry.reviewFields ?? []).length).length,
+        gridEntries: grid.entries.length,
+        rows: gridDays,
+        skewDegrees: grid.skewDegrees,
+    });
+    return {
+        academicYear: literalAcademicYear,
+        academicYearLiteral: literalAcademicYear,
+        courseTableMatches: courseTableLookup.size,
+        entries,
+        examTableFound: examTable.found,
+        examTableMatches: examTable.entries.size,
+        gridCrossCheck: crossCheck,
+        gridSkewDegrees: grid.skewDegrees,
+        institution: "Timetable grid",
+        parserConfidence: 0.95,
+        parserSource: "vision-grid-geometry",
+        reviewedCourseCount,
+        reviewedExamCount,
+        semesterDateRangeLiteral: literalDateRange,
+        semesterEnd,
+        semesterStart,
+        usedCourseExamReview: reviewedCourseCount > 0 || reviewedExamCount > 0,
+        usedHighResolutionVision: false,
+        usedLlm: Boolean(crossCheck) || usedTemporalReview || reviewedCourseCount > 0 || reviewedExamCount > 0,
+        usedTemporalReview,
+    };
+}
+async function parseScheduleFromText(text, annotation, apiKey, imageDataUrl) {
     const fallback = parseScheduleFallback(text);
     const courseTableLookup = (0, vision_course_table_1.buildCourseTableLookup)(text, annotation);
     const examTable = (0, vision_exam_table_1.parseOptionalExamTable)(text, annotation);
@@ -1105,13 +1336,22 @@ exports.analyzeScan = (0, https_1.onCall)({
                     /^(?:bank_slip|e_wallet)$/i.test(String(rawParsed.documentType ?? ""))) {
                     rawParsed.category = "Transfers";
                 }
-                rawParsed = await applyGeminiDocumentTimestamp(rawParsed, evidenceText || rawText, geminiOcrApiKey.value(), await ensureImageDataUrl());
+                rawParsed = (await withDeadline(applyGeminiDocumentTimestamp(rawParsed, evidenceText || rawText, geminiOcrApiKey.value(), await ensureImageDataUrl()), RECEIPT_TIMESTAMP_DEADLINE_MS, "receipt timestamp review")) ?? rawParsed;
                 // Keep deterministic/iApp totals and timestamps authoritative, then
                 // use Gemini image review for semantics and explicit item discounts.
                 try {
                     const receiptImageDataUrl = await ensureImageDataUrl();
                     if (receiptImageDataUrl) {
-                        const semanticReceipt = await (0, gemini_receipt_1.extractReceiptWithGemini)(evidenceText, geminiOcrApiKey.value(), receiptImageDataUrl);
+                        const semanticReceipt = await withDeadline((0, gemini_receipt_1.extractReceiptWithGemini)(evidenceText, geminiOcrApiKey.value(), receiptImageDataUrl), RECEIPT_REVIEW_DEADLINE_MS, "receipt semantic review");
+                        if (!semanticReceipt)
+                            throw new Error("Gemini receipt review ran out of time.");
+                        // What the review returned, kept even when iApp's own fields win,
+                        // so a scan log shows the review ran rather than failed silently.
+                        rawParsed.semanticReview = {
+                            category: semanticReceipt.category,
+                            documentType: semanticReceipt.documentType,
+                            itemCount: semanticReceipt.items.length,
+                        };
                         if (/^others?$/i.test(String(rawParsed.category ?? "")) &&
                             !/^others?$/i.test(semanticReceipt.category)) {
                             rawParsed.category = semanticReceipt.category;
@@ -1152,11 +1392,12 @@ exports.analyzeScan = (0, https_1.onCall)({
                     throw new https_1.HttpsError("not-found", "ไม่พบข้อความที่อ่านได้จากภาพใบเสร็จ");
                 }
                 classification = classifyDocument(rawText);
-                rawParsed = await applyGeminiDocumentTimestamp({
+                const fallbackReceipt = {
                     ...parseReceiptFallback(rawText),
                     provider,
                     providerError,
-                }, rawText, geminiOcrApiKey.value(), await ensureImageDataUrl());
+                };
+                rawParsed = (await withDeadline(applyGeminiDocumentTimestamp(fallbackReceipt, rawText, geminiOcrApiKey.value(), await ensureImageDataUrl()), RECEIPT_TIMESTAMP_DEADLINE_MS, "receipt timestamp review")) ?? fallbackReceipt;
             }
         }
         else {
@@ -1188,7 +1429,10 @@ exports.analyzeScan = (0, https_1.onCall)({
                 ocrConfidence = Math.max(ocrConfidence, averageVisionConfidence(scheduleVisionResult.fullTextAnnotation, visionText));
             }
             rawText = fusedScheduleText || rawText;
-            rawParsed = await parseSchedule(rawText, scheduleVisionResult.fullTextAnnotation, geminiOcrApiKey.value(), await ensureImageDataUrl());
+            rawParsed = await parseSchedule(rawText, scheduleVisionResult.fullTextAnnotation, geminiOcrApiKey.value(), await ensureImageDataUrl(), 
+            // One transcript for the text parsers; the joined pair doubled
+            // every course. Vision's keeps the page's layout best.
+            visionText || iappText);
             const entries = Array.isArray(rawParsed.entries) ? rawParsed.entries : [];
             if (!entries.length && iappText && visionText) {
                 if (visionText) {

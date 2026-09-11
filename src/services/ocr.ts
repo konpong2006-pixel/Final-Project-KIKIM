@@ -32,7 +32,13 @@ const functions = getFunctions(firebaseApp, 'asia-southeast1');
 const analyzeScan = httpsCallable<
   {scanType: ScanType; storagePath: string},
   OcrResult
->(functions, 'analyzeScan');
+>(functions, 'analyzeScan', {
+  // The Firebase default is 70 s. A scan now waits on Gemini's review --
+  // until 2026-09-11 that call failed instantly, so the default was never
+  // tested -- and a slow model must not make the app give up on a scan the
+  // server (120 s) is still finishing.
+  timeout: 115_000,
+});
 
 export type ReviewedReceiptPayload = {
   amount: number;

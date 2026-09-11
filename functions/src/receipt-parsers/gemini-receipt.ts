@@ -1,3 +1,6 @@
+// Schemas here carry no minimum/maximum/maxItems/minItems: /v1/interactions
+// rejects them alongside nullable types ("Request contains an invalid
+// argument"), and the values are range-checked after parsing anyway.
 export const RECEIPT_EXTRACTION_SYSTEM_PROMPT = `Act as an expert Data Extraction AI specialized in Thai retail receipts, e-receipts, bank transfer slips, and e-wallets.
 
 Your ONLY task is to extract data from the supplied high-resolution document image and OCR text into the strict JSON response schema. Extract only details supported by the document.
@@ -93,19 +96,18 @@ const RECEIPT_SCHEMA = {
   properties: {
     document_type: {type: "string", enum: DOCUMENT_TYPE_VALUES},
     merchant_name: {type: ["string", "null"]},
-    grand_total: {type: ["number", "null"], minimum: 0},
+    grand_total: {type: ["number", "null"]},
     items: {
       type: "array",
-      maxItems: 200,
       items: {
         type: "object",
         additionalProperties: false,
         properties: {
           name: {type: "string"},
-          quantity: {type: "number", minimum: 0},
-          original_price: {type: "number", minimum: 0},
-          discount_amount: {type: "number", minimum: 0},
-          final_price: {type: "number", minimum: 0},
+          quantity: {type: "number"},
+          original_price: {type: "number"},
+          discount_amount: {type: "number"},
+          final_price: {type: "number"},
         },
         required: ["name", "quantity", "original_price", "discount_amount", "final_price"],
       },
@@ -249,7 +251,11 @@ export async function extractReceiptWithGemini(rawText: string, apiKey: string, 
         model,
         store: false,
         system_instruction: RECEIPT_EXTRACTION_SYSTEM_PROMPT,
-        input: [
+        // /v1/interactions takes content parts only inside a user_input step. These
+        // were sent bare, which v1beta accepted and v1 rejects ("The value 'image'
+        // is not supported for 'type'"), so after the 2026-08-07 move to v1 every
+        // one of these reviews failed and the scan kept its unreviewed values.
+        input: [{type: "user_input", content: [
           {
             type: "text",
             text: `Current Bangkok date: ${currentBangkokDate}\n\nOCR text (may contain recognition errors; prefer visible image evidence):\n${rawText.slice(0, 30000)}`,
@@ -259,7 +265,7 @@ export async function extractReceiptWithGemini(rawText: string, apiKey: string, 
             data: image.data,
             mime_type: image.mimeType,
           },
-        ],
+        ]}],
         response_format: {
           type: "text",
           mime_type: "application/json",

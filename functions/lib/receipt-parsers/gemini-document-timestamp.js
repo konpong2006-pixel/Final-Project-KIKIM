@@ -26,7 +26,7 @@ const DOCUMENT_TIMESTAMP_SCHEMA = {
         transaction_time: { type: ["string", "null"] },
         printed_year: { type: ["integer", "null"] },
         calendar_era: { type: "string", enum: ["BE", "AD", "UNKNOWN"] },
-        confidence: { type: "number", minimum: 0, maximum: 1 },
+        confidence: { type: "number" },
         evidence: { type: ["string", "null"] },
     },
     required: [
@@ -140,17 +140,21 @@ async function extractDocumentTimestampWithGemini({ apiKey, imageDataUrl, ocrCan
                 model,
                 store: false,
                 system_instruction: DOCUMENT_TIMESTAMP_PROMPT,
-                input: [
-                    {
-                        type: "text",
-                        text: `Deterministic OCR candidate (keep it when the image visibly agrees):\n${JSON.stringify(ocrCandidate ?? null)}\n\nFull OCR evidence may contain recognition errors. Use the image to verify only the document's transaction date/time:\n${rawText.slice(0, 30000)}`,
-                    },
-                    {
-                        type: "image",
-                        data: image.data,
-                        mime_type: image.mimeType,
-                    },
-                ],
+                // /v1/interactions takes content parts only inside a user_input step. These
+                // were sent bare, which v1beta accepted and v1 rejects ("The value 'image'
+                // is not supported for 'type'"), so after the 2026-08-07 move to v1 every
+                // one of these reviews failed and the scan kept its unreviewed values.
+                input: [{ type: "user_input", content: [
+                            {
+                                type: "text",
+                                text: `Deterministic OCR candidate (keep it when the image visibly agrees):\n${JSON.stringify(ocrCandidate ?? null)}\n\nFull OCR evidence may contain recognition errors. Use the image to verify only the document's transaction date/time:\n${rawText.slice(0, 30000)}`,
+                            },
+                            {
+                                type: "image",
+                                data: image.data,
+                                mime_type: image.mimeType,
+                            },
+                        ] }],
                 response_format: {
                     type: "text",
                     mime_type: "application/json",

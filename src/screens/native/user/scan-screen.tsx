@@ -62,10 +62,25 @@ type ScheduleEntry = {
   midtermExam?: string;
   periodLabel?: string;
   raw?: string;
+  reviewFields?: string[];
+  reviewNotes?: string[];
   room?: string;
   section?: string;
   startDate?: string;
   startTime?: string;
+};
+/**
+ * The label each flagged field's note starts with, as the server writes it --
+ * so editing a field can retire exactly that field's note.
+ */
+const REVIEW_FIELD_LABELS: Record<string, string> = {
+  buildingName: "ห้อง",
+  courseCode: "รหัสวิชา",
+  day: "วัน",
+  endTime: "เวลาสิ้นสุด",
+  room: "ห้อง",
+  section: "Section",
+  startTime: "เวลาเริ่ม",
 };
 type TimePickerTarget = {
   field: "endTime" | "startTime";
@@ -1311,9 +1326,22 @@ export default function ScanScreen({
         : [];
       return {
         ...current,
-        entries: currentEntries.map((entry, entryIndex) =>
-          entryIndex === index ? { ...entry, [key]: value } : entry,
-        ),
+        entries: currentEntries.map((entry, entryIndex) => {
+          if (entryIndex !== index) return entry;
+          // Editing a flagged field is the user reviewing it, so its flag and
+          // note go; the others stay until they are dealt with too.
+          const field = key === "buildingName" ? "room" : key;
+          const label = REVIEW_FIELD_LABELS[key];
+          return {
+            ...entry,
+            [key]: value,
+            reviewFields: (entry.reviewFields ?? []).filter((flagged) => flagged !== field),
+            reviewNotes: label
+              ? (entry.reviewNotes ?? []).filter((note) => !note.startsWith(label) &&
+                !(field === "courseCode" && note.startsWith("พบวิชานี้จาก AI")))
+              : entry.reviewNotes,
+          };
+        }),
       };
     });
   /**
@@ -2033,6 +2061,26 @@ export default function ScanScreen({
                           <Text style={localStyles.entryError}>
                             {entryProblems.get(index)?.courseCode}
                           </Text>
+                        ) : null}
+                        {entry.reviewNotes?.length ? (
+                          /* Values the AI read that the OCR text does not bear
+                             out, or that disagree with the grid. They are
+                             filled in so the user is not retyping, but they
+                             are never passed off as confirmed. */
+                          <View
+                            accessibilityLabel={`ตรวจสอบรายวิชาที่ ${index + 1}: ${entry.reviewNotes.join(" ")}`}
+                            style={localStyles.reviewBanner}
+                          >
+                            <MaterialIcon color="#9a6a1f" name="fact_check" size={15} />
+                            <View style={{ flex: 1 }}>
+                              <Text style={localStyles.reviewTitle}>ตรวจสอบก่อนบันทึก</Text>
+                              {entry.reviewNotes.map((note, noteIndex) => (
+                                <Text key={`review-${index}-${noteIndex}`} style={localStyles.reviewNote}>
+                                  • {note}
+                                </Text>
+                              ))}
+                            </View>
+                          </View>
                         ) : null}
                         <SmallInput
                           label="ชื่อวิชา"
@@ -2922,6 +2970,9 @@ function CategoryPickerRow({
 }
 
 const localStyles = StyleSheet.create({
+  reviewBanner: { alignItems: "flex-start", backgroundColor: "#fdf4e3", borderColor: "#ecd3a3", borderRadius: 12, borderWidth: 1, flexDirection: "row", gap: 7, marginTop: 8, padding: 9 },
+  reviewNote: { color: "#7a5a24", fontFamily: "Prompt_400Regular", fontSize: 10, lineHeight: 16, marginTop: 1 },
+  reviewTitle: { color: "#7a5a24", fontFamily: "Prompt_700Bold", fontSize: 10 },
   courseDelete: { alignItems: "center", backgroundColor: "#fbeeed", borderRadius: 14, height: 28, justifyContent: "center", marginLeft: 6, width: 28 },
   courseNumberProblem: { backgroundColor: "#e3a19a" },
   dayChip: { backgroundColor: "#eef1eb", borderRadius: 99, paddingHorizontal: 10, paddingVertical: 7 },

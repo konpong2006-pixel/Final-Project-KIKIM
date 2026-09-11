@@ -25,7 +25,7 @@ const SCHEDULE_TEMPORAL_SCHEMA = {
         academic_year: nullableString,
         semester_start: nullableString,
         semester_end: nullableString,
-        calendar_confidence: { type: "number", minimum: 0, maximum: 1 },
+        calendar_confidence: { type: "number" },
         calendar_evidence: nullableString,
         entries: {
             type: "array",
@@ -33,11 +33,11 @@ const SCHEDULE_TEMPORAL_SCHEMA = {
                 type: "object",
                 additionalProperties: false,
                 properties: {
-                    entry_index: { type: "integer", minimum: 0 },
+                    entry_index: { type: "integer" },
                     day: nullableString,
                     start_time: nullableString,
                     end_time: nullableString,
-                    confidence: { type: "number", minimum: 0, maximum: 1 },
+                    confidence: { type: "number" },
                     evidence: nullableString,
                 },
                 required: [
@@ -204,7 +204,7 @@ async function reviewScheduleTemporalFieldsWithGemini({ apiKey, entries, imageDa
         };
     }
     const image = parseImageDataUrl(imageDataUrl);
-    const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
+    const response = await fetch("https://generativelanguage.googleapis.com/v1/interactions", {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
@@ -214,17 +214,21 @@ async function reviewScheduleTemporalFieldsWithGemini({ apiKey, entries, imageDa
             model: process.env.GEMINI_SCHEDULE_MODEL ?? "gemini-3.5-flash",
             store: false,
             system_instruction: exports.SCHEDULE_TEMPORAL_REVIEW_SYSTEM_PROMPT,
-            input: [
-                {
-                    type: "text",
-                    text: `Verify only temporal fields for these indexed candidates:\n${JSON.stringify(temporalCandidates(entries))}\n\nOCR hints:\n${rawText.slice(0, 30000)}`,
-                },
-                {
-                    type: "image",
-                    data: image.data,
-                    mime_type: image.mimeType,
-                },
-            ],
+            // /v1/interactions takes content parts only inside a user_input step. These
+            // were sent bare, which v1beta accepted and v1 rejects ("The value 'image'
+            // is not supported for 'type'"), so after the 2026-08-07 move to v1 every
+            // one of these reviews failed and the scan kept its unreviewed values.
+            input: [{ type: "user_input", content: [
+                        {
+                            type: "text",
+                            text: `Verify only temporal fields for these indexed candidates:\n${JSON.stringify(temporalCandidates(entries))}\n\nOCR hints:\n${rawText.slice(0, 30000)}`,
+                        },
+                        {
+                            type: "image",
+                            data: image.data,
+                            mime_type: image.mimeType,
+                        },
+                    ] }],
             response_format: {
                 type: "text",
                 mime_type: "application/json",

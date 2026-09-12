@@ -1,11 +1,12 @@
 import {useEffect, useMemo, useRef, useState} from 'react';
-import {ActivityIndicator, Alert, FlatList, Modal, Pressable, StyleSheet, Text, View} from 'react-native';
+import {ActivityIndicator, FlatList, Modal, Pressable, StyleSheet, Text, View} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
 
 import LoadingAndSuccessModal, {type FeedbackPhase} from '@/components/loading-success-modal';
 import {scanLogs} from '@/services/firestore';
 import type {ScanLog, ScanKind, WithId} from '@/types/smartlife';
 import {MaterialIcon, UserHeader, UserShell, type UserNavigate} from './user-ui';
+import {showToast} from '@/components/app-toast';
 
 type Filter = 'all' | ScanKind;
 type Feedback = {phase: FeedbackPhase; subtitle: string; title: string} | null;
@@ -64,7 +65,7 @@ export default function OcrHistoryScreen({uid, onNavigate}: {uid: string; onNavi
     }, (error) => {
       console.error('[OCR History] Unable to watch scan logs', error);
       setLoading(false);
-      Alert.alert('โหลดประวัติไม่สำเร็จ', 'กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่');
+      showToast('โหลดประวัติไม่สำเร็จ', 'กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่');
     });
     return unsubscribe;
   }, [uid]);
@@ -89,7 +90,7 @@ export default function OcrHistoryScreen({uid, onNavigate}: {uid: string; onNavi
     } catch (error) {
       console.error('[OCR History] Delete failed', {error, id: target.id});
       setFeedback(null);
-      Alert.alert('ลบไม่สำเร็จ', 'กรุณาลองใหม่อีกครั้ง');
+      showToast('ลบไม่สำเร็จ', 'กรุณาลองใหม่อีกครั้ง');
     }
   };
 

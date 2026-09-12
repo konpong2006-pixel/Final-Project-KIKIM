@@ -3,17 +3,18 @@ import {
   collection,
   deleteDoc,
   doc,
-  DocumentData,
+  type DocumentData,
   endAt,
   getDoc,
   getDocs,
   limit,
   onSnapshot,
   orderBy,
-  QueryConstraint,
+  type QueryConstraint,
   query,
-  QueryDocumentSnapshot,
+  type QueryDocumentSnapshot,
   serverTimestamp,
+  setDoc,
   startAt,
   Timestamp,
   updateDoc,
@@ -27,6 +28,7 @@ import {
   demoBetween,
   demoCollection,
   demoCreate,
+  demoNoteFolders,
   demoNotes,
   demoNotifications,
   demoRecommendations,
@@ -37,6 +39,8 @@ import type {
   AiRecommendation,
   Feedback,
   Note,
+  NoteFolder,
+  NoteLock,
   Notification,
   PendingLineReview,
   ScanLog,
@@ -50,6 +54,7 @@ type UserCollection =
   | 'aiRecommendations'
   | 'bankNotifications'
   | 'feedback'
+  | 'noteFolders'
   | 'notes'
   | 'notifications'
   | 'pendingReview'
@@ -58,6 +63,14 @@ type UserCollection =
   | 'transactions';
 
 type CreateFields = { createdAt: ReturnType<typeof serverTimestamp>; ownerId: string; updatedAt: ReturnType<typeof serverTimestamp> };
+
+export type ScheduleConflict = {
+  endAt: string;
+  id: string;
+  kind: 'activity' | 'schedule';
+  startAt: string;
+  title: string;
+};
 
 function userCollection(uid: string, name: UserCollection) {
   return collection(db, 'users', uid, name);
@@ -177,13 +190,89 @@ export const activities = {
   ]),
 };
 
+export async function findScheduleConflicts(uid: string, proposedStart: Date, proposedEnd: Date): Promise<ScheduleConflict[]> {
+  if (!uid || Number.isNaN(proposedStart.getTime()) || Number.isNaN(proposedEnd.getTime()) || proposedStart >= proposedEnd) return [];
+
+  const sourceItems = isDemoMode
+    ? [
+      ...(demoCollection('schedules') as WithId<Schedule>[]).map((item) => ({data: item, id: item.id, kind: 'schedule' as const})),
+      ...(demoCollection('activities') as WithId<Activity>[]).map((item) => ({data: item, id: item.id, kind: 'activity' as const})),
+    ]
+    : (await Promise.all((['schedules', 'activities'] as const).map(async (name) => {
+      const snapshot = await getDocs(query(
+        userCollection(uid, name),
+        where('startAt', '<', Timestamp.fromDate(proposedEnd)),
+        orderBy('startAt', 'desc'),
+        limit(500),
+      ));
+      return snapshot.docs.map((item) => ({data: item.data(), id: item.id, kind: name === 'schedules' ? 'schedule' as const : 'activity' as const}));
+    }))).flat();
+
+  return sourceItems.flatMap(({data, id, kind}) => {
+    if (kind === 'activity' && ['cancelled', 'completed'].includes(String(data.status ?? ''))) return [];
+    const startMs = timestampMillis(data.startAt);
+    const endMs = timestampMillis(data.endAt);
+    if (!startMs || !endMs || startMs >= proposedEnd.getTime() || endMs <= proposedStart.getTime()) return [];
+    return [{
+      endAt: new Date(endMs).toISOString(),
+      id,
+      kind,
+      startAt: new Date(startMs).toISOString(),
+      title: String(data.title || ('courseName' in data ? data.courseName : '') || 'รายการในตาราง').slice(0, 120),
+    }];
+  }).sort((left, right) => left.startAt.localeCompare(right.startAt));
+}
+
 export const notes = {
   create: (uid: string, data: Omit<Note, keyof CreateFields | 'ownerId'>) => isDemoMode ? demoCreate('notes') : createOwned(uid, 'notes', data),
+  /** Reads one note, for the detail/edit screen. Returns null when it is gone. */
+  get: async (uid: string, id: string) => {
+    if (isDemoMode) return (demoNotes().find((item) => (item as {id?: string}).id === id) ?? null) as WithId<Note> | null;
+    const snapshot = await getDoc(doc(db, 'users', uid, 'notes', id));
+    return snapshot.exists() ? ({id: snapshot.id, ...snapshot.data()} as WithId<Note>) : null;
+  },
   update: (uid: string, id: string, data: Partial<Omit<Note, keyof CreateFields | 'ownerId'>>) => isDemoMode ? Promise.resolve() : updateOwned(uid, 'notes', id, data),
   remove: (uid: string, id: string) => isDemoMode ? Promise.resolve() : removeOwned(uid, 'notes', id),
   list: (uid: string, category?: Note['category']) => isDemoMode ? Promise.resolve(demoNotes(category) as WithId<Note>[]) : listOwned<Note>(uid, 'notes', [
     ...(category ? [where('category', '==', category)] : []), orderBy('updatedAt', 'desc'), limit(100),
   ]),
+};
+
+export const noteFolders = {
+  create: (uid: string, data: Omit<NoteFolder, keyof CreateFields | 'ownerId'>) => isDemoMode ? demoCreate('noteFolders') : createOwned(uid, 'noteFolders', data),
+  update: (uid: string, id: string, data: Partial<Omit<NoteFolder, keyof CreateFields | 'ownerId'>>) => isDemoMode ? Promise.resolve() : updateOwned(uid, 'noteFolders', id, data),
+  remove: (uid: string, id: string) => isDemoMode ? Promise.resolve() : removeOwned(uid, 'noteFolders', id),
+  list: (uid: string) => isDemoMode
+    ? Promise.resolve(demoNoteFolders() as unknown as WithId<NoteFolder>[])
+    : listOwned<NoteFolder>(uid, 'noteFolders', [orderBy('sortOrder'), limit(50)]),
+};
+
+/**
+ * The per-user note PIN, stored at `users/{uid}/settings/noteLock`.
+ *
+ * Only a salted digest is ever written -- see `note-lock.ts` for the hashing --
+ * and the rules make this document readable by its owner alone, not by admins.
+ */
+export const noteLock = {
+  get: async (uid: string) => {
+    if (isDemoMode) return null;
+    const snapshot = await getDoc(doc(db, 'users', uid, 'settings', 'noteLock'));
+    return snapshot.exists() ? (snapshot.data() as NoteLock) : null;
+  },
+  set: async (uid: string, data: {biometricEnabled?: boolean; hash: string; hint?: string; salt: string}) => {
+    if (isDemoMode) return;
+    const reference = doc(db, 'users', uid, 'settings', 'noteLock');
+    const existing = await getDoc(reference);
+    if (existing.exists()) {
+      await updateDoc(reference, {...data, updatedAt: serverTimestamp()});
+      return;
+    }
+    await setDoc(reference, {...data, ownerId: uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp()});
+  },
+  clear: async (uid: string) => {
+    if (isDemoMode) return;
+    await deleteDoc(doc(db, 'users', uid, 'settings', 'noteLock'));
+  },
 };
 
 export const transactions = {

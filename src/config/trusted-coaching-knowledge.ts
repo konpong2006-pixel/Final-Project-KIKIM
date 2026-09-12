@@ -3,6 +3,15 @@ export const TRUSTED_COACHING_SOURCES = {
     label: 'ธนาคารแห่งประเทศไทย: แผนใช้เงิน',
     url: 'https://www.bot.or.th/th/satang-story/money-plan/budgeting.html',
   },
+  /**
+   * Duration bands only. The consensus statement gives recommended hours per
+   * age group; it is not a burnout source, which is why it is named separately
+   * from the wellbeing guidance rather than folded into it.
+   */
+  sleepDuration: {
+    label: 'National Sleep Foundation: คำแนะนำชั่วโมงการนอนตามช่วงวัย',
+    url: 'https://www.sleepfoundation.org/how-sleep-works/how-much-sleep-do-we-really-need',
+  },
   wellbeing: {
     label: 'กรมสุขภาพจิต: ความรู้เรื่องภาวะหมดไฟ',
     url: 'https://mhc7.dmh.go.th/30/05/2024/18076/',

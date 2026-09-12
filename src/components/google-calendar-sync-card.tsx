@@ -1,5 +1,5 @@
 import {useEffect, useRef, useState} from 'react';
-import {ActivityIndicator, Alert, Platform, Pressable, StyleSheet, Text, View} from 'react-native';
+import {ActivityIndicator, Platform, Pressable, StyleSheet, Text, View} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
 
 import LoadingAndSuccessModal, {type FeedbackPhase} from '@/components/loading-success-modal';
@@ -13,11 +13,14 @@ import {
   type GoogleCalendarSyncResult,
 } from '@/services/google-calendar';
 import {MaterialIcon} from '@/screens/native/user/user-ui';
+import {showToast} from '@/components/app-toast';
+import ConfirmDialog from '@/components/confirm-dialog';
 
 type Feedback = {phase: FeedbackPhase; subtitle: string; title: string} | null;
 
 export default function GoogleCalendarSyncCard({onSynced, uid}: {onSynced: () => Promise<void> | void; uid: string}) {
   const [busy, setBusy] = useState(false);
+  const [disconnectOpen, setDisconnectOpen] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [result, setResult] = useState<GoogleCalendarSyncResult | null>(null);
   const [connection, setConnection] = useState<GoogleCalendarConnection | null>(null);
@@ -54,16 +57,12 @@ export default function GoogleCalendarSyncCard({onSynced, uid}: {onSynced: () =>
     }
   };
 
-  const confirmDisconnect = () => {
-    if (Platform.OS === 'web') {
-      if (typeof window !== 'undefined' && window.confirm('ยกเลิกการเชื่อม Google Calendar กับ SmartLife?')) void runDisconnect();
-      return;
-    }
-    Alert.alert('ยกเลิกการเชื่อม Google Calendar?', 'ตารางที่นำเข้าแล้วจะยังอยู่ แต่ SmartLife จะหยุดซิงก์กับบัญชีนี้', [
-      {style: 'cancel', text: 'เก็บการเชื่อมไว้'},
-      {onPress: () => void runDisconnect(), style: 'destructive', text: 'ยกเลิกการเชื่อม'},
-    ]);
-  };
+  // One dialog on every platform. This used to branch: `Alert.alert` on native,
+  // and the browser's own blocking `window.confirm` on web, because
+  // `Alert.alert` is an empty function there. `ConfirmDialog` renders the same
+  // sheet everywhere, so the wording and the styling no longer depend on where
+  // the app is running.
+  const confirmDisconnect = () => setDisconnectOpen(true);
 
   const sync = async () => {
     if (busy) return;
@@ -82,7 +81,7 @@ export default function GoogleCalendarSyncCard({onSynced, uid}: {onSynced: () =>
       const message = googleCalendarErrorMessage(error);
       console.warn('[Google Calendar] Sync failed', {message});
       setSyncError(message);
-      if (Platform.OS !== 'web') Alert.alert('ซิงก์ Google Calendar ไม่สำเร็จ', message);
+      if (Platform.OS !== 'web') showToast('ซิงก์ Google Calendar ไม่สำเร็จ', message);
     } finally {
       setBusy(false);
     }
@@ -126,6 +125,16 @@ export default function GoogleCalendarSyncCard({onSynced, uid}: {onSynced: () =>
       </Pressable> : null}
     </LinearGradient>
     <LoadingAndSuccessModal phase={feedback?.phase ?? 'loading'} subtitle={feedback?.subtitle ?? ''} title={feedback?.title ?? ''} visible={Boolean(feedback)} />
+    <ConfirmDialog
+      cancelLabel="เก็บการเชื่อมไว้"
+      confirmLabel="ยกเลิกการเชื่อม"
+      icon="link_off"
+      message="ตารางที่นำเข้าแล้วจะยังอยู่ แต่ SmartLife จะหยุดซิงก์กับบัญชีนี้"
+      onCancel={() => setDisconnectOpen(false)}
+      onConfirm={() => { setDisconnectOpen(false); void runDisconnect(); }}
+      title="ยกเลิกการเชื่อม Google Calendar?"
+      visible={disconnectOpen}
+    />
   </>;
 }
 

@@ -7,7 +7,7 @@ import {
   createAssistantConversationState,
   updateAssistantConversationState,
 } from '../src/services/assistant-conversation.ts';
-import {classifyAssistantError} from '../src/services/assistant-error.ts';
+import {assistantActionErrorMessage, classifyAssistantError} from '../src/services/assistant-error.ts';
 import {sanitizeAssistantMessages} from '../src/services/assistant-message-sanitizer.ts';
 import {
   deterministicFinancialScenarioAnswer,
@@ -43,6 +43,20 @@ check('permission errors are not reported as expired sessions', () => {
   assert.equal(classifyAssistantError({code: 'functions/unauthenticated', message: 'Firebase App Check token is missing'}), 'app_check');
 });
 
+check('action confirmation shows a safe, useful scheduling reason', () => {
+  assert.equal(
+    assistantActionErrorMessage({
+      code: 'functions/failed-precondition',
+      message: 'ช่วงเวลานี้ชนกับรายการในตาราง กรุณาวิเคราะห์และยืนยันเวลาใหม่',
+    }),
+    'ช่วงเวลานี้ชนกับรายการในตาราง กรุณาวิเคราะห์และยืนยันเวลาใหม่',
+  );
+  assert.equal(
+    assistantActionErrorMessage({code: 'functions/unavailable'}),
+    'ตอนนี้เชื่อมต่อบริการไม่สำเร็จครับ ตรวจอินเทอร์เน็ตแล้วลองอีกครั้ง',
+  );
+});
+
 check('stale build support replies and consecutive duplicate assistant replies are hidden', () => {
   const timestamp = '2026-08-16T10:00:00.000Z';
   const cleaned = sanitizeAssistantMessages([
@@ -54,6 +68,27 @@ check('stale build support replies and consecutive duplicate assistant replies a
     {content: 'อัปโหลดหรือวิเคราะห์ไฟล์ไม่สำเร็จ กรุณาตรวจอินเทอร์เน็ตแล้วลองใหม่', id: 'a5', role: 'assistant', timestamp},
   ]);
   assert.deepEqual(cleaned.map((message) => message.id), ['u1', 'a1']);
+});
+
+check('pending-task completion shortcuts survive chat-history sanitization', () => {
+  const cleaned = sanitizeAssistantMessages([{
+    content: 'ยังมีงานค้าง 1 งานครับ',
+    id: 'pending-task-answer',
+    pendingTaskShortcuts: [{
+      dueAt: '2026-09-04T10:00:00.000Z',
+      id: 'activity-1',
+      status: 'pending',
+      title: 'ส่งรายงาน',
+    }],
+    role: 'assistant',
+    timestamp: '2026-09-03T10:00:00.000Z',
+  }]);
+  assert.deepEqual(cleaned[0]?.pendingTaskShortcuts, [{
+    dueAt: '2026-09-04T10:00:00.000Z',
+    id: 'activity-1',
+    status: 'pending',
+    title: 'ส่งรายงาน',
+  }]);
 });
 
 check('budget allocation uses current-message values deterministically', () => {

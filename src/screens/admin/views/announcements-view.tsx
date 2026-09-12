@@ -1,9 +1,11 @@
 import {useCallback, useState} from 'react';
-import {ActivityIndicator, Alert, Pressable, Text, TextInput, View} from 'react-native';
+import {ActivityIndicator, Pressable, Text, TextInput, View} from 'react-native';
 
 import {MaterialIcon} from '@/screens/native/user/user-ui';
 import {AdminCard, C, Empty, KindBadge, Pill, Row, SectionHead, SmallButton, date, items, styles as ui, text} from '../admin-ui';
 import type {AdminViewProps} from './view-props';
+import ConfirmDialog from '@/components/confirm-dialog';
+import {showToast} from '@/components/app-toast';
 
 const KIND_BADGES: Record<string, [string, string]> = {
   feature: ['ฟีเจอร์', 'purple'],
@@ -18,6 +20,9 @@ export default function AdminAnnouncementsView({actionLoading, data, onAction}: 
   const [kind, setKind] = useState('update');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [publishing, setPublishing] = useState(false);
+  // Asked with a Modal, not `Alert.alert`: the latter is an empty function on
+  // react-native-web, so the admin portal's delete never prompted or fired.
+  const [deleting, setDeleting] = useState<{id: string; title: string} | null>(null);
 
   const list = items(data.announcements);
 
@@ -32,7 +37,7 @@ export default function AdminAnnouncementsView({actionLoading, data, onAction}: 
     const nextTitle = title.trim();
     const nextMessage = message.trim();
     if (!nextTitle || !nextMessage) {
-      Alert.alert('กรอกข้อมูลไม่ครบ', 'กรุณาระบุหัวข้อและรายละเอียดประกาศ');
+      showToast('กรอกข้อมูลไม่ครบ', 'กรุณาระบุหัวข้อและรายละเอียดประกาศ');
       return;
     }
     setPublishing(true);
@@ -123,16 +128,21 @@ export default function AdminAnnouncementsView({actionLoading, data, onAction}: 
                   icon="delete"
                   label="ลบ"
                   loading={actionLoading === `${id}-del`}
-                  onPress={() => Alert.alert('ยืนยันการลบ', 'ต้องการลบประกาศนี้ใช่หรือไม่?', [
-                    {style: 'cancel', text: 'ยกเลิก'},
-                    {onPress: () => { onAction(`${id}-del`, 'delete-announcement', {id}, 'ลบประกาศแล้ว'); }, style: 'destructive', text: 'ลบ'},
-                  ])}
+                  onPress={() => setDeleting({id, title: text(item.title, 'ประกาศนี้')})}
                   tone="red"
                 />
               </View>
             </Row>
           );
         }) : <Empty label="ยังไม่มีประกาศ" />}
+      <ConfirmDialog
+        confirmLabel="ลบ"
+        message={deleting ? `ต้องการลบ "${deleting.title}" ใช่หรือไม่?` : ''}
+        onCancel={() => setDeleting(null)}
+        onConfirm={() => { const target = deleting; setDeleting(null); if (target) onAction(`${target.id}-del`, 'delete-announcement', {id: target.id}, 'ลบประกาศแล้ว'); }}
+        title="ยืนยันการลบ"
+        visible={Boolean(deleting)}
+      />
       </AdminCard>
     </>
   );

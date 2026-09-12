@@ -5,6 +5,7 @@ type DemoCollection =
   | 'activities'
   | 'aiRecommendations'
   | 'feedback'
+  | 'noteFolders'
   | 'notes'
   | 'notifications'
   | 'scanLogs'
@@ -45,9 +46,9 @@ const activities: DemoDocument[] = [
 ];
 
 const notes: DemoDocument[] = [
-  {id: 'demo-note-linked-list', ownerId: demoUid, title: 'Linked List', content: 'สรุปโครงสร้างข้อมูลและโจทย์ที่ควรทบทวนก่อนควิซ', category: 'study', relatedScheduleId: 'demo-data-structures', color: '#6F8F6D', createdAt: plusHours(-72), updatedAt: plusHours(-2)},
-  {id: 'demo-note-project', ownerId: demoUid, title: 'Project Plan', content: 'แบ่งงานและกำหนดส่งของทีม พร้อมรายการหน้าจอที่ต้อง polish', category: 'work', relatedScheduleId: 'demo-digital-tech', color: '#9297BB', createdAt: plusHours(-48), updatedAt: plusHours(-3)},
-  {id: 'demo-note-idea', ownerId: demoUid, title: 'ไอเดีย SmartLife', content: 'เพิ่มการแนะนำงบอาหารตามตารางเรียน และเตือนอ่านก่อนควิซ', category: 'idea', relatedScheduleId: '', color: '#BB9293', createdAt: plusHours(-30), updatedAt: plusHours(-4)},
+  {id: 'demo-note-linked-list', ownerId: demoUid, title: 'Linked List', content: 'สรุปโครงสร้างข้อมูลและโจทย์ที่ควรทบทวนก่อนควิซ', category: 'study', relatedScheduleId: 'demo-data-structures', color: '#6F8F6D', folderId: 'demo-folder-course', tags: ['ควิซ', 'DS'], pinned: true, linkedNoteIds: ['demo-note-project'], createdAt: plusHours(-72), updatedAt: plusHours(-2)},
+  {id: 'demo-note-project', ownerId: demoUid, title: 'Project Plan', content: 'แบ่งงานและกำหนดส่งของทีม พร้อมรายการหน้าจอที่ต้อง polish', category: 'work', relatedScheduleId: 'demo-digital-tech', color: '#9297BB', folderId: 'demo-folder-project', tags: ['ทีม'], pinned: false, createdAt: plusHours(-48), updatedAt: plusHours(-3)},
+  {id: 'demo-note-idea', ownerId: demoUid, title: 'ไอเดีย SmartLife', content: 'เพิ่มการแนะนำงบอาหารตามตารางเรียน และเตือนอ่านก่อนควิซ', category: 'idea', relatedScheduleId: '', color: '#BB9293', folderId: '', tags: ['ไอเดีย'], createdAt: plusHours(-30), updatedAt: plusHours(-4)},
 ];
 
 const transactions: DemoDocument[] = [
@@ -96,10 +97,17 @@ const systemStatus: DemoDocument[] = [
   {id: 'calendar', name: 'Google Calendar Sync', detail: 'OAuth connection is disabled in demo mode', status: 'degraded', latencyMs: 0, checkedAt: plusHours(-1)},
 ];
 
+const noteFolders = [
+  {id: 'demo-folder-course', ownerId: demoUid, name: 'วิชาเรียน', color: '#628660', icon: 'folder', sortOrder: 0, createdAt: plusHours(-240), updatedAt: plusHours(-12)},
+  {id: 'demo-folder-project', ownerId: demoUid, name: 'โปรเจกต์จบ', color: '#c49497', icon: 'folder_special', sortOrder: 1, createdAt: plusHours(-180), updatedAt: plusHours(-6)},
+  {id: 'demo-folder-scanned', ownerId: demoUid, name: 'เอกสารสแกน', color: '#6F8F6D', icon: 'document_scanner', sortOrder: 0, createdAt: plusHours(-120), updatedAt: plusHours(-3)},
+];
+
 const collections: Record<DemoCollection, DemoDocument[]> = {
   activities,
   aiRecommendations,
   feedback,
+  noteFolders,
   notes,
   notifications,
   scanLogs,
@@ -154,6 +162,10 @@ export function demoBetween(name: 'activities' | 'schedules', from: Date, to: Da
 export function demoTransactionsBetween(from: Date, to: Date, type?: unknown) {
   const items = between(transactions, 'occurredAt', from, to);
   return clone(type ? items.filter((item) => item.type === type) : items);
+}
+
+export function demoNoteFolders() {
+  return clone([...noteFolders].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)));
 }
 
 export function demoNotes(category?: unknown) {

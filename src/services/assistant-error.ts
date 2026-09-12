@@ -38,3 +38,18 @@ export function assistantErrorMessage(kind: AssistantErrorKind) {
   if (kind === 'unsupported') return 'คำขอนี้ยังอยู่นอกความสามารถที่ SmartLife รองรับครับ';
   return 'ตอนนี้ AI ตอบคำถามนี้ไม่สำเร็จครับ กรุณาลองอีกครั้ง';
 }
+
+export function assistantActionErrorMessage(error: unknown) {
+  const code = String((error as {code?: unknown})?.code ?? '').toLowerCase();
+  const rawMessage = String((error as {message?: unknown})?.message ?? '').trim();
+  const actionableCode = /(?:failed-precondition|invalid-argument|already-exists|aborted|not-found)/.test(code);
+  const cleanedMessage = rawMessage
+    .replace(/^firebaseerror:\s*/i, '')
+    .replace(/^\[?functions\/(?:failed-precondition|invalid-argument|already-exists|aborted|not-found)\]?\s*:?\s*/i, '')
+    .trim();
+  if (actionableCode && /[\u0e00-\u0e7f]/.test(cleanedMessage)) return cleanedMessage;
+
+  const kind = classifyAssistantError(error);
+  if (kind !== 'unknown') return assistantErrorMessage(kind);
+  return 'ยังบันทึกไม่สำเร็จ ข้อมูลเดิมยังไม่เปลี่ยน กรุณาลองอีกครั้งได้เลย';
+}

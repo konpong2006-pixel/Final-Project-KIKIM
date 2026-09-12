@@ -113,6 +113,34 @@ async function main() {
       somethingElse: 'nope', updatedAt: serverTimestamp(),
     }));
 
+    // --- "เลื่อน" on the calendar, the write behind the new postpone sheet.
+    // It moves the slot instead of closing it, so it touches startAt/endAt --
+    // a different field pair than mark-done and therefore a separate chance for
+    // the same hasOnly drift. It has to work on a backend-created activity too,
+    // because the whole point of recording task_postponed is to learn from the
+    // AI's own suggestions being moved.
+    const postpone = {
+      endAt: new Date('2026-08-20T18:00:00+07:00'),
+      startAt: new Date('2026-08-20T17:00:00+07:00'),
+      updatedAt: serverTimestamp(),
+    };
+    await assertSucceeds(updateDoc(doc(alice, 'users', 'alice', 'activities', 'plain'), postpone));
+    await assertSucceeds(updateDoc(doc(alice, 'users', 'alice', 'activities', 'adaptive'), postpone));
+    await assertFails(updateDoc(doc(bob, 'users', 'alice', 'activities', 'plain'), postpone));
+    // An inverted slot is still rejected, so a postpone cannot corrupt the range.
+    await assertFails(updateDoc(doc(alice, 'users', 'alice', 'activities', 'plain'), {
+      endAt: new Date('2026-08-20T16:00:00+07:00'),
+      startAt: new Date('2026-08-20T17:00:00+07:00'),
+      updatedAt: serverTimestamp(),
+    }));
+
+    // --- The behaviour events the postpone produces are written by the
+    // callable's Admin SDK, never by the client. If this ever starts passing,
+    // a user could forge their own learning history.
+    await assertFails(setDoc(doc(alice, 'users', 'alice', 'schedulingBehaviorEvents', 'forged'), {
+      eventType: 'task_completed', ownerId: 'alice', scheduleItemId: 'plain',
+    }));
+
     console.log('SmartLife mark-done rules tests passed');
   } finally {
     await testEnv.cleanup();

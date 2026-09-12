@@ -4,13 +4,16 @@ SmartLife Adaptive Scheduling learns category-specific time preferences from a u
 
 ## Safety model
 
-- `schedules` are fixed constraints. This includes classes, OCR/university imports, and Google Calendar imports.
+- `schedules` are fixed constraints for AI-generated suggestions. This includes classes, OCR/university imports, and Google Calendar imports.
 - An `activity` can move only when `isFlexible == true`, `isLocked == false`, and `allowAiReschedule == true`.
 - Appointments, participant activities, and records with a Google event ID are never moved by Adaptive Scheduling.
 - Suggestion Mode is the default. `allowAutomaticRescheduling` defaults to `false`.
 - Automatic mode still requires every task to be flexible, unlocked, allowed, conflict-free, before its deadline, below the workload limit, and above `minimumAutomaticConfidence`.
 - Gemini never writes schedules. It only produces strict structured intent or wording based on verified facts. The deterministic engine makes and revalidates every time decision.
 - If Gemini is unavailable or returns invalid JSON, deterministic parsing/explanations continue to work.
+- A new event that overlaps a saved activity or schedule is not silently rejected. The app lists every conflicting item and returns to the time editor, or lets the user explicitly confirm a concurrent activity before the final write.
+- `allowOverlap` is a one-request confirmation signal, not a saved preference. AI suggestions remain conflict-free by default.
+- Explicit calendar dates are hard date constraints and may be months or years ahead. The search jumps directly to the requested local day instead of applying the former 60-day horizon.
 
 ## Existing services reused
 
@@ -35,7 +38,7 @@ All documents are below the authenticated user's document.
 `users/{uid}/activities/{activityId}` keeps all existing fields and may also contain:
 
 ```text
-isFlexible, isLocked, allowAiReschedule
+isFlexible, isLocked, allowAiReschedule, fixedLocalDate, userSelectedTime
 priority, category, estimatedDurationMinutes, actualDurationMinutes
 deadline, originalScheduledStart, actualStart, actualEnd
 aiScheduled, aiReason, aiConfidence, scheduleVersion
@@ -69,12 +72,14 @@ users/{uid}/pushTokens/{tokenHash}
 
 1. Time-zone-aware availability and day-of-week calculation.
 2. Wake/sleep, configured unavailable-period, deadline, duration, and available-day checks.
-3. Conflict checks against all classes, Google imports, fixed items, locked items, and other activities, including transition time.
+3. Conflict checks against all classes, Google imports, fixed items, locked items, and other activities, including transition time. Suggested slots remain conflict-free; a create request may bypass only the conflict check after an explicit overlap confirmation.
 4. Daily workload and consecutive-difficult-task burnout penalties.
 5. Category/day pattern scoring, explicit category preference scoring, priority, deadline urgency, completion probability, postponement penalty, and workload penalty.
 6. Final validation again inside the acceptance transaction.
 
 Explicit preferences receive the strongest preference weight and category-specific exclusions are hard constraints. All weights and observation thresholds are sanitized server-side.
+
+Automatic suggestions continue to respect the saved wake/sleep and availability window. When the user explicitly asks for a clock time or a named night period, that request may use the overnight `21:00-05:00` window (including `00:00-05:00`) without changing the user's normal sleep settings. Conflict, deadline, duration, and workload validation still applies.
 
 ## Cloud Functions
 
@@ -95,6 +100,7 @@ deleteSchedulingPattern
 deleteSchedulingBehaviorHistory
 registerAdaptivePushToken
 processNaturalLanguageScheduleCommand
+createAdaptiveActivity
 rebalanceUserDay
 rebalanceUserWeek
 scheduledAdaptivePatternRecalculation
@@ -122,7 +128,9 @@ This conservative behavior avoids unsafe server-side calendar writes without a s
 
 ## UI and notifications
 
-The Planner has an **Adaptive** tab and a direct route at `/user/smartlife_adaptive_scheduling`. It includes suggestion cards, alternative-time validation, accept/reject/lock/undo, workload summaries, patterns, insights, settings, automatic-mode control, and privacy deletion.
+The Planner has an **Adaptive** tab and a direct route at `/user/smartlife_adaptive_scheduling`. It includes suggestion cards, alternative-time validation, accept/reject/lock/undo, workload summaries, patterns, insights, settings, automatic-mode control, and privacy deletion. Manual activity forms, assistant confirmation cards, and the Adaptive create flow all show the same overlap dialog with the conflicting titles/times, a return-to-edit action, and a separate explicit **save overlapping** action.
+
+Date pickers and ISO date validation intentionally have no near-term maximum. Firestore timestamps store long-range dates directly; Adaptive requests with an explicit date inspect that requested local day even when it is years away.
 
 `expo-notifications` registers a native FCM/APNs device token through an authenticated callable. Functions write one Firestore notification per action and send best-effort FCM without rolling back a successful schedule transaction when push delivery fails.
 
@@ -136,7 +144,7 @@ npm run test:firestore-rules
 npm run test:adaptive-transactions
 ```
 
-- Deterministic tests cover fixed/locked/external events, conflicts, deadlines, sleep, category exclusions, workload, explicit preferences, category patterns, confidence thresholds, automatic-mode default, and Gemini schema rejection.
+- Deterministic tests cover fixed/locked/external events, conflict warnings, explicit conflict overrides, deadlines, sleep, an explicit `00:00-05:00` override with automatic sleep protection, category exclusions, workload, long-range explicit dates, category patterns, confidence thresholds, automatic-mode default, and Gemini schema rejection.
 - Firestore Emulator rules tests cover own/cross-user/anonymous access, forged AI fields, invalid flexible appointments/participant events, server-only paths, settings, and token writes.
 - Transaction Emulator tests cover accept, reject, Undo, conflict rollback, stale multi-device suggestions, external Google events, history/events, and notification deduplication.
 

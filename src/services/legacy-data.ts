@@ -30,6 +30,12 @@ function asNumber(value: unknown) {
   return parsed;
 }
 
+/** Lenient counterpart to `asNumber`, for fields that are genuinely optional. */
+function optionalNumber(value: unknown) {
+  const parsed = Number(String(value ?? '').replace(/[^\d.-]/g, ''));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
 function asDate(value: unknown, fallback = new Date()) {
   const date = value instanceof Date ? value : new Date(asString(value));
   return Number.isNaN(date.getTime()) ? fallback : date;
@@ -206,17 +212,30 @@ export async function runLegacyDataAction(uid: string, pageKey: string, request:
   if (request.action === 'create-activity') {
     const start = asDate(data.startAt);
     const end = asDate(data.endAt, new Date(start.getTime() + 60 * 60 * 1000));
+    const activityType = asString(data.type, 'activity') as ActivityType;
+    const attendees = asString(data.attendees);
+    const isFlexible = data.isFlexible === true;
+    // The rules refuse "the AI may move this" on an item that is not flexible,
+    // is an appointment, or has attendees. This defaulted to true independently
+    // of isFlexible, which defaults to false, so every activity created here was
+    // rejected with "Missing or insufficient permissions".
+    const allowAiReschedule = data.allowAiReschedule !== false &&
+      isFlexible && activityType !== 'appointment' && attendees === '';
     return activities.create(uid, {
-      title: asString(data.title), type: asString(data.type, 'activity') as ActivityType,
+      title: asString(data.title), type: activityType,
       startAt: Timestamp.fromDate(start), endAt: Timestamp.fromDate(end),
-      location: asString(data.location), color: asString(data.color, '#6F8F6D'), note: asString(data.note), reminder: asString(data.reminder), category: asString(data.category), priority: asString(data.priority), attendees: asString(data.attendees),
+      location: asString(data.location), color: asString(data.color, '#6F8F6D'), note: asString(data.note), reminder: asString(data.reminder), category: asString(data.category), priority: asString(data.priority), attendees,
       actualDurationMinutes: null, actualEnd: null, actualStart: null,
       aiConfidence: null, aiReason: null, aiScheduled: false,
-      allowAiReschedule: data.allowAiReschedule !== false,
+      allowAiReschedule,
       deadline: data.deadline ? Timestamp.fromDate(asDate(data.deadline)) : null,
-      estimatedDurationMinutes: Math.max(15, Math.round(asNumber(data.estimatedDurationMinutes) || (end.getTime() - start.getTime()) / 60_000)),
+      // `asNumber` is the money validator and throws when the value is absent.
+      // The activity form never sends a duration -- it expects the start/end
+      // fallback below -- so calling it here threw "กรุณาระบุจำนวนเงินให้ถูกต้อง"
+      // on every activity, and the `||` fallback could never be reached.
+      estimatedDurationMinutes: Math.max(15, Math.round(optionalNumber(data.estimatedDurationMinutes) ?? (end.getTime() - start.getTime()) / 60_000)),
       googleSyncStatus: 'not_required',
-      isFlexible: data.isFlexible === true,
+      isFlexible,
       isLocked: data.isLocked === true,
       originalScheduledStart: Timestamp.fromDate(start),
       scheduleVersion: 0,

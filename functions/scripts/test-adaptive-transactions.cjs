@@ -119,6 +119,38 @@ async function main() {
   await assert.rejects(() => call(functions.acceptSchedulingSuggestion, {suggestionId: 'google-1'}), /Google Calendar/);
   assert.equal((await user.collection('activities').doc('google-task').get()).data().startAt.toMillis(), originalStart);
 
+  const overlappingStart = futureBangkokTime(4, 18);
+  await user.collection('schedules').doc('evening-commute').set({
+    courseCode: 'COMMUTE',
+    endAt: Timestamp.fromMillis(overlappingStart + 90 * minute),
+    ownerId: uid,
+    source: 'manual',
+    startAt: Timestamp.fromMillis(overlappingStart),
+    title: 'เดินทางกลับบ้าน',
+  });
+  const overlapRequest = {
+    activityCategory: 'personal',
+    clientRequestId: `overlap-${Date.now()}`,
+    dateLocked: true,
+    durationMinutes: 60,
+    endAt: new Date(overlappingStart + 60 * minute).toISOString(),
+    generatedForTimeZone: 'Asia/Bangkok',
+    startAt: new Date(overlappingStart).toISOString(),
+    title: 'ฟังพอดแคสต์',
+    userSelectedTime: true,
+  };
+  const warned = await call(functions.createAdaptiveActivity, overlapRequest);
+  assert.equal(warned.saved, false, 'an unconfirmed overlap must not be saved');
+  assert.equal(warned.requiresConflictConfirmation, true);
+  assert.equal(warned.conflicts.some((item) => item.title === 'เดินทางกลับบ้าน'), true, 'the warning must identify the conflicting event');
+  assert.equal((await user.collection('activities').where('clientRequestId', '==', overlapRequest.clientRequestId).get()).empty, true);
+
+  const confirmed = await call(functions.createAdaptiveActivity, {...overlapRequest, allowOverlap: true});
+  assert.equal(confirmed.saved, true, 'an explicitly confirmed overlap must be saved');
+  assert.equal(confirmed.requiresConflictConfirmation, false);
+  assert.equal(confirmed.conflicts.some((item) => item.title === 'เดินทางกลับบ้าน'), true);
+  assert.equal((await user.collection('activities').doc(confirmed.id).get()).exists, true);
+
   await db.recursiveDelete(user);
   await deleteApp(app);
   console.log('Adaptive Scheduling transaction tests passed.');

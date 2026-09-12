@@ -77,6 +77,14 @@ service firebase.storage {
       allow delete: if isOwner(userId);
     }
 
+    // Drawings and handwriting attached to a note. Images only, and small:
+    // a note's canvas is a PNG snapshot, not a photo library.
+    match /users/{userId}/notes/{fileName} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create, update: if isOwner(userId) && isAllowedOcrImage(fileName, 5 * 1024 * 1024);
+      allow delete: if isOwner(userId);
+    }
+
     match /users/{userId}/assistant-files/{fileName} {
       allow read: if isOwner(userId) || isAdmin();
       allow create: if isOwner(userId) && isAllowedAssistantFile(fileName, 8 * 1024 * 1024);

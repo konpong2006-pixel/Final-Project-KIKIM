@@ -1,8 +1,10 @@
 import {Timestamp} from 'firebase/firestore';
 
-import {schedules} from '@/services/firestore';
+import {noteFolders, notes, schedules} from '@/services/firestore';
+import {documentNoteText} from '@/services/document-note-text';
 import {saveReviewedReceipt, type OcrResult} from '@/services/ocr';
 import {ensureUserProfile} from '@/services/auth';
+import {normalizeExpenseCategory} from '@/config/expense-categories';
 
 type ScheduleEntry = {
   buildingName?: string;
@@ -19,7 +21,7 @@ type ScheduleEntry = {
 };
 
 export type SavedScan = {
-  destination: 'smartlife_calendar_month' | 'smartlife_finance_month';
+  destination: 'smartlife_calendar_month' | 'smartlife_finance_month' | 'smartlife_planner_notes';
   documentIds: string[];
   duplicate?: boolean;
 };
@@ -283,6 +285,44 @@ function scheduleEntries(draft: Record<string, unknown>) {
   return Array.isArray(draft.entries) ? draft.entries as ScheduleEntry[] : [];
 }
 
+/**
+ * The folder scanned documents land in.
+ *
+ * Only the general-document path uses it, and deliberately so: a receipt scan
+ * becomes a transaction and a timetable scan becomes calendar entries -- those
+ * never produce a note to file. If either ever starts producing notes, this is
+ * the place to reuse.
+ */
+const SCANNED_FOLDER_NAME = 'เอกสารสแกน';
+
+/** Finds the scanned-documents folder, creating it the first time. */
+async function scannedDocumentsFolderId(uid: string) {
+  try {
+    const existing = await noteFolders.list(uid);
+    const match = existing.find((folder) => String(folder.name ?? '').trim() === SCANNED_FOLDER_NAME);
+    if (match) return match.id;
+    return await noteFolders.create(uid, {
+      color: '#6F8F6D',
+      icon: 'document_scanner',
+      name: SCANNED_FOLDER_NAME,
+      sortOrder: 0,
+    });
+  } catch (error) {
+    // Filing is a convenience. A folder that cannot be read or created must
+    // not cost the user the scanned note itself.
+    console.warn('[SmartScan] Could not resolve the scanned-documents folder', error);
+    return '';
+  }
+}
+
+/** The first line with real words, used to title a scanned note. */
+function firstMeaningfulLine(text: string) {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.length >= 4 && /[\p{L}]/u.test(line)) ?? '';
+}
+
 export async function saveOcrResult({
   draft,
   result,
@@ -294,6 +334,30 @@ export async function saveOcrResult({
 }): Promise<SavedScan> {
   await ensureUserProfile();
 
+  // A general document has no financial or timetable schema to fill, but it is
+  // still worth keeping: it becomes a note holding the extracted text. Saving
+  // it as a *transaction* is the failure this category was added to prevent --
+  // saving it at all is not.
+  if (result.scanType === 'document') {
+    const scanned = documentNoteText(draft, result.parsed?.documentText, result.rawText);
+    if (!scanned) throw new Error('ไม่พบข้อความในเอกสารนี้ จึงบันทึกเป็นโน้ตไม่ได้');
+    const title = String(draft.title ?? '').trim() || firstMeaningfulLine(scanned) ||
+      `สแกนเมื่อ ${new Date().toLocaleDateString('th-TH')}`;
+    const folderId = await scannedDocumentsFolderId(uid);
+    const id = await notes.create(uid, {
+      category: 'study',
+      color: '#6F8F6D',
+      content: scanned.slice(0, 20000),
+      folderId,
+      priority: 'normal',
+      relatedScheduleId: '',
+      scanLogId: typeof result.logId === 'string' ? result.logId : '',
+      status: 'pending',
+      title: title.slice(0, 160),
+    });
+    return {destination: 'smartlife_planner_notes', documentIds: [id]};
+  }
+
   if (result.scanType === 'receipt') {
     const amount = parseCurrencyAmount(firstAmountValue(draft));
     if (amount === null) throw new Error('\u0e01\u0e23\u0e38\u0e13\u0e32\u0e01\u0e23\u0e2d\u0e01\u0e22\u0e2d\u0e14\u0e40\u0e07\u0e34\u0e19\u0e40\u0e1b\u0e47\u0e19\u0e15\u0e31\u0e27\u0e40\u0e25\u0e02 \u0e40\u0e0a\u0e48\u0e19 90 \u0e2b\u0e23\u0e37\u0e2d 1,250.00');
@@ -304,7 +368,9 @@ export async function saveOcrResult({
 
     const saved = await saveReviewedReceipt({
       amount,
-      category: text(draft.category) || 'Others',
+      // Normalised so a scanned row lands in the same bucket as a manual one;
+      // the parser emits English ("Food", "Others") and the app speaks Thai.
+      category: normalizeExpenseCategory(text(draft.category)),
       confidence,
       items: receiptItemsForStorage(draft.items),
       merchant: text(draft.merchant) || text(draft.merchantName) || text(draft.store) || text(draft.vendor) || '\u0e44\u0e21\u0e48\u0e23\u0e30\u0e1a\u0e38\u0e23\u0e49\u0e32\u0e19\u0e04\u0e49\u0e32',

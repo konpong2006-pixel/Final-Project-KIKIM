@@ -46,6 +46,7 @@ artifacts/
 firestore-rules-audit.json
 .firebase/
 firestore-debug.log
+firebase-debug.log
 .runtimeconfig.json
 
 # macOS

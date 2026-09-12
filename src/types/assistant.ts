@@ -17,6 +17,12 @@ export type AssistantErrorKind =
   | 'unsupported'
   | 'unknown';
 export type AssistantFeedbackRating = 'helpful' | 'not_helpful';
+export type AssistantPendingTaskShortcut = {
+  dueAt?: string;
+  id: string;
+  status: 'completed' | 'pending';
+  title: string;
+};
 export type AssistantResponseMode =
   | 'brainstorm'
   | 'coach'
@@ -62,8 +68,10 @@ export type AssistantConversationStatePatch = Partial<Pick<
 export type SchedulePayload = {
   aiReason?: string;
   aiScheduled?: boolean;
+  allowOverlap?: boolean;
   allowAiReschedule?: boolean;
   category?: string;
+  dateLocked?: boolean;
   deadline?: string | null;
   endAt?: string;
   estimatedDurationMinutes?: number;
@@ -74,6 +82,7 @@ export type SchedulePayload = {
   startAt: string;
   title: string;
   type: 'appointment' | 'class' | 'task';
+  userSelectedTime?: boolean;
 };
 
 export type FinancePayload = {
@@ -151,6 +160,7 @@ export type AssistantChatMessage = {
   id: string;
   intent?: 'finance' | 'schedule' | 'task_note' | 'unknown';
   latencyMs?: number;
+  pendingTaskShortcuts?: AssistantPendingTaskShortcut[];
   proposedAction?: AssistantProposedAction;
   role: 'assistant' | 'system' | 'user';
   source?: AssistantReplySource;

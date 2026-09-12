@@ -1,4 +1,4 @@
-import {calculateBudgetTension, calculateDailyAllowance, calculateFinanceBudgetInsight, type BudgetTension, type DailyAllowance, type FinanceBudgetInsight} from '@/services/dynamic-insights';
+import {calculateBudgetTension, calculateDailyAllowance, calculateFinanceBudgetInsight, isSleepActivity, type BudgetTension, type DailyAllowance, type FinanceBudgetInsight} from '@/services/dynamic-insights';
 import type {Notification, Transaction, WithId} from '@/types/smartlife';
 
 /**
@@ -102,12 +102,22 @@ export function isOpen(item: Item) {
 }
 
 /**
+ * A logged night is a record of something that happened, not work waiting to be
+ * done, so it never belongs in a priority ranking or the bell. This reuses the
+ * burnout model's own predicate rather than re-deriving one, so the two can
+ * never disagree about what counts as sleep.
+ */
+export function isRankable(item: Item) {
+  return !isSleepActivity(item);
+}
+
+/**
  * The urgent band the AI card already rewards most heavily: due within a day
  * (or already past due), or explicitly flagged high priority. Expressed once
  * here so the bell flags exactly the items the card calls "ด่วน".
  */
 export function isCalendarUrgent(item: Item, now = new Date()) {
-  return isOpen(item) && (hoursUntil(item, now) <= 24 || HIGH_PRIORITY.test(string(item, 'priority', '')));
+  return isRankable(item) && isOpen(item) && (hoursUntil(item, now) <= 24 || HIGH_PRIORITY.test(string(item, 'priority', '')));
 }
 
 /** Notes carry their own priority field; `important` and `urgent` both count. */

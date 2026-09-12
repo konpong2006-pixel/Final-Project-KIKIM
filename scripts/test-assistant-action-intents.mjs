@@ -97,6 +97,7 @@ const intentCases = [
   ['การบ้านอะไรเดดไลน์ใกล้สุด', 'unknown', 'task_note'],
   ['วางแผนงานสัปดาห์นี้ให้หน่อย', 'unknown', 'task_note'],
   ['สรุปงานที่ต้องส่งให้หน่อย', 'unknown', 'task_note'],
+  ['จัด ซื้อหนังสือ ช่วงเย็น', 'finance', 'schedule'],
 ];
 
 const failures = [];

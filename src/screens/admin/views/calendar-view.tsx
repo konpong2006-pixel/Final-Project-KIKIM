@@ -158,6 +158,17 @@ export default function AdminCalendarView() {
               markingType="multi-dot"
               onDayPress={(day: {dateString: string}) => setSelectedDay(day.dateString)}
               onMonthChange={(month: {dateString: string}) => setMonthKey(month.dateString.slice(0, 7))}
+              /* The locale registers Thai month names but not the era, so the
+                 library printed "กันยายน 2026" directly under this screen's own
+                 "กันยายน 2569" header. Reuse `monthLabel` so both agree on the
+                 Buddhist year the rest of the app shows. */
+              renderHeader={(headerDate: Date | {toString(): string}) => {
+                const value = new Date(headerDate as Date);
+                const key = Number.isNaN(value.getTime())
+                  ? monthKey
+                  : `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}`;
+                return <Text style={local.calendarHeader}>{monthLabel(key)}</Text>;
+              }}
               theme={{
                 arrowColor: C.pine,
                 monthTextColor: C.pine,
@@ -272,6 +283,7 @@ function DetailRow({icon, label, value}: {icon: string; label: string; value: st
 }
 
 const local = StyleSheet.create({
+  calendarHeader: {color: C.pine, fontFamily: F.b, fontSize: 13},
   detailLabel: {color: C.muted, fontFamily: F.s, fontSize: 10, width: 76},
   detailRow: {alignItems: 'center', borderBottomColor: 'rgba(44,52,27,.07)', borderBottomWidth: 1, flexDirection: 'row', gap: 9, paddingVertical: 12},
   detailValue: {color: C.pine, flex: 1, fontFamily: F.m, fontSize: 10, textAlign: 'right'},

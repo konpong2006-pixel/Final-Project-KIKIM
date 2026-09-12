@@ -26,19 +26,19 @@ const COURSE_EXAM_SCHEMA = {
                 type: "object",
                 additionalProperties: false,
                 properties: {
-                    entry_index: { type: "integer", minimum: 0 },
+                    entry_index: { type: "integer" },
                     course_code: nullableString,
                     course_name: nullableString,
                     course_pair_valid: nullableBoolean,
-                    course_confidence: { type: "number", minimum: 0, maximum: 1 },
+                    course_confidence: { type: "number" },
                     course_evidence: nullableString,
                     midterm_present: nullableBoolean,
                     midterm_exam: nullableString,
-                    midterm_confidence: { type: "number", minimum: 0, maximum: 1 },
+                    midterm_confidence: { type: "number" },
                     midterm_evidence: nullableString,
                     final_present: nullableBoolean,
                     final_exam: nullableString,
-                    final_confidence: { type: "number", minimum: 0, maximum: 1 },
+                    final_confidence: { type: "number" },
                     final_evidence: nullableString,
                 },
                 required: [
@@ -203,13 +203,17 @@ async function reviewScheduleCoursesAndExamsWithGemini({ apiKey, entries, imageD
                 model,
                 store: false,
                 system_instruction: exports.COURSE_EXAM_REVIEW_SYSTEM_PROMPT,
-                input: [
-                    {
-                        type: "text",
-                        text: `Verify course-name/code pairs and per-course exam facts for these candidates:\n${JSON.stringify(candidates(entries))}\n\nOCR hints:\n${rawText.slice(0, 30000)}`,
-                    },
-                    { type: "image", data: image.data, mime_type: image.mimeType },
-                ],
+                // /v1/interactions takes content parts only inside a user_input step. These
+                // were sent bare, which v1beta accepted and v1 rejects ("The value 'image'
+                // is not supported for 'type'"), so after the 2026-08-07 move to v1 every
+                // one of these reviews failed and the scan kept its unreviewed values.
+                input: [{ type: "user_input", content: [
+                            {
+                                type: "text",
+                                text: `Verify course-name/code pairs and per-course exam facts for these candidates:\n${JSON.stringify(candidates(entries))}\n\nOCR hints:\n${rawText.slice(0, 30000)}`,
+                            },
+                            { type: "image", data: image.data, mime_type: image.mimeType },
+                        ] }],
                 response_format: {
                     type: "text",
                     mime_type: "application/json",

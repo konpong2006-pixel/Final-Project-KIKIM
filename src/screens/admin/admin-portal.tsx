@@ -1,6 +1,6 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import {useCallback, useEffect, useMemo, useState} from 'react';
-import {ActivityIndicator, Alert, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {ActivityIndicator, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
 
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
@@ -20,6 +20,7 @@ import AdminOcrLogsView from './views/ocr-logs-view';
 import AdminSystemHealthView from './views/system-health-view';
 import AdminUsersView from './views/users-view';
 import type {AdminViewProps} from './views/view-props';
+import {showToast} from '@/components/app-toast';
 
 type Props = {
   onLogout: () => Promise<void>;
@@ -151,10 +152,10 @@ export default function AdminPortal({onLogout, onNavigate, page, uid}: Props) {
     try {
       await runLegacyDataAction(uid, key, {action, payload});
       await load();
-      if (successMessage) Alert.alert('สำเร็จ', successMessage);
+      if (successMessage) showToast('สำเร็จ', successMessage, 'success');
       return true;
     } catch (error) {
-      Alert.alert('ข้อผิดพลาด', error instanceof Error ? error.message : 'กรุณาลองอีกครั้ง');
+      showToast('ข้อผิดพลาด', error instanceof Error ? error.message : 'กรุณาลองอีกครั้ง');
       return false;
     } finally {
       setActionLoading(null);

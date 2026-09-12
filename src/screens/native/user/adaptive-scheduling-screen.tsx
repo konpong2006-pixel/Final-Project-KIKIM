@@ -1,11 +1,13 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {ActivityIndicator, Alert, Animated, Easing, Modal, Pressable, StyleSheet, Switch, Text, TextInput, View} from 'react-native';
+import {ActivityIndicator, Animated, Easing, Modal, Pressable, StyleSheet, Switch, Text, TextInput, View} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
 
 import {AsyncActionOverlay, type AsyncActionStatus} from '@/components/async-action-ui';
+import {PlainDateTimeField} from '@/components/date-time-picker';
 import {appCheckErrorMessage, isAppCheckError} from '@/lib/app-check';
 import {
   adaptiveScheduling,
+  type AdaptiveCreateConflict,
   type AdaptiveDashboard,
   type AdaptiveHistory,
   type AdaptivePattern,
@@ -13,8 +15,11 @@ import {
   type AdaptiveProposedActivity,
   type AdaptiveSuggestion,
 } from '@/services/adaptive-scheduling';
+import ScheduleConflictDialog from '@/components/schedule-conflict-dialog';
+import ConfirmDialog from '@/components/confirm-dialog';
 import {MaterialIcon, UserShell, type UserNavigate} from './user-ui';
 import {registerAdaptivePushNotifications} from '@/services/push-notifications';
+import {showToast} from '@/components/app-toast';
 
 type PlannerTab = 'adaptive' | 'calendar' | 'notes';
 type HistoryFilter = 'ai' | 'all' | 'automatic' | 'errors' | 'user';
@@ -22,13 +27,16 @@ type Planner = {activeTab: PlannerTab; onTabChange: (tab: PlannerTab) => void};
 type ConfirmationFlow = {
   adjusted?: boolean;
   clientRequestId?: string;
+  conflicts?: AdaptiveCreateConflict[];
   error?: string;
   proposal: AdaptiveProposedActivity | null;
   savedStartAt?: string;
-  stage: 'analyzing' | 'confirm' | 'error' | 'saving' | 'success';
+  stage: 'analyzing' | 'confirm' | 'conflict' | 'error' | 'saving' | 'success';
 };
 type ActionFeedback = {
   error?: string;
+  /** Only a failed action offers a retry; a plain answer has nothing to redo. */
+  retryable?: boolean;
   message: string;
   status: AsyncActionStatus;
   title: string;
@@ -143,11 +151,29 @@ export default function AdaptiveSchedulingScreen({onNavigate, planner}: {onNavig
   const [loadedAt, setLoadedAt] = useState(0);
   const [clockNow, setClockNow] = useState(0);
   const [confirmationFlow, setConfirmationFlow] = useState<ConfirmationFlow | null>(null);
+  // `Alert.alert` does nothing on react-native-web, so these two confirmations
+  // -- and the deletes behind them -- were unreachable there.
+  const [deletingPatternId, setDeletingPatternId] = useState('');
+  const [deletingHistory, setDeletingHistory] = useState(false);
   const [proposalDateDraft, setProposalDateDraft] = useState('');
   const [proposalDurationDraft, setProposalDurationDraft] = useState('60');
+  const [proposalEditorError, setProposalEditorError] = useState('');
   const [proposalEditorOpen, setProposalEditorOpen] = useState(false);
   const [proposalTimeDraft, setProposalTimeDraft] = useState('');
   const [actionFeedback, setActionFeedback] = useState<ActionFeedback>({message: '', status: 'idle', title: ''});
+  const pendingPreferencePatchRef = useRef<Partial<AdaptivePreferences> | null>(null);
+
+  /**
+   * Shows the assistant's own answer.
+   *
+   * These used to be Alert.alert, which react-native-web implements as an empty
+   * function, so a web user who asked for a time the schedule could not take
+   * saw the input clear and nothing else at all. The screen already renders an
+   * overlay for every other outcome; these go through it too.
+   */
+  const announce = useCallback((title: string, message: string, status: 'success' | 'error' = 'success') => {
+    setActionFeedback(status === 'error' ? {error: message, message: '', status, title} : {message, status, title});
+  }, []);
   const actionInFlightRef = useRef(false);
   const commandInFlightRef = useRef(false);
   const createActivityInFlightRef = useRef(false);
@@ -163,7 +189,7 @@ export default function AdaptiveSchedulingScreen({onNavigate, planner}: {onNavig
   const load = useCallback(async () => {
     setLoading(true);
     try { setDashboard(await adaptiveScheduling.getDashboard()); setLoadedAt(Date.now()); }
-    catch (error) { Alert.alert('โหลด Adaptive Scheduling ไม่สำเร็จ', errorMessage(error)); }
+    catch (error) { showToast('โหลด Adaptive Scheduling ไม่สำเร็จ', errorMessage(error)); }
     finally { setLoading(false); }
   }, []);
 
@@ -191,7 +217,7 @@ export default function AdaptiveSchedulingScreen({onNavigate, planner}: {onNavig
       await load();
       setActionFeedback({message: success ?? 'ดำเนินการเรียบร้อยแล้ว', status: 'success', title: 'เรียบร้อย'});
     } catch (error) {
-      setActionFeedback({error: errorMessage(error), message: '', status: 'error', title: 'ดำเนินการไม่สำเร็จ'});
+      setActionFeedback({error: errorMessage(error), message: '', retryable: true, status: 'error', title: 'ดำเนินการไม่สำเร็จ'});
     } finally {
       actionInFlightRef.current = false;
       setBusy('');
@@ -210,6 +236,10 @@ export default function AdaptiveSchedulingScreen({onNavigate, planner}: {onNavig
     setConfirmationFlow({clientRequestId, proposal, stage: 'saving'});
     try {
       const result = await adaptiveScheduling.createActivity(proposal, clientRequestId);
+      if (!result.saved) {
+        setConfirmationFlow({clientRequestId, conflicts: result.conflicts, proposal, stage: 'conflict'});
+        return;
+      }
       setCommand('');
       await load();
       setConfirmationFlow({adjusted: result.adjusted, clientRequestId, proposal, savedStartAt: result.startAt, stage: 'success'});
@@ -226,18 +256,25 @@ export default function AdaptiveSchedulingScreen({onNavigate, planner}: {onNavig
     const timeZone = resolveTimeZone(confirmationFlow.proposal.generatedForTimeZone, dashboard?.preferences.timeZone);
     const startAt = parseLocalInput(`${proposalDateDraft} ${proposalTimeDraft}`, timeZone);
     const durationMinutes = Number(proposalDurationDraft);
+    // Alert.alert is a no-op on react-native-web, so every one of these
+    // messages also has to land somewhere the web build can actually show it.
+    const reject = (title: string, detail: string) => {
+      setProposalEditorError(detail);
+      showToast(title, detail);
+    };
     if (!startAt) {
-      Alert.alert('วันหรือเวลาไม่ถูกต้อง', `กรุณาใช้วันที่แบบ YYYY-MM-DD และเวลา HH:mm ในเขตเวลา ${timeZone}`);
+      reject('วันหรือเวลาไม่ถูกต้อง', `กรุณาใช้วันที่แบบ YYYY-MM-DD และเวลา HH:mm ในเขตเวลา ${timeZone}`);
       return;
     }
     if (!Number.isInteger(durationMinutes) || durationMinutes < 15 || durationMinutes > 720) {
-      Alert.alert('ระยะเวลาไม่ถูกต้อง', 'กรุณาใส่ระยะเวลาตั้งแต่ 15 ถึง 720 นาที');
+      reject('ระยะเวลาไม่ถูกต้อง', 'กรุณาใส่ระยะเวลาตั้งแต่ 15 ถึง 720 นาที');
       return;
     }
     if (startAt.getTime() < Date.now() + 5 * 60_000) {
-      Alert.alert('เวลานี้ใกล้หรือผ่านไปแล้ว', 'กรุณาเลือกเวลาอย่างน้อย 5 นาทีจากเวลาปัจจุบัน');
+      reject('เวลานี้ใกล้หรือผ่านไปแล้ว', 'กรุณาเลือกเวลาอย่างน้อย 5 นาทีจากเวลาปัจจุบัน');
       return;
     }
+    setProposalEditorError('');
     const updatedProposal: AdaptiveProposedActivity = {
       ...confirmationFlow.proposal,
       durationMinutes,
@@ -262,33 +299,32 @@ export default function AdaptiveSchedulingScreen({onNavigate, planner}: {onNavig
       setCommand('');
       if (result.preferencePatch) {
         setConfirmationFlow(null);
-        Alert.alert('ยืนยันการตั้งค่า', 'ระบบเข้าใจว่าคุณต้องการเปลี่ยนช่วงเวลาที่ชอบ ต้องการบันทึกค่านี้หรือไม่?', [
-          {style: 'cancel', text: 'ยังไม่บันทึก'},
-          {onPress: () => void act('preferences', () => adaptiveScheduling.updatePreferences(result.preferencePatch ?? {}), 'บันทึกช่วงเวลาที่ชอบแล้ว'), text: 'บันทึก'},
-        ]);
+        pendingPreferencePatchRef.current = result.preferencePatch;
+        setActionFeedback({message: 'ระบบเข้าใจว่าคุณต้องการเปลี่ยนช่วงเวลาที่ชอบ ต้องการบันทึกค่านี้หรือไม่?', status: 'confirming', title: 'ยืนยันการตั้งค่า'});
       } else if (result.proposedActivity) {
         const timeZone = resolveTimeZone(result.proposedActivity.generatedForTimeZone, dashboard?.preferences.timeZone);
         const [datePart = '', timePart = ''] = localInput(result.proposedActivity.startAt, timeZone).split(' ');
         setProposalDateDraft(datePart);
         setProposalTimeDraft(timePart);
         setProposalDurationDraft(String(result.proposedActivity.durationMinutes));
+        setProposalEditorError('');
         setProposalEditorOpen(false);
         setConfirmationFlow({clientRequestId: newClientRequestId(), proposal: result.proposedActivity, stage: 'confirm'});
       } else if (result.suggestion) {
         setConfirmationFlow(null);
-        Alert.alert('สร้างคำแนะนำแล้ว', result.suggestion.explanation);
-      } else if (result.message) { setConfirmationFlow(null); Alert.alert('Adaptive Scheduling', result.message); }
-      else if (result.intent.intent === 'productivity') { setConfirmationFlow(null); Alert.alert('สรุปประสิทธิภาพ', 'อัปเดตข้อมูลด้านล่างแล้ว'); }
-      else { setConfirmationFlow(null); Alert.alert('ต้องการข้อมูลเพิ่ม', 'ลองระบุชื่องาน ระยะเวลา หรือวันที่ต้องเสร็จให้ชัดขึ้น'); }
+        announce('สร้างคำแนะนำแล้ว', result.suggestion.explanation);
+      } else if (result.message) { setConfirmationFlow(null); announce('Adaptive Scheduling', result.message, 'error'); }
+      else if (result.intent.intent === 'productivity') { setConfirmationFlow(null); announce('สรุปประสิทธิภาพ', 'อัปเดตข้อมูลด้านล่างแล้ว'); }
+      else { setConfirmationFlow(null); announce('ต้องการข้อมูลเพิ่ม', 'ลองระบุชื่องาน ระยะเวลา หรือวันที่ต้องเสร็จให้ชัดขึ้น', 'error'); }
       await load();
     } catch (error) { setConfirmationFlow({error: errorMessage(error), proposal: null, stage: 'error'}); }
     finally { commandInFlightRef.current = false; setBusy(''); }
-  }, [act, command, dashboard, load]);
+  }, [announce, command, dashboard, load]);
 
   const submitAlternative = useCallback((suggestion: AdaptiveSuggestion) => {
     const timeZone = resolveTimeZone(suggestion.generatedForTimeZone, dashboard?.preferences.timeZone);
     const parsed = parseLocalInput(alternativeTime, timeZone);
-    if (!parsed) return Alert.alert('รูปแบบเวลาไม่ถูกต้อง', `ใช้รูปแบบ YYYY-MM-DD HH:mm ในเขตเวลา ${timeZone}`);
+    if (!parsed) return showToast('รูปแบบเวลาไม่ถูกต้อง', `ใช้รูปแบบ YYYY-MM-DD HH:mm ในเขตเวลา ${timeZone}`);
     void act(`alternative-${suggestion.id}`, () => adaptiveScheduling.chooseAlternative(suggestion.id, parsed), 'ตรวจสอบและเปลี่ยนเวลาที่เสนอแล้ว');
     setAlternativeId('');
   }, [act, alternativeTime, dashboard?.preferences.timeZone]);
@@ -304,15 +340,27 @@ export default function AdaptiveSchedulingScreen({onNavigate, planner}: {onNavig
 
   return <UserShell active="smartlife_planner" onNavigate={onNavigate}>
     <AsyncActionOverlay
-      cancelLabel="ปิด"
+      cancelLabel={actionFeedback.status === 'confirming' ? 'ยังไม่บันทึก' : 'ปิด'}
+      confirmLabel="บันทึก"
       errorMessage={actionFeedback.error}
       loadingMessage={actionFeedback.message}
-      onCancel={() => setActionFeedback({message: '', status: 'idle', title: ''})}
-      onRequestClose={() => setActionFeedback({message: '', status: 'idle', title: ''})}
-      onRetry={() => {
+      onCancel={() => {
+        pendingPreferencePatchRef.current = null;
+        setActionFeedback({message: '', status: 'idle', title: ''});
+      }}
+      onConfirm={() => {
+        const patch = pendingPreferencePatchRef.current;
+        pendingPreferencePatchRef.current = null;
+        return patch ? act('preferences', () => adaptiveScheduling.updatePreferences(patch), 'บันทึกช่วงเวลาที่ชอบแล้ว') : undefined;
+      }}
+      onRequestClose={() => {
+        pendingPreferencePatchRef.current = null;
+        setActionFeedback({message: '', status: 'idle', title: ''});
+      }}
+      onRetry={actionFeedback.retryable ? () => {
         const retry = retryActionRef.current;
         return retry ? act(retry.key, retry.action, retry.success) : undefined;
-      }}
+      } : undefined}
       onSuccessAnimationComplete={() => setActionFeedback({message: '', status: 'idle', title: ''})}
       slowMessage="กำลังตรวจ conflict, กำหนดส่ง เวลาพัก และข้อมูล Firebase ล่าสุด…"
       status={actionFeedback.status}
@@ -343,13 +391,29 @@ export default function AdaptiveSchedulingScreen({onNavigate, planner}: {onNavig
           />) : <Empty label="ยังไม่มีคำแนะนำใหม่ เพิ่มงานแบบยืดหยุ่นหรือใช้คำสั่งด้านบนได้" />}
         </Section>
         <Section title="ภาระงาน 7 วัน" subtitle={`รวม ${dashboard.weeklyWorkloadMinutes.toLocaleString('th-TH')} นาที`}><View style={styles.workloadGrid}>{workload.map((item) => <View key={item.date} style={[styles.workloadDay, item.highWorkload && styles.workloadHigh]}><Text style={styles.workloadDate}>{new Intl.DateTimeFormat('th-TH', {day: 'numeric', month: 'short'}).format(new Date(`${item.date}T12:00:00`))}</Text><Text style={styles.workloadMinutes}>{item.minutes} นาที</Text>{item.highWorkload ? <Text style={styles.risk}>ภาระสูง</Text> : null}</View>)}</View><View style={styles.actionRow}><SmallButton disabled={Boolean(busy)} label="ปรับวันพรุ่งนี้ให้เบาลง" loading={busy === 'day'} onPress={() => void act('day', () => adaptiveScheduling.rebalanceDay(), 'สร้างคำแนะนำสำหรับวันพรุ่งนี้แล้ว')} /><SmallButton disabled={Boolean(busy)} label="สมดุลทั้งสัปดาห์" loading={busy === 'week'} onPress={() => void act('week', () => adaptiveScheduling.rebalanceWeek(), 'ตรวจทั้งสัปดาห์และสร้างตัวเลือกที่ผ่านเงื่อนไขแล้ว')} /></View></Section>
-        <Section title="รูปแบบที่เรียนรู้" subtitle="คำนวณแยกตามประเภทกิจกรรม และไม่สรุปแรงเกินไปเมื่อข้อมูลยังน้อย"><View style={styles.patternList}>{dashboard.patterns.length ? dashboard.patterns.map((pattern) => <PatternRow key={pattern.id} onDelete={() => Alert.alert('ลบรูปแบบนี้?', 'ระบบจะเริ่มเรียนรู้หมวดนี้ใหม่จากประวัติที่ยังเหลืออยู่', [{style: 'cancel', text: 'ยกเลิก'}, {style: 'destructive', onPress: () => void act(`pattern-${pattern.id}`, () => adaptiveScheduling.deletePattern(pattern.id)), text: 'ลบ'}])} pattern={pattern} />) : <Empty label="ยังมีข้อมูลไม่ถึง 3 เหตุการณ์ต่อหมวด จึงยังไม่ตั้งรูปแบบถาวร" />}</View><SmallButton label="คำนวณรูปแบบใหม่ตอนนี้" onPress={() => void act('patterns', () => adaptiveScheduling.calculatePatterns(), 'คำนวณจากพฤติกรรมล่าสุดแล้ว')} /></Section>
+        <Section title="รูปแบบที่เรียนรู้" subtitle="คำนวณแยกตามประเภทกิจกรรม และไม่สรุปแรงเกินไปเมื่อข้อมูลยังน้อย"><View style={styles.patternList}>{dashboard.patterns.length ? dashboard.patterns.map((pattern) => <PatternRow key={pattern.id} onDelete={() => setDeletingPatternId(pattern.id)} pattern={pattern} />) : <Empty label="ยังมีข้อมูลไม่ถึง 3 เหตุการณ์ต่อหมวด จึงยังไม่ตั้งรูปแบบถาวร" />}</View><SmallButton label="คำนวณรูปแบบใหม่ตอนนี้" onPress={() => void act('patterns', () => adaptiveScheduling.calculatePatterns(), 'คำนวณจากพฤติกรรมล่าสุดแล้ว')} /></Section>
         <Section title="Productivity Insights" subtitle="ตัวเลขมาจากข้อมูลที่คำนวณแล้ว ไม่ให้ Gemini เดา"><View style={styles.insightList}>{dashboard.insights.length ? dashboard.insights.map((item) => <View key={item.id} style={styles.insight}><MaterialIcon color="#617e60" name="lightbulb" size={18} /><View style={{flex: 1}}><Text style={styles.insightText}>{item.message}</Text><Text style={styles.meta}>อิงจาก {item.observationCount} เหตุการณ์</Text></View></View>) : <Empty label="ยังไม่มี insight จนกว่าจะมีพฤติกรรมเพียงพอ" />}</View></Section>
-        <Section title="การตั้งค่าและความเป็นส่วนตัว" subtitle="ค่าที่คุณเลือกมีสิทธิ์เหนือรูปแบบที่ระบบเรียนรู้"><PreferenceControls busy={busy} onUpdate={updatePreference} preferences={dashboard.preferences} /><View style={styles.privacyActions}><SmallButton danger label="ลบประวัติพฤติกรรม" onPress={() => Alert.alert('ลบประวัติการเรียนรู้ทั้งหมด?', 'เหตุการณ์และรูปแบบที่เรียนรู้จะถูกลบ แต่ตารางงานเดิมจะไม่ถูกลบ', [{style: 'cancel', text: 'ยกเลิก'}, {style: 'destructive', onPress: () => void act('delete-history', () => adaptiveScheduling.deleteBehaviorHistory(), 'ลบประวัติการเรียนรู้แล้ว'), text: 'ลบ'}])} /></View></Section>
+        <Section title="การตั้งค่าและความเป็นส่วนตัว" subtitle="ค่าที่คุณเลือกมีสิทธิ์เหนือรูปแบบที่ระบบเรียนรู้"><PreferenceControls busy={busy} onUpdate={updatePreference} preferences={dashboard.preferences} /><View style={styles.privacyActions}><SmallButton danger label="ลบประวัติพฤติกรรม" onPress={() => setDeletingHistory(true)} /></View></Section>
         <Section title="ประวัติการปรับตาราง" subtitle="บอกว่าใครเปลี่ยน เหตุผล เวลาเดิม/ใหม่ และสถานะการซิงก์"><View style={styles.historyFilters}>{([['all', 'ทั้งหมด'], ['user', 'ยืนยันโดยคุณ'], ['ai', 'คำแนะนำ AI'], ['automatic', 'อัตโนมัติ'], ['errors', 'ซิงก์ผิดพลาด']] as [HistoryFilter, string][]).map(([key, label]) => <Pressable accessibilityRole="button" accessibilityState={{selected: historyFilter === key}} key={key} onPress={() => setHistoryFilter(key)} style={[styles.historyFilter, historyFilter === key && styles.historyFilterActive]}><Text style={[styles.historyFilterText, historyFilter === key && styles.historyFilterTextActive]}>{label}</Text></Pressable>)}</View><View style={styles.historyList}>{filteredHistory.length ? filteredHistory.map((item) => <ActivityLogItem busy={busy} item={item} key={item.id} now={Math.max(loadedAt, clockNow)} onUndo={() => void act(`undo-${item.id}`, () => adaptiveScheduling.undo(item.id), 'คืนเวลาเดิมแล้ว')} />) : <Empty label={dashboard.history.length ? 'ไม่มีประวัติในตัวกรองนี้' : 'ยังไม่มีการเปลี่ยนตารางจากคำแนะนำ'} />}</View></Section>
       </> : null}
     </View>
-    <Modal animationType="fade" onRequestClose={() => confirmationFlow?.stage !== 'saving' && confirmationFlow?.stage !== 'analyzing' ? setConfirmationFlow(null) : undefined} transparent visible={Boolean(confirmationFlow)}>
+    <ConfirmDialog
+      confirmLabel="ลบ"
+      message="ระบบจะเริ่มเรียนรู้หมวดนี้ใหม่จากประวัติที่ยังเหลืออยู่"
+      onCancel={() => setDeletingPatternId('')}
+      onConfirm={() => { const id = deletingPatternId; setDeletingPatternId(''); void act(`pattern-${id}`, () => adaptiveScheduling.deletePattern(id)); }}
+      title="ลบรูปแบบนี้?"
+      visible={Boolean(deletingPatternId)}
+    />
+    <ConfirmDialog
+      confirmLabel="ลบ"
+      message="เหตุการณ์และรูปแบบที่เรียนรู้จะถูกลบ แต่ตารางงานเดิมจะไม่ถูกลบ"
+      onCancel={() => setDeletingHistory(false)}
+      onConfirm={() => { setDeletingHistory(false); void act('delete-history', () => adaptiveScheduling.deleteBehaviorHistory(), 'ลบประวัติการเรียนรู้แล้ว'); }}
+      title="ลบประวัติการเรียนรู้ทั้งหมด?"
+      visible={deletingHistory}
+    />
+    <Modal animationType="fade" onRequestClose={() => confirmationFlow?.stage !== 'saving' && confirmationFlow?.stage !== 'analyzing' ? setConfirmationFlow(null) : undefined} transparent visible={Boolean(confirmationFlow) && confirmationFlow?.stage !== 'conflict'}>
       <View style={styles.flowOverlay}>
         <View style={styles.flowCard}>
           {confirmationFlow?.stage === 'analyzing' ? <FlowLoading icon="auto_awesome" label="กำลังตรวจช่วงว่างและเงื่อนไขในตาราง..." title="Adaptive AI กำลังวางแผน" /> : null}
@@ -357,11 +421,15 @@ export default function AdaptiveSchedulingScreen({onNavigate, planner}: {onNavig
           {confirmationFlow?.stage === 'confirm' && confirmationFlow.proposal ? <>
             <LinearGradient colors={['#eef7e9', '#ffffff']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.flowHero}>
               <View style={styles.flowHeroIcon}><MaterialIcon color="#527750" name="auto_awesome" size={25} /></View>
-              <View style={{flex: 1}}><Text style={styles.flowEyebrow}>SMARTLIFE ADAPTIVE AI</Text><Text style={styles.flowTitle}>พร้อมเพิ่มลงตาราง</Text></View>
+              <View style={{flex: 1}}><Text style={styles.flowEyebrow}>SMARTLIFE ADAPTIVE AI</Text><Text style={styles.flowTitle}>{confirmationFlow.proposal.unavailableRequest ? 'เวลาที่ขอไม่ว่าง' : 'พร้อมเพิ่มลงตาราง'}</Text></View>
             </LinearGradient>
             <Text style={styles.flowActivityTitle}>{confirmationFlow.proposal.title}</Text>
+            {confirmationFlow.proposal.unavailableRequest ? <View style={styles.flowClashNotice}>
+              <MaterialIcon color="#a3714f" name="event_busy" size={17} />
+              <Text style={styles.flowClashText}>{confirmationFlow.proposal.unavailableRequest} ชนกับรายการในตาราง ลองช่วงนี้แทนได้ไหม</Text>
+            </View> : null}
             <View style={styles.flowDetails}>
-              <FlowDetail icon="calendar_month" label="วันและเวลา" value={thaiDate(confirmationFlow.proposal.startAt, dashboard?.preferences.timeZone)} />
+              <FlowDetail icon="calendar_month" label={confirmationFlow.proposal.unavailableRequest ? 'เวลาที่เสนอแทน' : 'วันและเวลา'} value={thaiDate(confirmationFlow.proposal.startAt, dashboard?.preferences.timeZone)} />
               <FlowDetail icon="timer" label="ระยะเวลา" value={`${confirmationFlow.proposal.durationMinutes} นาที`} />
               <FlowDetail icon="sync_alt" label="Adaptive" value="ย้ายเวลาได้เมื่อคุณอนุญาต" />
             </View>
@@ -372,11 +440,12 @@ export default function AdaptiveSchedulingScreen({onNavigate, planner}: {onNavig
             </Pressable>
             {proposalEditorOpen ? <View style={styles.flowEditor}>
               <View style={styles.flowEditorRow}>
-                <View style={styles.flowEditorFieldWide}><Text style={styles.flowEditorLabel}>วันที่</Text><TextInput autoCapitalize="none" onChangeText={setProposalDateDraft} placeholder="YYYY-MM-DD" placeholderTextColor="#9ba499" style={styles.flowEditorInput} value={proposalDateDraft} /></View>
-                <View style={styles.flowEditorField}><Text style={styles.flowEditorLabel}>เวลา</Text><TextInput autoCapitalize="none" onChangeText={setProposalTimeDraft} placeholder="HH:mm" placeholderTextColor="#9ba499" style={styles.flowEditorInput} value={proposalTimeDraft} /></View>
+                <View style={styles.flowEditorFieldWide}><Text style={styles.flowEditorLabel}>วันที่</Text><PlainDateTimeField mode="date" onChangeText={setProposalDateDraft} placeholder="YYYY-MM-DD" placeholderTextColor="#9ba499" style={styles.flowEditorInput} value={proposalDateDraft} /></View>
+                <View style={styles.flowEditorField}><Text style={styles.flowEditorLabel}>เวลา</Text><PlainDateTimeField mode="time" onChangeText={setProposalTimeDraft} placeholder="HH:mm" placeholderTextColor="#9ba499" style={styles.flowEditorInput} value={proposalTimeDraft} /></View>
                 <View style={styles.flowEditorField}><Text style={styles.flowEditorLabel}>นาที</Text><TextInput keyboardType="number-pad" onChangeText={setProposalDurationDraft} placeholder="60" placeholderTextColor="#9ba499" style={styles.flowEditorInput} value={proposalDurationDraft} /></View>
               </View>
               <Text style={styles.flowEditorHint}>เวลาที่คุณกำหนดมีสิทธิ์เหนือคำแนะนำของ AI และจะถูกตรวจว่าไม่ชนตารางก่อนบันทึก</Text>
+              {proposalEditorError ? <Text style={styles.flowEditorError}>{proposalEditorError}</Text> : null}
               <Pressable onPress={applyProposalEdits} style={styles.flowEditorApply}><MaterialIcon color="#ffffff" name="done" size={17} /><Text style={styles.flowEditorApplyText}>ใช้เวลานี้</Text></Pressable>
             </View> : null}
             <View style={styles.flowReason}><MaterialIcon color="#62805f" name="verified" size={18} /><Text style={styles.flowReasonText}>{confirmationFlow.proposal.explanation}</Text></View>
@@ -406,6 +475,26 @@ export default function AdaptiveSchedulingScreen({onNavigate, planner}: {onNavig
         </View>
       </View>
     </Modal>
+    <ScheduleConflictDialog
+      conflicts={confirmationFlow?.conflicts ?? []}
+      onConfirm={() => confirmationFlow?.proposal ? void saveProposedActivity({...confirmationFlow.proposal, allowOverlap: true}, confirmationFlow.clientRequestId) : undefined}
+      onEdit={() => {
+        if (!confirmationFlow?.proposal) return setConfirmationFlow(null);
+        const timeZone = resolveTimeZone(confirmationFlow.proposal.generatedForTimeZone, dashboard?.preferences.timeZone);
+        const [datePart = '', timePart = ''] = localInput(confirmationFlow.proposal.startAt, timeZone).split(' ');
+        setProposalDateDraft(datePart);
+        setProposalTimeDraft(timePart);
+        setProposalDurationDraft(String(confirmationFlow.proposal.durationMinutes));
+        setProposalEditorError('');
+        setProposalEditorOpen(true);
+        setConfirmationFlow({...confirmationFlow, stage: 'confirm'});
+      }}
+      proposedEndAt={confirmationFlow?.proposal?.endAt ?? confirmationFlow?.proposal?.startAt ?? new Date().toISOString()}
+      proposedStartAt={confirmationFlow?.proposal?.startAt ?? new Date().toISOString()}
+      saving={confirmationFlow?.stage === 'saving'}
+      timeZone={confirmationFlow?.proposal?.generatedForTimeZone}
+      visible={confirmationFlow?.stage === 'conflict'}
+    />
   </UserShell>;
 }
 
@@ -430,6 +519,9 @@ function SmallButton({danger = false, disabled = false, label, loading = false, 
 
 function SuggestionCard({alternativeId, alternativeTime, busy, onAccept, onAlternative, onAlternativeCancel, onAlternativeChange, onAlternativeSubmit, onLock, onPresetAlternative, onReject, suggestion, timeZone}: {alternativeId: string; alternativeTime: string; busy: string; onAccept: () => void; onAlternative: () => void; onAlternativeCancel: () => void; onAlternativeChange: (value: string) => void; onAlternativeSubmit: () => void; onLock: () => void; onPresetAlternative: (startAt: string) => void; onReject: () => void; suggestion: AdaptiveSuggestion; timeZone: string}) {
   const disabled = Boolean(busy);
+  // The stored value stays a single "YYYY-MM-DD HH:mm" string so the existing
+  // parsing and validation are untouched; only the entry is split in two.
+  const [alternativeDay = '', alternativeClock = ''] = alternativeTime.split(' ');
   return <LinearGradient colors={['#ffffff', '#f7faf4', '#f3f1f9']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.suggestion}>
     <View style={styles.suggestionHead}><View style={styles.category}><Text style={styles.categoryText}>{categoryLabels[suggestion.activityCategory] ?? suggestion.activityCategory}</Text></View><View style={styles.confidenceBadge}><MaterialIcon color="#5e7f5b" name="verified" size={13} /><Text style={styles.confidence}>{confidenceLabel(suggestion.confidence)} · {Math.round(suggestion.confidence * 100)}%</Text></View></View>
     <Text style={styles.suggestionTitle}>{suggestion.taskTitle}</Text>
@@ -438,7 +530,7 @@ function SuggestionCard({alternativeId, alternativeTime, busy, onAccept, onAlter
     <Text style={styles.benefit}>ผลที่คาดหวัง: {suggestion.expectedBenefit}</Text>
     {suggestion.alternativeOptions?.length ? <View style={styles.optionList}><Text style={styles.optionHeading}>ตัวเลือกอื่นที่ผ่านการตรวจแล้ว</Text>{suggestion.alternativeOptions.map((option) => <Pressable accessibilityRole="button" disabled={disabled} key={`${suggestion.id}-${option.startAt}`} onPress={() => onPresetAlternative(option.startAt)} style={({pressed}) => [styles.option, pressed && styles.buttonPressed, disabled && styles.disabled]}><View style={{flex: 1}}><Text style={styles.optionLabel}>{option.label}</Text><Text style={styles.optionTime}>{thaiDate(option.startAt, timeZone)}</Text><Text style={styles.optionTradeoff}>{option.tradeoff}</Text></View><MaterialIcon color="#668566" name="chevron_right" size={19} /></Pressable>)}</View> : null}
     <View style={styles.freshnessRow}><MaterialIcon color="#7e8d7c" name="schedule" size={13} /><Text style={styles.meta}>ใช้ได้ถึง {thaiDate(suggestion.validUntil ?? suggestion.expiresAt, timeZone)} · ตรวจ conflict, กำหนดส่ง, เวลานอน และภาระงานแล้ว</Text></View>
-    {alternativeId === suggestion.id ? <View style={styles.alternative}><Text style={styles.optionHeading}>กำหนดเวลาเอง</Text><Text style={styles.optionTime}>เขตเวลา: {timeZone}</Text><TextInput editable={!disabled} onChangeText={onAlternativeChange} placeholder="YYYY-MM-DD HH:mm" style={styles.alternativeInput} value={alternativeTime} /><View style={styles.actionRow}><SmallButton disabled={disabled} label="ตรวจเวลานี้" onPress={onAlternativeSubmit} /><SmallButton disabled={disabled} label="ยกเลิก" onPress={onAlternativeCancel} /></View></View> : null}
+    {alternativeId === suggestion.id ? <View style={styles.alternative}><Text style={styles.optionHeading}>กำหนดเวลาเอง</Text><Text style={styles.optionTime}>เขตเวลา: {timeZone}</Text><View style={styles.alternativeRow}><PlainDateTimeField editable={!disabled} mode="date" onChangeText={(value) => onAlternativeChange(`${value} ${alternativeClock}`.trim())} placeholder="YYYY-MM-DD" style={[styles.alternativeInput, styles.alternativeDate]} value={alternativeDay} /><PlainDateTimeField editable={!disabled} mode="time" onChangeText={(value) => onAlternativeChange(`${alternativeDay} ${value}`.trim())} placeholder="HH:mm" style={[styles.alternativeInput, styles.alternativeClock]} value={alternativeClock} /></View><View style={styles.actionRow}><SmallButton disabled={disabled} label="ตรวจเวลานี้" onPress={onAlternativeSubmit} /><SmallButton disabled={disabled} label="ยกเลิก" onPress={onAlternativeCancel} /></View></View> : null}
     <View style={styles.actions}><Pressable accessibilityRole="button" disabled={disabled} onPress={onAccept} style={({pressed}) => [styles.primaryAction, disabled && styles.disabled, pressed && !disabled && styles.buttonPressed]}>{busy === `accept-${suggestion.id}` ? <ActivityIndicator color="#fff" size="small" /> : <MaterialIcon color="#fff" name="check" size={17} />}<Text style={styles.primaryActionText}>ยืนยันใช้เวลานี้</Text></Pressable><Pressable accessibilityRole="button" disabled={disabled} onPress={onReject} style={({pressed}) => [styles.secondaryAction, disabled && styles.disabled, pressed && !disabled && styles.buttonPressed]}><Text style={styles.secondaryActionText}>ไม่ใช้คำแนะนำ</Text></Pressable></View>
     <View style={styles.actionRow}><SmallButton disabled={disabled} label="เลือกเวลาเอง" onPress={onAlternative} /><SmallButton disabled={disabled} label="ล็อกงานนี้" onPress={onLock} /></View>
   </LinearGradient>;
@@ -488,14 +580,14 @@ const styles = StyleSheet.create({
   flowDetail: {alignItems: 'center', borderBottomColor: '#e9eee5', borderBottomWidth: 1, flexDirection: 'row', gap: 10, minHeight: 58, paddingVertical: 8},
   flowDetailIcon: {alignItems: 'center', backgroundColor: '#edf5e9', borderRadius: 13, height: 38, justifyContent: 'center', width: 38},
   flowDetailLabel: {color: '#8a9487', fontFamily: 'Prompt_500Medium', fontSize: 9},
-  flowDetails: {backgroundColor: '#f8faf6', borderColor: '#e5ebe1', borderRadius: 18, borderWidth: 1, marginTop: 14, overflow: 'hidden', paddingHorizontal: 12},
+  flowClashNotice: {alignItems: 'flex-start', backgroundColor: '#fbf1e9', borderRadius: 14, flexDirection: 'row', gap: 8, marginTop: 12, padding: 11}, flowClashText: {color: '#8a5f42', flex: 1, fontFamily: 'Prompt_600SemiBold', fontSize: 10, lineHeight: 16}, flowDetails: {backgroundColor: '#f8faf6', borderColor: '#e5ebe1', borderRadius: 18, borderWidth: 1, marginTop: 14, overflow: 'hidden', paddingHorizontal: 12},
   flowDetailValue: {color: '#3a4938', fontFamily: 'Prompt_700Bold', fontSize: 12, marginTop: 2},
   flowEditor: {backgroundColor: '#f4f8f1', borderColor: '#dfe9db', borderRadius: 17, borderWidth: 1, marginTop: 9, padding: 11},
   flowEditorApply: {alignItems: 'center', alignSelf: 'flex-end', backgroundColor: '#5b8059', borderRadius: 12, flexDirection: 'row', gap: 5, justifyContent: 'center', marginTop: 9, minHeight: 38, paddingHorizontal: 14},
   flowEditorApplyText: {color: '#ffffff', fontFamily: 'Prompt_700Bold', fontSize: 10},
   flowEditorField: {flex: .8},
   flowEditorFieldWide: {flex: 1.35},
-  flowEditorHint: {color: '#748171', fontFamily: 'Prompt_400Regular', fontSize: 8, lineHeight: 13, marginTop: 8},
+  flowEditorError: {color: '#a75f59', fontFamily: 'Prompt_600SemiBold', fontSize: 9, lineHeight: 14, marginTop: 6}, flowEditorHint: {color: '#748171', fontFamily: 'Prompt_400Regular', fontSize: 8, lineHeight: 13, marginTop: 8},
   flowEditorInput: {backgroundColor: '#ffffff', borderColor: '#dce5d8', borderRadius: 11, borderWidth: 1, color: '#354334', fontFamily: 'Prompt_600SemiBold', fontSize: 10, height: 40, marginTop: 4, paddingHorizontal: 9},
   flowEditorLabel: {color: '#71806f', fontFamily: 'Prompt_600SemiBold', fontSize: 8},
   flowEditorRow: {flexDirection: 'row', gap: 7},
@@ -519,5 +611,5 @@ const styles = StyleSheet.create({
   successBadge: {alignItems: 'center', backgroundColor: '#5c8658', borderRadius: 38, boxShadow: '0 10px 24px rgba(72,117,67,.28)', height: 76, justifyContent: 'center', marginBottom: 12, width: 76},
   successText: {color: '#748071', fontFamily: 'Prompt_400Regular', fontSize: 11, lineHeight: 18, marginTop: 5, textAlign: 'center'},
   successTitle: {color: '#30442f', fontFamily: 'Prompt_800ExtraBold', fontSize: 21, textAlign: 'center'},
-  actionRow: {flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: 9}, actions: {flexDirection: 'row', gap: 8, marginTop: 15}, alternative: {backgroundColor: '#f4f7f1', borderRadius: 16, marginTop: 12, padding: 12}, alternativeInput: {backgroundColor: '#fff', borderColor: '#dfe6dc', borderRadius: 13, borderWidth: 1, color: '#334132', fontFamily: 'Prompt_500Medium', fontSize: 11, minHeight: 46, paddingHorizontal: 11}, arrowBadge: {alignItems: 'center', backgroundColor: '#e5efe1', borderRadius: 20, height: 32, justifyContent: 'center', width: 32}, benefit: {color: '#557355', fontFamily: 'Prompt_600SemiBold', fontSize: 10, lineHeight: 16, marginTop: 9}, buttonPressed: {opacity: .84, transform: [{scale: .985}]}, caption: {color: '#7b8679', fontFamily: 'Prompt_400Regular', fontSize: 9, lineHeight: 14, marginTop: 3}, cardTitle: {color: '#344234', fontFamily: 'Prompt_700Bold', fontSize: 12}, category: {backgroundColor: '#e6efe2', borderRadius: 99, paddingHorizontal: 9, paddingVertical: 5}, categoryText: {color: '#557653', fontFamily: 'Prompt_700Bold', fontSize: 8}, clockRow: {backgroundColor: '#f5f7f3', borderRadius: 13, flexDirection: 'row', gap: 8, marginTop: 9, padding: 11}, clockValue: {color: '#5b7459', fontFamily: 'Prompt_700Bold', fontSize: 10, marginTop: 3}, commandCard: {borderColor: 'rgba(255,255,255,.8)', borderRadius: 24, borderWidth: 1, boxShadow: '0 12px 28px rgba(43,57,40,.10)', marginTop: 13, padding: 16}, commandIcon: {alignItems: 'center', backgroundColor: '#e9f1e5', borderRadius: 16, height: 42, justifyContent: 'center', width: 42}, commandInput: {color: '#344134', flex: 1, fontFamily: 'Prompt_400Regular', fontSize: 11, maxHeight: 92, minHeight: 48, paddingHorizontal: 11, paddingVertical: 8}, commandRow: {alignItems: 'flex-end', backgroundColor: 'rgba(255,255,255,.78)', borderColor: '#dfe7db', borderRadius: 17, borderWidth: 1, flexDirection: 'row', marginTop: 12, padding: 5}, commandTitleRow: {alignItems: 'center', flexDirection: 'row', gap: 10}, confidence: {color: '#60775e', fontFamily: 'Prompt_600SemiBold', fontSize: 8}, confidenceBadge: {alignItems: 'center', backgroundColor: '#eef4eb', borderRadius: 99, flexDirection: 'row', gap: 4, paddingHorizontal: 8, paddingVertical: 5}, deleteIcon: {alignItems: 'center', backgroundColor: '#f8ecea', borderRadius: 11, height: 44, justifyContent: 'center', width: 44}, disabled: {opacity: .55}, empty: {alignItems: 'center', gap: 6, padding: 18}, emptyText: {color: '#879185', fontFamily: 'Prompt_400Regular', fontSize: 10, lineHeight: 15, textAlign: 'center'}, eyebrow: {color: '#6a8768', fontFamily: 'Prompt_700Bold', fontSize: 8, letterSpacing: .8}, explanation: {color: '#566254', flex: 1, fontFamily: 'Prompt_400Regular', fontSize: 10, lineHeight: 16}, freshnessRow: {alignItems: 'flex-start', flexDirection: 'row', gap: 5, marginTop: 10}, header: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'}, history: {alignItems: 'stretch', borderColor: '#e1e8de', borderRadius: 18, borderWidth: 1, flexDirection: 'row', gap: 10, overflow: 'hidden', padding: 13}, historyAction: {alignItems: 'flex-start', marginTop: 10}, historyActor: {color: '#82907f', fontFamily: 'Prompt_400Regular', fontSize: 8, marginTop: 2}, historyChange: {alignItems: 'center', backgroundColor: 'rgba(255,255,255,.7)', borderRadius: 12, flexDirection: 'row', gap: 6, marginTop: 8, padding: 9}, historyDot: {alignItems: 'center', backgroundColor: '#62845f', borderRadius: 17, height: 34, justifyContent: 'center', width: 34}, historyHeader: {alignItems: 'center', flexDirection: 'row', gap: 7, justifyContent: 'space-between'}, historyLine: {backgroundColor: '#dbe7d7', flex: 1, marginHorizontal: 16, marginTop: 5, width: 2}, historyList: {gap: 9}, historyReason: {color: '#596857', fontFamily: 'Prompt_400Regular', fontSize: 9, lineHeight: 15, marginTop: 8}, historyTime: {color: '#435341', fontFamily: 'Prompt_700Bold', fontSize: 8, marginTop: 2}, historyTimeline: {alignItems: 'center', width: 34}, historyTitle: {color: '#384737', flex: 1, fontFamily: 'Prompt_700Bold', fontSize: 10}, iconButton: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 18, height: 44, justifyContent: 'center', width: 44}, insight: {alignItems: 'flex-start', backgroundColor: '#f3f7ef', borderRadius: 14, flexDirection: 'row', gap: 8, padding: 11}, insightList: {gap: 8}, insightText: {color: '#40503f', fontFamily: 'Prompt_500Medium', fontSize: 10, lineHeight: 15}, loading: {alignItems: 'center', gap: 8, paddingVertical: 38}, meta: {color: '#879085', fontFamily: 'Prompt_400Regular', fontSize: 8, lineHeight: 13, marginTop: 3}, option: {alignItems: 'center', backgroundColor: 'rgba(255,255,255,.82)', borderColor: '#e0e8dc', borderRadius: 14, borderWidth: 1, flexDirection: 'row', marginTop: 7, minHeight: 58, paddingHorizontal: 11, paddingVertical: 8}, optionHeading: {color: '#566b54', fontFamily: 'Prompt_700Bold', fontSize: 9}, optionLabel: {color: '#3f513d', fontFamily: 'Prompt_700Bold', fontSize: 9}, optionList: {backgroundColor: 'rgba(239,245,235,.72)', borderRadius: 16, marginTop: 11, padding: 10}, optionTime: {color: '#5a7158', fontFamily: 'Prompt_600SemiBold', fontSize: 8, marginTop: 2}, optionTradeoff: {color: '#879185', fontFamily: 'Prompt_400Regular', fontSize: 7, marginTop: 2}, page: {paddingBottom: 8}, pattern: {alignItems: 'center', backgroundColor: '#f6f8f4', borderRadius: 14, flexDirection: 'row', gap: 8, padding: 11}, patternList: {gap: 8}, patternTitle: {color: '#3e4c3d', fontFamily: 'Prompt_700Bold', fontSize: 10}, preference: {alignItems: 'center', borderBottomColor: '#e8ede5', borderBottomWidth: 1, flexDirection: 'row', gap: 10, minHeight: 58, paddingVertical: 8}, preferenceList: {gap: 1}, preferenceTitle: {color: '#3f4c3e', fontFamily: 'Prompt_700Bold', fontSize: 10}, primaryAction: {alignItems: 'center', backgroundColor: '#5e835c', borderRadius: 14, flex: 1.2, flexDirection: 'row', gap: 7, justifyContent: 'center', minHeight: 50}, primaryActionText: {color: '#fff', fontFamily: 'Prompt_700Bold', fontSize: 10}, privacyActions: {marginTop: 10}, reasonCard: {alignItems: 'flex-start', backgroundColor: 'rgba(238,245,234,.82)', borderRadius: 14, flexDirection: 'row', gap: 8, marginTop: 11, padding: 10}, risk: {color: '#a35f58', fontFamily: 'Prompt_700Bold', fontSize: 7, marginTop: 2}, secondaryAction: {alignItems: 'center', backgroundColor: '#edf1ea', borderRadius: 14, flex: 1, justifyContent: 'center', minHeight: 50}, secondaryActionText: {color: '#60725e', fontFamily: 'Prompt_700Bold', fontSize: 10}, section: {backgroundColor: '#fff', borderRadius: 22, boxShadow: '0 8px 22px rgba(43,57,40,.075)', marginTop: 13, padding: 14}, sectionBody: {marginTop: 10}, sectionTitle: {color: '#334133', fontFamily: 'Prompt_800ExtraBold', fontSize: 14}, send: {alignItems: 'center', backgroundColor: '#5f845d', borderRadius: 14, height: 42, justifyContent: 'center', width: 42}, smallButton: {alignItems: 'center', backgroundColor: '#eef3eb', borderRadius: 13, flexDirection: 'row', gap: 6, justifyContent: 'center', minHeight: 44, paddingHorizontal: 12}, smallButtonDanger: {backgroundColor: '#f8ecea'}, smallButtonDangerText: {color: '#a75f59'}, smallButtonText: {color: '#597358', fontFamily: 'Prompt_700Bold', fontSize: 8}, subtitle: {color: '#7c8779', fontFamily: 'Prompt_400Regular', fontSize: 9, marginTop: 2}, suggestion: {borderColor: 'rgba(255,255,255,.9)', borderRadius: 22, borderWidth: 1, boxShadow: '0 9px 24px rgba(48,65,45,.09)', marginBottom: 11, overflow: 'hidden', padding: 14}, suggestionHead: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'}, suggestionTitle: {color: '#334033', fontFamily: 'Prompt_800ExtraBold', fontSize: 14, marginTop: 10}, syncBadge: {backgroundColor: '#e8f1e4', borderRadius: 99, paddingHorizontal: 7, paddingVertical: 3}, syncBadgeError: {backgroundColor: '#faeae7'}, syncText: {color: '#607b5d', fontFamily: 'Prompt_600SemiBold', fontSize: 7}, syncTextError: {color: '#a35e58'}, tab: {alignItems: 'center', borderRadius: 11, flex: 1, paddingVertical: 8}, tabActive: {backgroundColor: '#fff'}, tabText: {color: '#7c887a', fontFamily: 'Prompt_600SemiBold', fontSize: 9}, tabTextActive: {color: '#557755'}, tabs: {backgroundColor: '#e5ece1', borderRadius: 15, flexDirection: 'row', marginTop: 12, padding: 4}, timeChange: {alignItems: 'center', backgroundColor: 'rgba(239,245,235,.82)', borderRadius: 15, flexDirection: 'row', gap: 8, marginTop: 10, padding: 11}, timeLabel: {color: '#899287', fontFamily: 'Prompt_500Medium', fontSize: 7}, timeValue: {color: '#435341', fontFamily: 'Prompt_700Bold', fontSize: 9, marginTop: 2}, title: {color: '#2f3d2f', fontFamily: 'Prompt_800ExtraBold', fontSize: 21}, workloadDate: {color: '#667464', fontFamily: 'Prompt_600SemiBold', fontSize: 8}, workloadDay: {backgroundColor: '#f2f6ef', borderRadius: 12, minWidth: '22%', padding: 9}, workloadGrid: {flexDirection: 'row', flexWrap: 'wrap', gap: 7}, workloadHigh: {backgroundColor: '#faeeec'}, workloadMinutes: {color: '#354334', fontFamily: 'Prompt_800ExtraBold', fontSize: 10, marginTop: 3},
+  actionRow: {flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: 9}, actions: {flexDirection: 'row', gap: 8, marginTop: 15}, alternative: {backgroundColor: '#f4f7f1', borderRadius: 16, marginTop: 12, padding: 12}, alternativeClock: {flex: 1}, alternativeDate: {flex: 1.5}, alternativeInput: {backgroundColor: '#fff', borderColor: '#dfe6dc', borderRadius: 13, borderWidth: 1, color: '#334132', fontFamily: 'Prompt_500Medium', fontSize: 11, minHeight: 46, paddingHorizontal: 11}, alternativeRow: {flexDirection: 'row', gap: 8, marginTop: 6}, arrowBadge: {alignItems: 'center', backgroundColor: '#e5efe1', borderRadius: 20, height: 32, justifyContent: 'center', width: 32}, benefit: {color: '#557355', fontFamily: 'Prompt_600SemiBold', fontSize: 10, lineHeight: 16, marginTop: 9}, buttonPressed: {opacity: .84, transform: [{scale: .985}]}, caption: {color: '#7b8679', fontFamily: 'Prompt_400Regular', fontSize: 9, lineHeight: 14, marginTop: 3}, cardTitle: {color: '#344234', fontFamily: 'Prompt_700Bold', fontSize: 12}, category: {backgroundColor: '#e6efe2', borderRadius: 99, paddingHorizontal: 9, paddingVertical: 5}, categoryText: {color: '#557653', fontFamily: 'Prompt_700Bold', fontSize: 8}, clockRow: {backgroundColor: '#f5f7f3', borderRadius: 13, flexDirection: 'row', gap: 8, marginTop: 9, padding: 11}, clockValue: {color: '#5b7459', fontFamily: 'Prompt_700Bold', fontSize: 10, marginTop: 3}, commandCard: {borderColor: 'rgba(255,255,255,.8)', borderRadius: 24, borderWidth: 1, boxShadow: '0 12px 28px rgba(43,57,40,.10)', marginTop: 13, padding: 16}, commandIcon: {alignItems: 'center', backgroundColor: '#e9f1e5', borderRadius: 16, height: 42, justifyContent: 'center', width: 42}, commandInput: {color: '#344134', flex: 1, fontFamily: 'Prompt_400Regular', fontSize: 11, maxHeight: 92, minHeight: 48, paddingHorizontal: 11, paddingVertical: 8}, commandRow: {alignItems: 'flex-end', backgroundColor: 'rgba(255,255,255,.78)', borderColor: '#dfe7db', borderRadius: 17, borderWidth: 1, flexDirection: 'row', marginTop: 12, padding: 5}, commandTitleRow: {alignItems: 'center', flexDirection: 'row', gap: 10}, confidence: {color: '#60775e', fontFamily: 'Prompt_600SemiBold', fontSize: 8}, confidenceBadge: {alignItems: 'center', backgroundColor: '#eef4eb', borderRadius: 99, flexDirection: 'row', gap: 4, paddingHorizontal: 8, paddingVertical: 5}, deleteIcon: {alignItems: 'center', backgroundColor: '#f8ecea', borderRadius: 11, height: 44, justifyContent: 'center', width: 44}, disabled: {opacity: .55}, empty: {alignItems: 'center', gap: 6, padding: 18}, emptyText: {color: '#879185', fontFamily: 'Prompt_400Regular', fontSize: 10, lineHeight: 15, textAlign: 'center'}, eyebrow: {color: '#6a8768', fontFamily: 'Prompt_700Bold', fontSize: 8, letterSpacing: .8}, explanation: {color: '#566254', flex: 1, fontFamily: 'Prompt_400Regular', fontSize: 10, lineHeight: 16}, freshnessRow: {alignItems: 'flex-start', flexDirection: 'row', gap: 5, marginTop: 10}, header: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'}, history: {alignItems: 'stretch', borderColor: '#e1e8de', borderRadius: 18, borderWidth: 1, flexDirection: 'row', gap: 10, overflow: 'hidden', padding: 13}, historyAction: {alignItems: 'flex-start', marginTop: 10}, historyActor: {color: '#82907f', fontFamily: 'Prompt_400Regular', fontSize: 8, marginTop: 2}, historyChange: {alignItems: 'center', backgroundColor: 'rgba(255,255,255,.7)', borderRadius: 12, flexDirection: 'row', gap: 6, marginTop: 8, padding: 9}, historyDot: {alignItems: 'center', backgroundColor: '#62845f', borderRadius: 17, height: 34, justifyContent: 'center', width: 34}, historyHeader: {alignItems: 'center', flexDirection: 'row', gap: 7, justifyContent: 'space-between'}, historyLine: {backgroundColor: '#dbe7d7', flex: 1, marginHorizontal: 16, marginTop: 5, width: 2}, historyList: {gap: 9}, historyReason: {color: '#596857', fontFamily: 'Prompt_400Regular', fontSize: 9, lineHeight: 15, marginTop: 8}, historyTime: {color: '#435341', fontFamily: 'Prompt_700Bold', fontSize: 8, marginTop: 2}, historyTimeline: {alignItems: 'center', width: 34}, historyTitle: {color: '#384737', flex: 1, fontFamily: 'Prompt_700Bold', fontSize: 10}, iconButton: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 18, height: 44, justifyContent: 'center', width: 44}, insight: {alignItems: 'flex-start', backgroundColor: '#f3f7ef', borderRadius: 14, flexDirection: 'row', gap: 8, padding: 11}, insightList: {gap: 8}, insightText: {color: '#40503f', fontFamily: 'Prompt_500Medium', fontSize: 10, lineHeight: 15}, loading: {alignItems: 'center', gap: 8, paddingVertical: 38}, meta: {color: '#879085', fontFamily: 'Prompt_400Regular', fontSize: 8, lineHeight: 13, marginTop: 3}, option: {alignItems: 'center', backgroundColor: 'rgba(255,255,255,.82)', borderColor: '#e0e8dc', borderRadius: 14, borderWidth: 1, flexDirection: 'row', marginTop: 7, minHeight: 58, paddingHorizontal: 11, paddingVertical: 8}, optionHeading: {color: '#566b54', fontFamily: 'Prompt_700Bold', fontSize: 9}, optionLabel: {color: '#3f513d', fontFamily: 'Prompt_700Bold', fontSize: 9}, optionList: {backgroundColor: 'rgba(239,245,235,.72)', borderRadius: 16, marginTop: 11, padding: 10}, optionTime: {color: '#5a7158', fontFamily: 'Prompt_600SemiBold', fontSize: 8, marginTop: 2}, optionTradeoff: {color: '#879185', fontFamily: 'Prompt_400Regular', fontSize: 7, marginTop: 2}, page: {paddingBottom: 8}, pattern: {alignItems: 'center', backgroundColor: '#f6f8f4', borderRadius: 14, flexDirection: 'row', gap: 8, padding: 11}, patternList: {gap: 8}, patternTitle: {color: '#3e4c3d', fontFamily: 'Prompt_700Bold', fontSize: 10}, preference: {alignItems: 'center', borderBottomColor: '#e8ede5', borderBottomWidth: 1, flexDirection: 'row', gap: 10, minHeight: 58, paddingVertical: 8}, preferenceList: {gap: 1}, preferenceTitle: {color: '#3f4c3e', fontFamily: 'Prompt_700Bold', fontSize: 10}, primaryAction: {alignItems: 'center', backgroundColor: '#5e835c', borderRadius: 14, flex: 1.2, flexDirection: 'row', gap: 7, justifyContent: 'center', minHeight: 50}, primaryActionText: {color: '#fff', fontFamily: 'Prompt_700Bold', fontSize: 10}, privacyActions: {marginTop: 10}, reasonCard: {alignItems: 'flex-start', backgroundColor: 'rgba(238,245,234,.82)', borderRadius: 14, flexDirection: 'row', gap: 8, marginTop: 11, padding: 10}, risk: {color: '#a35f58', fontFamily: 'Prompt_700Bold', fontSize: 7, marginTop: 2}, secondaryAction: {alignItems: 'center', backgroundColor: '#edf1ea', borderRadius: 14, flex: 1, justifyContent: 'center', minHeight: 50}, secondaryActionText: {color: '#60725e', fontFamily: 'Prompt_700Bold', fontSize: 10}, section: {backgroundColor: '#fff', borderRadius: 22, boxShadow: '0 8px 22px rgba(43,57,40,.075)', marginTop: 13, padding: 14}, sectionBody: {marginTop: 10}, sectionTitle: {color: '#334133', fontFamily: 'Prompt_800ExtraBold', fontSize: 14}, send: {alignItems: 'center', backgroundColor: '#5f845d', borderRadius: 14, height: 42, justifyContent: 'center', width: 42}, smallButton: {alignItems: 'center', backgroundColor: '#eef3eb', borderRadius: 13, flexDirection: 'row', gap: 6, justifyContent: 'center', minHeight: 44, paddingHorizontal: 12}, smallButtonDanger: {backgroundColor: '#f8ecea'}, smallButtonDangerText: {color: '#a75f59'}, smallButtonText: {color: '#597358', fontFamily: 'Prompt_700Bold', fontSize: 8}, subtitle: {color: '#7c8779', fontFamily: 'Prompt_400Regular', fontSize: 9, marginTop: 2}, suggestion: {borderColor: 'rgba(255,255,255,.9)', borderRadius: 22, borderWidth: 1, boxShadow: '0 9px 24px rgba(48,65,45,.09)', marginBottom: 11, overflow: 'hidden', padding: 14}, suggestionHead: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'}, suggestionTitle: {color: '#334033', fontFamily: 'Prompt_800ExtraBold', fontSize: 14, marginTop: 10}, syncBadge: {backgroundColor: '#e8f1e4', borderRadius: 99, paddingHorizontal: 7, paddingVertical: 3}, syncBadgeError: {backgroundColor: '#faeae7'}, syncText: {color: '#607b5d', fontFamily: 'Prompt_600SemiBold', fontSize: 7}, syncTextError: {color: '#a35e58'}, tab: {alignItems: 'center', borderRadius: 11, flex: 1, paddingVertical: 8}, tabActive: {backgroundColor: '#fff'}, tabText: {color: '#7c887a', fontFamily: 'Prompt_600SemiBold', fontSize: 9}, tabTextActive: {color: '#557755'}, tabs: {backgroundColor: '#e5ece1', borderRadius: 15, flexDirection: 'row', marginTop: 12, padding: 4}, timeChange: {alignItems: 'center', backgroundColor: 'rgba(239,245,235,.82)', borderRadius: 15, flexDirection: 'row', gap: 8, marginTop: 10, padding: 11}, timeLabel: {color: '#899287', fontFamily: 'Prompt_500Medium', fontSize: 7}, timeValue: {color: '#435341', fontFamily: 'Prompt_700Bold', fontSize: 9, marginTop: 2}, title: {color: '#2f3d2f', fontFamily: 'Prompt_800ExtraBold', fontSize: 21}, workloadDate: {color: '#667464', fontFamily: 'Prompt_600SemiBold', fontSize: 8}, workloadDay: {backgroundColor: '#f2f6ef', borderRadius: 12, minWidth: '22%', padding: 9}, workloadGrid: {flexDirection: 'row', flexWrap: 'wrap', gap: 7}, workloadHigh: {backgroundColor: '#faeeec'}, workloadMinutes: {color: '#354334', fontFamily: 'Prompt_800ExtraBold', fontSize: 10, marginTop: 3},
 });

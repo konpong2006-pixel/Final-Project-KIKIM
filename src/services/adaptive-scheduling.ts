@@ -122,6 +122,8 @@ export type ActivateAdaptiveResult = {
 
 export type AdaptiveProposedActivity = {
   activityCategory: AdaptiveCategory;
+  allowOverlap?: boolean;
+  dateLocked?: boolean;
   deadline: string | null;
   durationMinutes: number;
   endAt: string;
@@ -129,9 +131,28 @@ export type AdaptiveProposedActivity = {
   generatedForTimeZone?: string;
   startAt: string;
   title: string;
+  userSelectedTime?: boolean;
+  /**
+   * Set only when the exact day or time asked for was already taken, naming
+   * what was unavailable so the card can offer this slot as an alternative
+   * rather than presenting it as the time the user requested.
+   */
+  unavailableRequest?: string;
 };
 
 type CreateActivityRequest = AdaptiveProposedActivity & {clientRequestId?: string};
+
+export type AdaptiveCreateConflict = {
+  endAt: string;
+  id: string;
+  kind: 'activity' | 'schedule';
+  startAt: string;
+  title: string;
+};
+
+export type AdaptiveCreateActivityResult =
+  | {adjusted: false; conflicts: AdaptiveCreateConflict[]; endAt: string; id: ''; requiresConflictConfirmation: true; saved: false; startAt: string}
+  | {adjusted: false; conflicts: AdaptiveCreateConflict[]; endAt: string; id: string; requiresConflictConfirmation: false; saved: true; startAt: string};
 
 export type NaturalLanguageScheduleResult = {
   dashboard?: AdaptiveDashboard;
@@ -168,33 +189,30 @@ const lockCall = httpsCallable<{activityId: string}, {ok: true}>(functions, 'loc
 const undoCall = httpsCallable<{historyId: string}, {activityId: string}>(functions, 'undoScheduleChange');
 const deletePatternCall = httpsCallable<{patternId: string}, {ok: true}>(functions, 'deleteSchedulingPattern');
 const deleteHistoryCall = httpsCallable<Record<string, never>, {deleted: number}>(functions, 'deleteSchedulingBehaviorHistory');
-const calculatePatternsCall = httpsCallable<Record<string, never>, {patterns: number}>(functions, 'calculateSchedulingPatterns');
-const createActivityCall = httpsCallable<CreateActivityRequest, {adjusted: boolean; endAt: string; id: string; startAt: string}>(functions, 'createAdaptiveActivity');
+const calculatePatternsCall = httpsCallable<Record<string, never>, {expired: number; patterns: number; recorded: number}>(functions, 'calculateSchedulingPatterns');
+const createActivityCall = httpsCallable<CreateActivityRequest, AdaptiveCreateActivityResult>(functions, 'createAdaptiveActivity');
 const naturalLanguageCall = httpsCallable<{message: string}, NaturalLanguageScheduleResult>(functions, 'processNaturalLanguageScheduleCommand');
 const rebalanceDayCall = httpsCallable<{date?: string}, {suggestions: AdaptiveSuggestion[]}>(functions, 'rebalanceUserDay');
 const rebalanceWeekCall = httpsCallable<{date?: string}, {suggestions: AdaptiveSuggestion[]}>(functions, 'rebalanceUserWeek');
 const registerTokenCall = httpsCallable<{platform: 'android' | 'ios'; token: string}, {ok: true}>(functions, 'registerAdaptivePushToken');
-const recordBehaviorCall = httpsCallable<{
-  actualDurationMinutes?: number | null;
-  actualEnd?: string | null;
-  actualStart?: string | null;
-  eventType: string;
-  metadata?: Record<string, boolean | number | string>;
-  scheduleItemId: string;
-  source?: 'ai_suggestion' | 'automatic_scheduler' | 'user';
-  updatedScheduledStart?: string | null;
-}, {id: string}>(functions, 'recordSchedulingBehavior');
-
 type RecordBehaviorRequest = {
   actualDurationMinutes?: number | null;
   actualEnd?: string | null;
   actualStart?: string | null;
   eventType: string;
   metadata?: Record<string, boolean | number | string>;
+  /**
+   * The slot the activity occupied before the user moved it. Required for a
+   * postpone, where the activity document already holds the new time by the
+   * time the event is recorded.
+   */
+  originalScheduledStart?: string | null;
   scheduleItemId: string;
   source?: 'ai_suggestion' | 'automatic_scheduler' | 'user';
   updatedScheduledStart?: string | null;
 };
+
+const recordBehaviorCall = httpsCallable<RecordBehaviorRequest, {id: string; patterns: number}>(functions, 'recordSchedulingBehavior');
 
 async function invoke<Request, Response>(call: (data: Request) => Promise<{data: Response}>, data: Request) {
   await ensureAppCheckReady();

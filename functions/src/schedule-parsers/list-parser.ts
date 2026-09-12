@@ -1,6 +1,20 @@
 import type {StandardScheduleEntry} from "./types";
 
 const COURSE_CODE = /\b(?:\d{6,8}|[A-Z]{2,8}(?:[ -]?\d){3,10})\b/i;
+/**
+ * The same shape, but the letters must run straight into the first digit.
+ *
+ * That one character is what separates a course from a room: timetables write
+ * courses as "ACC315-68" and rooms as "SCI-1204" or "DMR-2201", and the loose
+ * pattern above matches both. Starting an entry on every line that matched it
+ * turned a seven-course timetable into thirteen entries, six of them rooms --
+ * and because each of those swallowed the context around it, the real courses
+ * lost their times to them.
+ */
+const COURSE_CODE_ANCHORED = /\b(?:\d{6,8}|[A-Z]{2,8}\d(?:[ -]?\d){2,9})\b/i;
+/** A line that is nothing but a day name, which is how a grid row is headed. */
+const DAY_HEADING = /^(?:วันจันทร์|วันอังคาร|วันพุธ|วันพฤหัสบดี|วันพฤหัส|วันศุกร์|วันเสาร์|วันอาทิตย์|จันทร์|อังคาร|พุธ|พฤหัสบดี|พฤหัส|ศุกร์|เสาร์|อาทิตย์|monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun)$/i;
+const SECTION_LABEL = /(?:sec(?:tion)?\.?|กลุ่ม|ตอน)\s*[:#-]?\s*[A-Z0-9]{1,6}/gi;
 const DAY = /\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue(?:s)?|wed|thu(?:rs)?|fri|sat|sun)\b|(?:จันทร์|อังคาร|พุธ|พฤหัสบดี|พฤหัส|ศุกร์|เสาร์|อาทิตย์)/i;
 const DATE = /\b(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})\b/;
 const DATE_RANGE = /\b(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})\s*(?:-|–|—|ถึง|to)\s*(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})\b/i;
@@ -68,10 +82,15 @@ function timeRange(context: string) {
 function room(context: string) {
   const labeled = context.match(/(?:ห้อง|room|อาคาร|building|bldg\.?|classroom)\s*[:#\-]?\s*([A-Z0-9ก-๙][A-Z0-9ก-๙\-/ ]{1,30})/i)?.[1]?.trim();
   if (labeled) return labeled.split(/\n|\s{2,}/)[0].trim();
-  const candidates = context.match(/\b(?:[A-Z]{1,5}[- ]?)?\d{2,5}(?:-[A-Z0-9]{1,8})?\b/g) ?? [];
-  return candidates.find((candidate) =>
-    !candidate.includes(":") && !COURSE_CODE.test(candidate) && !/^\d{4}$/.test(candidate),
-  ) ?? null;
+  // Section numbers sit right next to the room in a cell and are the smaller
+  // number, so without dropping them first every room came back as "01".
+  const withoutSections = context.replace(SECTION_LABEL, " ");
+  const candidates = withoutSections.match(/\b(?:[A-Z]{1,5}[- ]?)?\d{2,5}(?:-[A-Z0-9]{1,8})?\b/g) ?? [];
+  const usable = candidates.filter((candidate) =>
+    !candidate.includes(":") && !COURSE_CODE_ANCHORED.test(candidate) && !/^\d{4}$/.test(candidate),
+  );
+  // A room carries its building letters; prefer that over a bare number.
+  return usable.find((candidate) => /[A-Z]/i.test(candidate)) ?? usable[0] ?? null;
 }
 
 function courseName(firstLine: string, context: string, rawCode: string) {
@@ -86,19 +105,44 @@ function courseName(firstLine: string, context: string, rawCode: string) {
 
 export function parseListSchedule(rawText: string): StandardScheduleEntry[] {
   const lines = rawText.split(/\r?\n/).map(clean).filter(Boolean);
-  const starts = lines.flatMap((line, index) => line.match(COURSE_CODE) && !ROOM_LABEL.test(line) ? [index] : []);
+  const dayHeadingAt = lines.flatMap((line, index) => DAY_HEADING.test(line) ? [index] : []);
+  /**
+   * The day a line belongs to, from the row heading above it.
+   *
+   * Reading the day out of the surrounding text instead put a course in the
+   * next day's row whenever its context window reached past the heading below
+   * it -- the Monday afternoon class came back as Tuesday.
+   */
+  const dayForLine = (index: number) => {
+    const heading = [...dayHeadingAt].reverse().find((at) => at <= index);
+    return heading === undefined ? null : normalizeDay(lines[heading]);
+  };
+  // Anchored codes are the courses. A document that has none is a list whose
+  // codes are spaced ("CS 101"), so there the loose pattern still stands in.
+  const anchored = lines.some((line) => COURSE_CODE_ANCHORED.test(line) && !ROOM_LABEL.test(line));
+  const pattern = anchored ? COURSE_CODE_ANCHORED : COURSE_CODE;
+  const starts = lines.flatMap((line, index) => line.match(pattern) && !ROOM_LABEL.test(line) ? [index] : []);
   const entries: StandardScheduleEntry[] = starts.flatMap((lineIndex, position) => {
     const firstLine = lines[lineIndex];
     const codeMatch = firstLine.match(COURSE_CODE);
     if (!codeMatch) return [];
     const nextCourse = starts[position + 1] ?? lines.length;
-    const contextLines = lines.slice(Math.max(0, lineIndex - 1), Math.min(nextCourse, lineIndex + 7));
+    // A day heading ends the cell above it, so the context stops there rather
+    // than running on and picking up the next row's room and times.
+    const nextHeading = dayHeadingAt.find((at) => at > lineIndex) ?? lines.length;
+    const contextEnd = Math.min(nextCourse, nextHeading, lineIndex + 7);
+    // Reaching back a line catches a label sitting above the code, but only
+    // when that line is not the tail of the previous cell -- otherwise an
+    // afternoon class inherited the morning class's time range.
+    const intrudes = position > 0 && lineIndex > starts[position - 1] + 1;
+    const contextStart = intrudes ? lineIndex : Math.max(0, lineIndex - 1);
+    const contextLines = lines.slice(contextStart, Math.max(contextEnd, lineIndex + 1));
     const context = contextLines.join("\n");
     const times = timeRange(context);
     const entry: StandardScheduleEntry = {
       courseCode: normalizeCourseCode(codeMatch[0]),
       courseName: courseName(firstLine, context, codeMatch[0]),
-      day: normalizeDay(context),
+      day: dayForLine(lineIndex) ?? normalizeDay(context),
       ...dateRange(context),
       ...times,
       parserSource: "universal-list",

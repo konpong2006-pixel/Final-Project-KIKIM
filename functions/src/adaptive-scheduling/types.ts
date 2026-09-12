@@ -109,10 +109,14 @@ export type EngineScheduleItem = {
   id: string;
   isDifficult: boolean;
   isFixed: boolean;
+  kind?: "activity" | "schedule" | "suggestion";
   startMs: number;
+  title?: string;
 };
 
 export type AdaptiveSlotRequest = {
+  /** User explicitly asked for this clock window, so soft wake/sleep limits may be crossed. */
+  allowOutsideAvailability?: boolean;
   category: AdaptiveActivityCategory;
   deadlineMs: number | null;
   durationMinutes: number;

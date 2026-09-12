@@ -1,10 +1,14 @@
 import {useEffect, useMemo, useState} from 'react';
-import {ActivityIndicator, Alert, Pressable, StyleSheet, Text, TextInput, View} from 'react-native';
+import {ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
-import NativeDateTimePicker from '@expo/ui/community/datetime-picker';
+import NativeDateTimePicker from '@/components/date-time-picker';
+import ScheduleConflictDialog from '@/components/schedule-conflict-dialog';
 
 import {runLegacyDataAction} from '@/services/legacy-data';
+import {findScheduleConflicts, type ScheduleConflict} from '@/services/firestore';
 import {getActivitySuggestions, recommendationLevel, type ActivitySuggestion} from '@/services/smartlife-recommendations';
+import {shiftDateKey, thailandDateKey, thailandTimeKey, thailandWallClockToDate} from '@/lib/thailand-time';
+import {showToast, toastMessage} from '@/components/app-toast';
 import {Card, MaterialIcon, PrimaryButton, UserHeader, UserShell, type UserNavigate, userStyles} from './user-ui';
 
 type FormPage = 'smartlife_add_activity' | 'smartlife_add_task' | 'smartlife_add_appointment' | 'smartlife_add_income' | 'smartlife_add_expense' | 'smartlife_save_activity' | 'smartlife_save_task' | 'smartlife_save_appointment';
@@ -39,6 +43,11 @@ const reminderOptions = [
   {icon: 'event_upcoming', label: '1 วันก่อน', value: '1 วันก่อน'},
 ] as const;
 const durationOptions = [30, 60, 90, 120] as const;
+// One-tap shortcuts for the two values that previously always cost three taps
+// (open picker, choose, confirm). They are additive: the picker rows above them
+// still open the full picker for anything these do not cover.
+const dateShortcuts = [{days: 0, label: 'วันนี้'}, {days: 1, label: 'พรุ่งนี้'}, {days: 7, label: '+7 วัน'}] as const;
+const timeShortcuts = ['08:00', '12:00', '17:00', '20:00'] as const;
 const recurrenceOptions = ['ไม่ทำซ้ำ', 'ทุกวัน', 'ทุกสัปดาห์', 'ทุกเดือน'] as const;
 
 function config(page: FormPage) {
@@ -50,15 +59,19 @@ function config(page: FormPage) {
 }
 
 function padTimePart(value: number) { return String(value).padStart(2, '0'); }
-function dateValue() {
-  const now = new Date();
-  return `${now.getFullYear()}-${padTimePart(now.getMonth() + 1)}-${padTimePart(now.getDate())}`;
-}
-function timeValue() {
-  const now = new Date();
-  return `${padTimePart(now.getHours())}:${padTimePart(now.getMinutes())}`;
-}
+// `date` and `time` are Bangkok wall clock, matching what every screen renders
+// with `timeZone: 'Asia/Bangkok'`. They only become an instant in `save`.
+function dateValue() { return thailandDateKey(); }
+function timeValue() { return thailandTimeKey(); }
 
+/**
+ * `parseDateText`/`parseTimeText` and `formatDateText`/`formatTimeText` shuttle
+ * the two strings in and out of the platform picker, which shows and reports a
+ * `Date` using the device's own clock. They are deliberately device-local and
+ * exactly symmetric: the picker is only editing digits, so whatever zone it
+ * renders in cancels out on the way back. The zone that matters is applied once,
+ * in `save`, by `thailandWallClockToDate`.
+ */
 function parseDateText(value: string) {
   const parsed = new Date(`${value}T00:00:00`);
   return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
@@ -80,7 +93,7 @@ function formatTimeText(value: Date) {
 }
 
 function thaiDateText(value: string) {
-  return new Intl.DateTimeFormat('th-TH', {dateStyle: 'medium', timeZone: 'Asia/Bangkok'}).format(parseDateText(value));
+  return new Intl.DateTimeFormat('th-TH', {dateStyle: 'medium', timeZone: 'Asia/Bangkok'}).format(new Date(`${value}T12:00:00+07:00`));
 }
 
 export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormPage; uid: string; onNavigate: UserNavigate}) {
@@ -105,6 +118,7 @@ export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormP
   const [color, setColor] = useState(colors[0]);
   const [aiSuggestions, setAiSuggestions] = useState<ActivitySuggestion[]>([]);
   const [loadingAiSuggestions, setLoadingAiSuggestions] = useState(false);
+  const [pendingConflictSave, setPendingConflictSave] = useState<{conflicts: ScheduleConflict[]; endAt: string; payload: Record<string, unknown>; startAt: string} | null>(null);
   const [saving, setSaving] = useState(false);
   const isTransaction = form.action === 'create-transaction';
   const copy = activityCopy[isTransaction ? 'activity' : activityType];
@@ -128,23 +142,50 @@ export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormP
     };
   }, [formMode, isTransaction, uid]);
 
-  const save = async () => {
-    if (!title.trim()) return Alert.alert('กรอกชื่อรายการก่อนบันทึก');
-    const parsedAmount = Number(amount.replace(/,/g, '').trim());
-    if (isTransaction && (!Number.isFinite(parsedAmount) || parsedAmount <= 0)) {
-      return Alert.alert('กรอกจำนวนเงินให้ถูกต้อง');
-    }
-    if (transactionType === 'expense' && !category.trim()) {
-      return Alert.alert('เลือกหรือกรอกหมวดรายจ่ายก่อนบันทึก');
-    }
-    const startDate = new Date(`${date}T${time}:00`);
-    if (Number.isNaN(startDate.getTime())) return Alert.alert('ตรวจสอบวันที่และเวลาอีกครั้ง');
+  const commitPayload = async (payload: Record<string, unknown>) => {
     setSaving(true);
     try {
-      const payload = isTransaction
-        ? {type: transactionType, amount: parsedAmount, merchant: title.trim(), category, note, occurredAt: startDate.toISOString()}
-        : {
-          title,
+      await runLegacyDataAction(uid, `user/${page}`, {action: form.action, payload});
+    } catch (error) {
+      showToast('บันทึกไม่สำเร็จ', toastMessage(error, 'ลองใหม่อีกครั้ง'));
+      setSaving(false);
+      return;
+    }
+    setSaving(false);
+    setPendingConflictSave(null);
+    // A toast rather than `Alert.alert`: the alert cost a tap to dismiss on
+    // native and did nothing at all on web, so the same save reported itself
+    // two different ways. This one appears on both and clears itself while the
+    // screen behind it is already showing the saved item.
+    showToast(
+      'บันทึกสำเร็จ',
+      isTransaction
+        ? `เพิ่ม${transactionType === 'income' ? 'รายรับ' : 'รายจ่าย'} ${Number(amount.replace(/,/g, '').trim()).toLocaleString('th-TH')} บาทเรียบร้อยแล้ว`
+        : `เพิ่ม${copy.title.replace('เพิ่ม', '')}ลงตารางเวลาแล้ว`,
+      'success',
+    );
+    onNavigate(form.target);
+  };
+
+  const save = async () => {
+    if (!title.trim()) return showToast('กรอกชื่อรายการก่อนบันทึก');
+    const parsedAmount = Number(amount.replace(/,/g, '').trim());
+    if (isTransaction && (!Number.isFinite(parsedAmount) || parsedAmount <= 0)) {
+      return showToast('กรอกจำนวนเงินให้ถูกต้อง');
+    }
+    // `transactionType` defaults to 'expense' for every form that is not the
+    // income one, tasks and activities included, and those forms have no
+    // category field to fill in -- so without the isTransaction guard this
+    // rejected every activity, task and appointment the user tried to save.
+    if (isTransaction && transactionType === 'expense' && !category.trim()) {
+      return showToast('เลือกหรือกรอกหมวดรายจ่ายก่อนบันทึก');
+    }
+    const startDate = thailandWallClockToDate(date, time);
+    if (Number.isNaN(startDate.getTime())) return showToast('ตรวจสอบวันที่และเวลาอีกครั้ง');
+    const payload: Record<string, unknown> = isTransaction
+      ? {type: transactionType, amount: parsedAmount, merchant: title.trim(), category, note, occurredAt: startDate.toISOString()}
+      : {
+           title,
           type: entryMode === 'reminder' ? 'task' : activityType,
           location,
           color,
@@ -156,20 +197,24 @@ export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormP
           startAt: startDate.toISOString(),
           endAt: new Date(startDate.getTime() + durationMinutes * 60 * 1000).toISOString(),
         };
-      await runLegacyDataAction(uid, `user/${page}`, {action: form.action, payload});
-    } catch (error) {
-      Alert.alert('บันทึกไม่สำเร็จ', error instanceof Error ? error.message : 'ลองใหม่อีกครั้ง');
+    if (!isTransaction) {
+      const endDate = new Date(startDate.getTime() + durationMinutes * 60 * 1000);
+      setSaving(true);
+      try {
+        const conflicts = await findScheduleConflicts(uid, startDate, endDate);
+        if (conflicts.length) {
+          setPendingConflictSave({conflicts, endAt: endDate.toISOString(), payload, startAt: startDate.toISOString()});
+          setSaving(false);
+          return;
+        }
+      } catch (error) {
+        showToast('ตรวจสอบตารางไม่สำเร็จ', toastMessage(error));
+        setSaving(false);
+        return;
+      }
       setSaving(false);
-      return;
     }
-    setSaving(false);
-    Alert.alert(
-      'บันทึกสำเร็จ',
-      isTransaction
-        ? `เพิ่ม${transactionType === 'income' ? 'รายรับ' : 'รายจ่าย'} ${parsedAmount.toLocaleString('th-TH')} บาทเรียบร้อยแล้ว`
-        : `เพิ่ม${copy.title.replace('เพิ่ม', '')}ลงตารางเวลาแล้ว`,
-    );
-    onNavigate(form.target);
+    await commitPayload(payload);
   };
 
   const useSuggestion = (suggestion: ActivitySuggestion) => {
@@ -178,8 +223,8 @@ export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormP
     setActivityType(suggestion.type);
     setTitle(suggestion.title);
     setLocation(suggestion.location);
-    setDate(formatDateText(startAt));
-    setTime(formatTimeText(startAt));
+    setDate(thailandDateKey(startAt));
+    setTime(thailandTimeKey(startAt));
     setPriority(suggestion.priority === 'urgent' ? 'urgent' : suggestion.priority === 'high' || suggestion.priority === 'important' ? 'important' : 'normal');
     setDurationMinutes(Math.max(30, Math.round((new Date(suggestion.endAt).getTime() - startAt.getTime()) / 60000)) || 60);
     setNote(`${suggestion.note}\n\nเหตุผลที่ AI เลือก: ${suggestion.reasons.join(', ')}`);
@@ -234,9 +279,11 @@ export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormP
 
         <Text style={styles.sectionTitle}>วันที่และเวลา</Text>
         <View style={styles.modernCard}>
-          <View style={styles.dateTimeRow}><View style={styles.rowIcon}><MaterialIcon color="#5f875f" name="event" size={20} /></View><View style={{flex: 1}}><Text style={styles.rowLabel}>วันที่</Text><Pressable onPress={() => setPickerTarget('date')}><Text style={styles.rowValue}>{thaiDateText(date)}</Text></Pressable></View></View>
+          <View style={styles.dateTimeRow}><View style={styles.rowIcon}><MaterialIcon color="#5f875f" name="event" size={20} /></View><View style={{flex: 1}}><Text style={styles.rowLabel}>วันที่</Text><Pressable accessibilityLabel="เลือกวันที่" onPress={() => setPickerTarget('date')}><Text style={styles.rowValue}>{thaiDateText(date)}</Text></Pressable></View></View>
+          <View style={styles.compactChips}>{dateShortcuts.map((shortcut) => { const value = shiftDateKey(thailandDateKey(), shortcut.days); return <Pressable accessibilityLabel={`ตั้งวันที่ ${shortcut.label}`} accessibilityRole="button" accessibilityState={{selected: date === value}} key={shortcut.label} onPress={() => setDate(value)} style={[styles.compactChip, date === value && styles.compactChipActive]}><Text style={[styles.compactChipText, date === value && styles.compactChipTextActive]}>{shortcut.label}</Text></Pressable>; })}</View>
           <View style={styles.cardDivider} />
-          <View style={styles.dateTimeRow}><View style={styles.rowIcon}><MaterialIcon color="#5f875f" name="schedule" size={20} /></View><View style={{flex: 1}}><Text style={styles.rowLabel}>{entryMode === 'reminder' ? 'เวลาเตือน' : 'เวลาเริ่ม'}</Text><Pressable onPress={() => setPickerTarget('time')}><Text style={styles.rowValue}>{time}</Text></Pressable></View></View>
+          <View style={styles.dateTimeRow}><View style={styles.rowIcon}><MaterialIcon color="#5f875f" name="schedule" size={20} /></View><View style={{flex: 1}}><Text style={styles.rowLabel}>{entryMode === 'reminder' ? 'เวลาเตือน' : 'เวลาเริ่ม'}</Text><Pressable accessibilityLabel="เลือกเวลา" onPress={() => setPickerTarget('time')}><Text style={styles.rowValue}>{time}</Text></Pressable></View></View>
+          <View style={styles.compactChips}>{timeShortcuts.map((shortcut) => <Pressable accessibilityLabel={`ตั้งเวลา ${shortcut}`} accessibilityRole="button" accessibilityState={{selected: time === shortcut}} key={shortcut} onPress={() => setTime(shortcut)} style={[styles.compactChip, time === shortcut && styles.compactChipActive]}><Text style={[styles.compactChipText, time === shortcut && styles.compactChipTextActive]}>{shortcut}</Text></Pressable>)}</View>
           <View style={styles.cardDivider} />
           <Text style={styles.rowLabel}>ระยะเวลา</Text><Text style={styles.rowHint}>เวลาสิ้นสุดจะคำนวณให้อัตโนมัติ</Text><View style={styles.compactChips}>{durationOptions.map((minutes) => <Pressable key={minutes} onPress={() => setDurationMinutes(minutes)} style={[styles.compactChip, durationMinutes === minutes && styles.compactChipActive]}><Text style={[styles.compactChipText, durationMinutes === minutes && styles.compactChipTextActive]}>{minutes < 60 ? `${minutes} นาที` : `${minutes / 60} ชม.`}</Text></Pressable>)}</View>
           {pickerTarget ? <NativeDateTimePicker accentColor="#638363" is24Hour mode={pickerTarget ?? 'date'} onDismiss={() => setPickerTarget(null)} onValueChange={(_, selectedDate) => selectFormDateTime(selectedDate)} presentation="dialog" value={pickerTarget === 'date' ? parseDateText(date) : parseTimeText(time)} /> : null}
@@ -259,6 +306,15 @@ export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormP
         <Pressable disabled={saving || !title.trim()} onPress={save} style={[styles.saveShell, (saving || !title.trim()) && styles.disabled]}><LinearGradient colors={['#6f966f', '#476d43']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.save}>{saving ? <ActivityIndicator color="#fff" /> : <MaterialIcon color="#fff" name="check" size={19} />}<Text style={styles.saveText}>{saving ? 'กำลังบันทึก...' : entryMode === 'reminder' ? 'บันทึกการเตือน' : copy.save}</Text></LinearGradient></Pressable>
       </>}
     </View>
+    <ScheduleConflictDialog
+      conflicts={pendingConflictSave?.conflicts ?? []}
+      onConfirm={() => pendingConflictSave ? void commitPayload(pendingConflictSave.payload) : undefined}
+      onEdit={() => setPendingConflictSave(null)}
+      proposedEndAt={pendingConflictSave?.endAt ?? new Date().toISOString()}
+      proposedStartAt={pendingConflictSave?.startAt ?? new Date().toISOString()}
+      saving={saving}
+      visible={Boolean(pendingConflictSave)}
+    />
   </UserShell>;
 
   /* Kept temporarily unreachable while the redesigned form is validated against the same save pipeline. */

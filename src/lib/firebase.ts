@@ -2,11 +2,13 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { FirebaseOptions, getApp, getApps, initializeApp } from 'firebase/app';
 import {
   Auth,
+  connectAuthEmulator,
   getAuth,
   getReactNativePersistence,
   initializeAuth,
 } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { connectFirestoreEmulator, getFirestore } from 'firebase/firestore';
+import { connectFunctionsEmulator, getFunctions } from 'firebase/functions';
 import { getStorage } from 'firebase/storage';
 import { Platform } from 'react-native';
 
@@ -44,3 +46,26 @@ function createAuth(): Auth {
 export const auth = createAuth();
 export const db = getFirestore(firebaseApp);
 export const storage = getStorage(firebaseApp);
+
+/**
+ * Opt-in wiring to the local Firebase emulators.
+ *
+ * Off unless `EXPO_PUBLIC_FIREBASE_EMULATOR` is explicitly set, and the flag is
+ * deliberately absent from `.env.local`, so a production build never reaches
+ * this branch. It exists so admin-only flows -- which need a real signed-in
+ * user carrying the `admin` custom claim, and the callable functions behind it
+ * -- can be exercised end to end without touching production data or creating
+ * real accounts.
+ *
+ * `getFunctions(app, region)` is memoised per app and region, and every caller
+ * in this project asks for the same `asia-southeast1`, so connecting the one
+ * instance here covers all of them.
+ */
+const emulatorHost = process.env.EXPO_PUBLIC_FIREBASE_EMULATOR;
+if (emulatorHost) {
+  const host = emulatorHost === '1' || emulatorHost === 'true' ? 'localhost' : emulatorHost;
+  connectAuthEmulator(auth, `http://${host}:9099`, {disableWarnings: true});
+  connectFirestoreEmulator(db, host, 8080);
+  connectFunctionsEmulator(getFunctions(firebaseApp, 'asia-southeast1'), host, 5001);
+  console.warn(`[firebase] using local emulators at ${host} -- not production`);
+}

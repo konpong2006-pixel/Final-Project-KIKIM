@@ -192,7 +192,7 @@ export default function AdminAiKnowledgeView({data}: AdminViewProps) {
 
       {/* 3 — Lifecycle coverage */}
       <AdminCard>
-        <SectionHead meta={`${presentStatuses.length}/${RECOMMENDATION_STATUSES.length} สถานะ`} title="3 · สถานะวงจรชีวิต" />
+        <SectionHead meta={`${presentStatuses.length}/${RECOMMENDATION_STATUSES.length} สถานะ`} title="2 · สถานะวงจรชีวิต" />
         {presentStatuses.length ? (
           <View style={styles.statusRow}>
             {presentStatuses.map((status) => (
@@ -249,7 +249,7 @@ export default function AdminAiKnowledgeView({data}: AdminViewProps) {
 
       {/* 2 — Per-item audit */}
       <AdminCard>
-        <SectionHead meta={`${list.length} รายการ`} title="2 · ตรวจสอบรายรายการ" />
+        <SectionHead meta={`${list.length} รายการ`} title="3 · ตรวจสอบรายรายการ" />
         {list.length ? list.map((item) => {
           const path = text(item.path, '');
           const sources = strings(item.contextSources);

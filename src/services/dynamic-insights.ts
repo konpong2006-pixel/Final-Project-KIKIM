@@ -30,6 +30,14 @@ export type FinanceBudgetInsight = {
 
 export type BurnoutDynamicInsight = {
   assessmentWindowDays: number;
+  /** Nightly hours implied by the user's declared usual window, if they set one. */
+  baselineSleepHours: number | null;
+  /**
+   * Average of the nights actually backing the assessment. It reads from logged
+   * nights when there are any, and only falls back to the declared baseline
+   * when there are none -- `sleepEvidenceSource` says which, so a baseline can
+   * never be mistaken for a measurement.
+   */
   averageSleepHours: number | null;
   busyHoursThisWeek: number;
   busyHoursToday: number;
@@ -44,7 +52,15 @@ export type BurnoutDynamicInsight = {
   reasons: string[];
   riskLevel: 'low' | 'medium' | 'high';
   score: number;
+  /** Which NSF duration band `averageSleepHours` falls in. */
+  sleepBand: 'borderline' | 'excessive' | 'insufficient' | 'recommended' | 'unknown';
   sleepDataDays: number;
+  /** Rolling deficit against the nightly target, from logged nights only. */
+  sleepDebtHours: number | null;
+  /** Logged nights inside the debt window that produced `sleepDebtHours`. */
+  sleepDebtNights: number;
+  /** Where the sleep figures came from. A baseline is never counted as logged. */
+  sleepEvidenceSource: 'baseline' | 'logged' | 'none';
   studyWorkToSleepRatio: number | null;
   totalFreeMinutes: number;
   urgentTaskCount: number;
@@ -230,16 +246,154 @@ function mergeBlocks(blocks: BusyBlock[], maximumGapMinutes = 0) {
   }, []);
 }
 
-function activityLooksLikeSleep(item: Pick<Activity, 'category' | 'note' | 'title'>) {
-  return /(นอน|เข้านอน|ตื่นนอน|พักผ่อนกลางคืน|sleep|bedtime)/i.test(`${item.title} ${item.category ?? ''} ${item.note ?? ''}`);
+/**
+ * Sleep duration bands, taken from the National Sleep Foundation's sleep-time
+ * duration consensus for young adults (18-25) and adults (26-64): 7-9 hours is
+ * the recommended range, 6 hours is classed only as "may be appropriate" rather
+ * than recommended, and anything below 6 or above 11 hours is "not
+ * recommended". These are the published figures, not tuned cut-offs, so the
+ * bands can be defended rather than merely explained.
+ *
+ * Why sleep belongs in a burnout signal at all: in student populations sleep
+ * quality and duration are reported to raise academic burnout largely through
+ * perceived stress, and to moderate the stress-to-burnout relationship. That is
+ * the rationale for letting sleep adjust -- never dominate -- a score the
+ * workload signals build. The output stays a non-diagnostic indicator.
+ */
+export const SLEEP_REFERENCE = {
+  /** Days the rolling deficit is accumulated across. */
+  debtWindowDays: 7,
+  /** Deficit that is treated as compounding rather than one poor night. */
+  debtWarningHours: 7,
+  /** Half a warning's worth: enough to mention, not enough to weigh heavily. */
+  debtWatchHours: 3.5,
+  /** NSF: above this, duration is "not recommended". */
+  excessiveHours: 11,
+  /** NSF: below this, duration is "not recommended". */
+  insufficientHours: 6,
+  /** NSF recommended band for 18-64. Below the floor is "may be appropriate". */
+  recommendedMaxHours: 9,
+  recommendedMinHours: 7,
+  /** Nightly target the rolling debt measures against: the recommended floor. */
+  targetHours: 7,
+} as const;
+
+/**
+ * Points each sleep band contributes, and why the two directions are not
+ * symmetric.
+ *
+ * Short sleep and long sleep are both outside the NSF recommended range, but
+ * they are not equally informative about burnout. Sleep restriction has a
+ * direct, experimentally supported path to the outcomes this score cares about
+ * -- it can be induced in a lab and the effects on mood, attention and
+ * exhaustion follow. Long sleep has no comparable experimental base: the
+ * evidence is largely observational, and long duration tends to travel *with*
+ * illness, low mood, or recovery from prior debt rather than causing them. It
+ * is better read as a symptom worth noticing than as a driver of risk.
+ *
+ * So `excessive` is scored at roughly a third of `insufficient` -- enough for
+ * the assessment to mention it, not enough to push someone into a higher risk
+ * band on its own. Treating them equally would let a recovering weekend look
+ * like a week of deprivation.
+ *
+ * A declared baseline is a statement of habit, not a measurement, so every band
+ * is halved again when the figure came from the user's stated window.
+ */
+export const SLEEP_SCORE_WEIGHTS = {
+  /** Below the NSF floor but inside "may be appropriate". */
+  borderline: 10,
+  /** Weakest of the three: observational evidence, often a symptom not a cause. */
+  excessive: 6,
+  /** Strongest evidence base of the three bands. */
+  insufficient: 20,
+  /** Applied to any band when the source is the declared window, not a log. */
+  statedBaselineMultiplier: 0.5,
+} as const;
+
+/** Points for a band, halved when the figure is a stated habit not a log. */
+export function sleepBandScore(band: BurnoutDynamicInsight['sleepBand'], source: BurnoutDynamicInsight['sleepEvidenceSource']) {
+  const base = band === 'insufficient' ? SLEEP_SCORE_WEIGHTS.insufficient
+    : band === 'borderline' ? SLEEP_SCORE_WEIGHTS.borderline
+    : band === 'excessive' ? SLEEP_SCORE_WEIGHTS.excessive
+    : 0;
+  return source === 'baseline' ? Math.round(base * SLEEP_SCORE_WEIGHTS.statedBaselineMultiplier) : base;
 }
 
-export function calculateBurnoutDynamicInsight({activities, finance: _finance, now = new Date(), pendingTasks, schedules, weekActivities, weekSchedules}: {
+/** Which NSF band a nightly average sits in. `null` hours means no evidence. */
+export function sleepDurationBand(hours: number | null): BurnoutDynamicInsight['sleepBand'] {
+  if (hours === null || !Number.isFinite(hours)) return 'unknown';
+  if (hours < SLEEP_REFERENCE.insufficientHours) return 'insufficient';
+  if (hours < SLEEP_REFERENCE.recommendedMinHours) return 'borderline';
+  if (hours > SLEEP_REFERENCE.excessiveHours) return 'excessive';
+  return 'recommended';
+}
+
+const SLEEP_TEXT_PATTERN = /(นอน|เข้านอน|ตื่นนอน|พักผ่อนกลางคืน|sleep|bedtime)/i;
+
+/**
+ * True for a record that represents sleep rather than something to do.
+ *
+ * Exported because the burnout model is not the only surface that has to ignore
+ * sleep. The dashboard's "AI จัดลำดับวันนี้" ranking and the notification bell
+ * must make the identical call, and a second copy of this pattern would drift
+ * from this one -- which is exactly how a logged night ended up listed as an
+ * overdue to-do with a "เสร็จ" button.
+ *
+ * A record the user filed as a `task` is deliberately never sleep, however it
+ * is worded: "อ่านหนังสือก่อนนอน" is work they intend to do, and hiding it from
+ * the priority list because it contains "นอน" would be worse than the bug this
+ * predicate exists to fix. Only non-task records are matched on wording.
+ *
+ * Accepts loose records because the dashboard sees page data serialised to
+ * plain objects, not typed `Activity` documents.
+ */
+export function isSleepActivity(item: {category?: unknown; note?: unknown; title?: unknown; type?: unknown}) {
+  if (typeof item.type === 'string' && item.type.toLowerCase() === 'task') return false;
+  const text = [item.title, item.category, item.note]
+    .map((value) => (typeof value === 'string' ? value : ''))
+    .join(' ');
+  return SLEEP_TEXT_PATTERN.test(text);
+}
+
+function activityLooksLikeSleep(item: Pick<Activity, 'category' | 'note' | 'title' | 'type'>) {
+  return isSleepActivity(item);
+}
+
+/**
+ * A night still in progress is not evidence yet. The one-tap logger writes the
+ * record at "เข้านอน" with a provisional end so the night is visible in the
+ * calendar straight away, and closes it at "ตื่นนอน"; counting the provisional
+ * span would let a placeholder duration masquerade as a measurement.
+ */
+function sleepEntryIsFinished(item: Pick<Activity, 'status'>) {
+  return item.status !== 'in-progress';
+}
+
+export function calculateBurnoutDynamicInsight({activities, finance: _finance, now = new Date(), pendingTasks, schedules, sleepBaselineHours = null, weekActivities, weekSchedules}: {
   activities: WithId<Activity>[];
   finance?: FinanceBudgetInsight | null;
   now?: Date;
   pendingTasks?: WithId<Activity>[];
   schedules: WithId<Schedule>[];
+  /**
+   * The user's declared usual nightly hours. It is a weaker class of evidence
+   * than a logged night and is treated as such: it is used only when no night
+   * was logged, it scores at half weight (see SLEEP_SCORE_WEIGHTS), and it can
+   * never lift `evidenceCoverage` past `partial`.
+   *
+   * KNOWN AND INTENTIONAL LIMITATION -- not a bug: the choice between logged
+   * and baseline is made once for the whole window, not per missing night. A
+   * week with three logged nights reports the average of those three and
+   * ignores the baseline for the other four, rather than filling the gaps in.
+   *
+   * Blending was considered and rejected. A blended average is a number no
+   * single source can vouch for, and `sleepEvidenceSource` -- which every
+   * surface uses to tell the user where the figure came from -- would have to
+   * become a proportion the UI cannot honestly render in one line. Reporting
+   * "the nights you actually logged" is weaker on coverage and stronger on
+   * honesty, which is the trade this feature is built around.
+   */
+  sleepBaselineHours?: number | null;
   weekActivities?: WithId<Activity>[];
   weekSchedules?: WithId<Schedule>[];
 }): BurnoutDynamicInsight {
@@ -247,7 +401,7 @@ export function calculateBurnoutDynamicInsight({activities, finance: _finance, n
   const assessmentStart = startOfDay(now); assessmentStart.setDate(assessmentStart.getDate() - 6);
   const allWeekActivities = weekActivities ?? activities;
   const allWeekSchedules = weekSchedules ?? schedules;
-  const sleepActivities = allWeekActivities.filter(activityLooksLikeSleep);
+  const sleepActivities = allWeekActivities.filter((item) => activityLooksLikeSleep(item) && sleepEntryIsFinished(item));
   const nonSleepActivities = allWeekActivities.filter((item) => !activityLooksLikeSleep(item) && item.status !== 'cancelled');
   const taskSource = pendingTasks ?? allWeekActivities;
   const taskItems = taskSource.filter((item) => item.type === 'task' && item.status !== 'completed' && item.status !== 'cancelled');
@@ -296,9 +450,38 @@ export function calculateBurnoutDynamicInsight({activities, finance: _finance, n
     const hours = (range.end.getTime() - range.start.getTime()) / 36e5;
     return hours >= 2 && hours <= 14 ? [{hours, start: range.start}] : [];
   }).sort((a, b) => a.start.getTime() - b.start.getTime());
-  const averageSleepHours = sleepEvidence.length ? Math.round((sleepEvidence.reduce((sum, item) => sum + item.hours, 0) / sleepEvidence.length) * 10) / 10 : null;
+  const loggedSleepHours = sleepEvidence.length ? Math.round((sleepEvidence.reduce((sum, item) => sum + item.hours, 0) / sleepEvidence.length) * 10) / 10 : null;
+  const baselineSleepHours = Number.isFinite(sleepBaselineHours) && (sleepBaselineHours as number) > 0
+    ? Math.round((sleepBaselineHours as number) * 10) / 10
+    : null;
+  // A logged night always wins. The baseline only speaks when nothing was
+  // logged, and `sleepEvidenceSource` carries that distinction to every surface
+  // that shows a number, so no caller has to re-derive it.
+  const sleepEvidenceSource: BurnoutDynamicInsight['sleepEvidenceSource'] =
+    loggedSleepHours !== null ? 'logged' : baselineSleepHours !== null ? 'baseline' : 'none';
+  const averageSleepHours = sleepEvidenceSource === 'logged' ? loggedSleepHours
+    : sleepEvidenceSource === 'baseline' ? baselineSleepHours : null;
+  const sleepBand = sleepDurationBand(averageSleepHours);
   let lateSleepStreak = 0; let currentLateStreak = 0;
   sleepEvidence.forEach((entry) => { const hour = entry.start.getHours(); currentLateStreak = hour >= 0 && hour < 5 ? currentLateStreak + 1 : 0; lateSleepStreak = Math.max(lateSleepStreak, currentLateStreak); });
+
+  // Rolling sleep debt: sleep deprivation compounds, so a week of six-hour
+  // nights is a different signal from one short night. Nights are collapsed per
+  // calendar date first, because two entries for one night would otherwise each
+  // be charged a full night's target. A long night pays debt back, and the
+  // total floors at zero -- banked surplus is not a credit against next week.
+  const debtWindowStart = startOfDay(now);
+  debtWindowStart.setDate(debtWindowStart.getDate() - (SLEEP_REFERENCE.debtWindowDays - 1));
+  const hoursByNight = sleepEvidence.reduce((map, entry) => {
+    if (entry.start < debtWindowStart) return map;
+    const key = localDateKey(entry.start);
+    return map.set(key, (map.get(key) ?? 0) + entry.hours);
+  }, new Map<string, number>());
+  const sleepDebtNights = hoursByNight.size;
+  const sleepDebtHours = sleepDebtNights
+    ? Math.round(Math.max(0, Array.from(hoursByNight.values())
+      .reduce((sum, hours) => sum + (SLEEP_REFERENCE.targetHours - hours), 0)) * 10) / 10
+    : null;
 
   let score = 0; const reasons: string[] = []; const protectiveFactors: string[] = [];
   if (busyMinutes >= 480) { score += 25; reasons.push(`วันนี้มีเรียนหรือทำงานรวม ${Math.round(busyMinutes / 60)} ชั่วโมง`); }
@@ -310,28 +493,58 @@ export function calculateBurnoutDynamicInsight({activities, finance: _finance, n
   if (overdueTaskCount > 0) { score += Math.min(20, overdueTaskCount * 10); reasons.push(`มีงานเลยกำหนด ${overdueTaskCount} รายการ`); }
   if (highLoadDays >= 5) { score += 25; reasons.push(`มีภาระอย่างน้อย 6 ชั่วโมง ${highLoadDays} วันในช่วงที่ตรวจ`); }
   else if (highLoadDays >= 3) { score += 15; reasons.push(`มีวันที่ภาระอย่างน้อย 6 ชั่วโมง ${highLoadDays} วันในช่วงที่ตรวจ`); }
-  if (sleepEvidence.length >= 2 && averageSleepHours !== null && averageSleepHours < 6) { score += 20; reasons.push(`ข้อมูลการนอน ${sleepEvidence.length} คืนเฉลี่ย ${averageSleepHours} ชั่วโมง`); }
-  else if (sleepEvidence.length >= 2 && averageSleepHours !== null && averageSleepHours < 7) { score += 10; reasons.push(`ข้อมูลการนอน ${sleepEvidence.length} คืนเฉลี่ย ${averageSleepHours} ชั่วโมง`); }
+  // Sleep scoring, banded on the NSF figures in SLEEP_REFERENCE and weighted by
+  // SLEEP_SCORE_WEIGHTS, which documents why long sleep counts for less than
+  // short sleep rather than treating the two directions as mirror images.
+  if (sleepEvidenceSource === 'logged' && sleepEvidence.length >= 2 && averageSleepHours !== null) {
+    const loggedReason = `ข้อมูลการนอนที่บันทึกไว้ ${sleepEvidence.length} คืน เฉลี่ย ${averageSleepHours} ชั่วโมง`;
+    score += sleepBandScore(sleepBand, 'logged');
+    if (sleepBand === 'insufficient') reasons.push(`${loggedReason} ต่ำกว่าเกณฑ์แนะนำ ${SLEEP_REFERENCE.insufficientHours} ชั่วโมง`);
+    else if (sleepBand === 'borderline') reasons.push(`${loggedReason} ยังไม่ถึงช่วงแนะนำ ${SLEEP_REFERENCE.recommendedMinHours}-${SLEEP_REFERENCE.recommendedMaxHours} ชั่วโมง`);
+    else if (sleepBand === 'excessive') reasons.push(`${loggedReason} สูงกว่าเกณฑ์แนะนำเกิน ${SLEEP_REFERENCE.excessiveHours} ชั่วโมง ซึ่งมักเป็นสัญญาณของการนอนชดเชยหรือสุขภาพ มากกว่าจะเป็นสาเหตุของภาวะหมดไฟ จึงถ่วงน้ำหนักน้อยกว่าการนอนไม่พอ`);
+  } else if (sleepEvidenceSource === 'baseline' && averageSleepHours !== null) {
+    score += sleepBandScore(sleepBand, 'baseline');
+    if (sleepBand !== 'recommended' && sleepBand !== 'unknown') {
+      reasons.push(`ยังไม่มีการบันทึกการนอนจริง จึงใช้ช่วงนอนปกติที่ตั้งไว้ ${averageSleepHours} ชั่วโมงเป็นค่าอ้างอิงชั่วคราว`);
+    }
+  }
+  if (sleepDebtHours !== null && sleepDebtNights >= 3) {
+    if (sleepDebtHours >= SLEEP_REFERENCE.debtWarningHours) { score += 12; reasons.push(`สะสมการนอนขาดรวม ${sleepDebtHours} ชั่วโมงใน ${sleepDebtNights} คืนที่บันทึกไว้`); }
+    else if (sleepDebtHours >= SLEEP_REFERENCE.debtWatchHours) { score += 6; reasons.push(`เริ่มสะสมการนอนขาดรวม ${sleepDebtHours} ชั่วโมงใน ${sleepDebtNights} คืนที่บันทึกไว้`); }
+  }
   if (lateSleepStreak >= 2) { score += 15; reasons.push(`มีบันทึกเข้านอนหลังเที่ยงคืนต่อเนื่อง ${lateSleepStreak} คืน`); }
   if (longestFreeSlotMinutes < 30) { score += 15; reasons.push('วันนี้ไม่มีช่วงว่างต่อเนื่องถึง 30 นาที'); }
   else if (longestFreeSlotMinutes < 45) { score += 8; reasons.push(`วันนี้ช่วงว่างยาวสุด ${Math.round(longestFreeSlotMinutes)} นาที`); }
   if (longestFreeSlotMinutes >= 60) protectiveFactors.push(`วันนี้ยังมีช่วงว่างต่อเนื่อง ${Math.round(longestFreeSlotMinutes)} นาที`);
   if (overdueTaskCount === 0) protectiveFactors.push('ยังไม่พบงานเลยกำหนด');
-  if (sleepEvidence.length >= 2 && averageSleepHours !== null && averageSleepHours >= 7) protectiveFactors.push(`ข้อมูลการนอนเฉลี่ย ${averageSleepHours} ชั่วโมง`);
+  if (sleepEvidenceSource === 'logged' && sleepEvidence.length >= 2 && sleepBand === 'recommended') protectiveFactors.push(`การนอนที่บันทึกไว้เฉลี่ย ${averageSleepHours} ชั่วโมง อยู่ในช่วงแนะนำ ${SLEEP_REFERENCE.recommendedMinHours}-${SLEEP_REFERENCE.recommendedMaxHours} ชั่วโมง`);
+  if (sleepDebtHours === 0 && sleepDebtNights >= 3) protectiveFactors.push(`ไม่มีการนอนขาดสะสมใน ${sleepDebtNights} คืนที่บันทึกไว้`);
 
   const finalScore = clamp(Math.round(score), 0, 100);
+  // Only logged nights count as evidence signals. A declared baseline is a
+  // preference, not a record, so it must not be able to inflate coverage --
+  // that is precisely the "default masquerading as evidence" this guards.
   const evidenceSignals = blocksByDay.size + taskItems.length + sleepEvidence.length;
-  const studyWorkToSleepRatio = averageSleepHours && sleepEvidence.length >= 2
+  const studyWorkToSleepRatio = sleepEvidenceSource === 'logged' && averageSleepHours && sleepEvidence.length >= 2
     ? Math.round(((busyMinutesThisWeek / 60 / 7) / averageSleepHours) * 100) / 100
     : null;
+  // `strong` now needs a real week of nights behind it, not two. Workload alone
+  // still reaches `partial`, because workload evidence genuinely is present --
+  // it just cannot claim the sleep dimension it never measured.
+  const evidenceCoverage: BurnoutDynamicInsight['evidenceCoverage'] =
+    evidenceSignals >= 8 && sleepEvidence.length >= 3 ? 'strong'
+    : evidenceSignals >= 3 || sleepEvidence.length >= 1 ? 'partial'
+    : 'limited';
   return {
-    assessmentWindowDays: 7, averageSleepHours, busyHoursThisWeek: Math.round((busyMinutesThisWeek / 60) * 10) / 10,
+    assessmentWindowDays: 7, averageSleepHours, baselineSleepHours,
+    busyHoursThisWeek: Math.round((busyMinutesThisWeek / 60) * 10) / 10,
     busyHoursToday: Math.round((busyMinutes / 60) * 10) / 10,
-    evidenceCoverage: evidenceSignals >= 8 && sleepEvidence.length >= 2 ? 'strong' : evidenceSignals >= 3 ? 'partial' : 'limited',
+    evidenceCoverage,
     highLoadDays, lateSleepStreak, longestContinuousBusyMinutes: Math.round(longestContinuousBusyMinutes),
     longestFreeSlotMinutes: Math.round(longestFreeSlotMinutes), overdueTaskCount, pendingTaskCount: taskItems.length,
     protectiveFactors, reasons, riskLevel: finalScore >= 65 ? 'high' : finalScore >= 35 ? 'medium' : 'low',
-    score: finalScore, sleepDataDays: sleepEvidence.length, studyWorkToSleepRatio,
+    score: finalScore, sleepBand, sleepDataDays: sleepEvidence.length, sleepDebtHours, sleepDebtNights,
+    sleepEvidenceSource, studyWorkToSleepRatio,
     totalFreeMinutes: Math.round(totalFreeMinutes), urgentTaskCount,
   };
 }

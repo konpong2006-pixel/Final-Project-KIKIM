@@ -1,8 +1,9 @@
-import {Alert, Pressable, StyleSheet, Text, View} from 'react-native';
+import {Pressable, StyleSheet, Text, View} from 'react-native';
 
 import {useInstitution} from '@/providers/institution-provider';
 import type {InstitutionType} from '@/types/institution';
 import {Card, MaterialIcon, PrimaryButton, UserHeader, UserShell, type UserNavigate, userStyles as styles} from './user-ui';
+import {showToast} from '@/components/app-toast';
 
 const OPTIONS: {description: string; icon: string; label: string; value: InstitutionType}[] = [
   {description: 'ตารางรายวิชาและภาคเรียนประมาณ 16 สัปดาห์', icon: 'school', label: 'มหาวิทยาลัย', value: 'university'},
@@ -40,7 +41,7 @@ export default function OnboardingScreen({page, onNavigate}: {page: string; onNa
   const next = step === 1 ? 'smartlife_onboarding_step_2' : step === 2 ? 'smartlife_onboarding_step_3' : 'index';
   const continueOnboarding = () => {
     if (step === 1 && !institutionType) {
-      Alert.alert('เลือกประเภทสถานศึกษา', 'กรุณาเลือกมหาวิทยาลัยหรือมัธยมศึกษาก่อนดำเนินการต่อ');
+      showToast('เลือกประเภทสถานศึกษา', 'กรุณาเลือกมหาวิทยาลัยหรือมัธยมศึกษาก่อนดำเนินการต่อ');
       return;
     }
     onNavigate(next);
@@ -52,7 +53,7 @@ export default function OnboardingScreen({page, onNavigate}: {page: string; onNa
       <Card style={localStyles.card}>
         <Text style={[styles.sectionTitle, {fontSize: 28}]}>{content[0]}</Text>
         <Text style={[styles.bodyText, {fontSize: 14, lineHeight: 22}]}>{content[1]}</Text>
-        {step === 1 ? <InstitutionTypeSelector onChange={(value) => setInstitutionType(value).catch(() => Alert.alert('บันทึกไม่สำเร็จ', 'กรุณาลองเลือกประเภทสถานศึกษาอีกครั้ง'))} value={institutionType} /> : null}
+        {step === 1 ? <InstitutionTypeSelector onChange={(value) => setInstitutionType(value).catch(() => showToast('บันทึกไม่สำเร็จ', 'กรุณาลองเลือกประเภทสถานศึกษาอีกครั้ง'))} value={institutionType} /> : null}
         <View style={localStyles.progress}>{[1, 2, 3].map((item) => <View key={item} style={[localStyles.progressItem, {backgroundColor: item <= step ? '#668d65' : '#cbd6c7'}]} />)}</View>
       </Card>
       <PrimaryButton disabled={step === 1 && !institutionType} label={step === 3 ? 'เข้าสู่ SmartLife' : 'ถัดไป'} onPress={continueOnboarding} />

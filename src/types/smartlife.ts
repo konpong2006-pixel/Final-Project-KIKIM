@@ -44,6 +44,7 @@ export type Activity = OwnedDocument & {
   deadline?: Timestamp | null;
   endAt: Timestamp;
   estimatedDurationMinutes?: number;
+  fixedLocalDate?: string;
   googleCalendarId?: string;
   googleEventId?: string;
   googleSyncStatus?: 'failed' | 'not_required' | 'pending' | 'synced';
@@ -60,17 +61,46 @@ export type Activity = OwnedDocument & {
   status: ActivityStatus;
   title: string;
   type: ActivityType;
+  userSelectedTime?: boolean;
 };
 
 export type Note = OwnedDocument & {
+  /** How `content` is encoded. Absent means the original plain text. */
+  bodyFormat?: 'plain' | 'html';
   category: NoteCategory;
   color: string;
   completedAt?: Timestamp | null;
   content: string;
+  /** Storage paths of drawings attached to this note, never image bytes. */
+  drawingPaths?: string[];
+  /** Owning folder, or '' for none. Folders live in `noteFolders`. */
+  folderId?: string;
+  linkedNoteIds?: string[];
+  /** Marks the note as PIN-protected. The PIN lives in settings/noteLock. */
+  locked?: boolean;
+  pinned?: boolean;
   priority?: 'normal' | 'important' | 'urgent';
   relatedScheduleId: string;
+  /** Set when the note was created from an OCR scan. */
+  scanLogId?: string;
   status?: 'pending' | 'completed';
+  tags?: string[];
   title: string;
+};
+
+export type NoteFolder = OwnedDocument & {
+  color?: string;
+  icon?: string;
+  name: string;
+  sortOrder?: number;
+};
+
+/** The per-user note PIN. Only ever a salted digest, never the PIN itself. */
+export type NoteLock = OwnedDocument & {
+  biometricEnabled?: boolean;
+  hash: string;
+  hint?: string;
+  salt: string;
 };
 
 export type Transaction = OwnedDocument & {

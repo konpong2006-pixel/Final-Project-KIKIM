@@ -1,5 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.scheduleStructure = scheduleStructure;
+exports.detectAccountStatement = detectAccountStatement;
 exports.classifyScanText = classifyScanText;
 exports.extractAnchoredReceiptTotal = extractAnchoredReceiptTotal;
 exports.extractReceiptTimestampEvidence = extractReceiptTimestampEvidence;
@@ -17,7 +19,10 @@ const RECEIPT_SIGNALS = [
     { pattern: /(?:MERCHANT|PAYEE|ร้านค้า|ผู้รับเงิน|ชำระเงิน|รหัสอ้างอิง)/gi, weight: 3 },
 ];
 const SCHEDULE_SIGNALS = [
-    { pattern: /(?:ตารางเรียน|ตารางสอบ|ปีการศึกษา|ภาคการศึกษา|DAY\s*\/\s*TIME)/gi, weight: 9 },
+    { pattern: /(?:ตารางเรียน|ตารางสอบ|ตารางการเรียน|CLASS\s*SCHEDULE|STUDY\s*TIMETABLE|DAY\s*\/\s*TIME)/gi, weight: 9 },
+    // Academic-year wording is context, not structure: it heads fee notices,
+    // calendars and announcements as often as timetables, so it only nudges.
+    { pattern: /(?:ปีการศึกษา|ภาคการศึกษา)/gi, weight: 3 },
     { pattern: /(?:รหัสวิชา|ชื่อรายวิชา|COURSE\s*CODE|COURSE\s*NAME|SECTION|ห้องเรียน)/gi, weight: 5 },
     { pattern: /(?:จันทร์|อังคาร|พุธ|พฤหัสบดี|ศุกร์|เสาร์|อาทิตย์|MONDAY|TUESDAY|WEDNESDAY|THURSDAY|FRIDAY)/gi, weight: 2 },
     { pattern: /\b(?:[01]?\d|2[0-3])[:.]\d{2}\s*(?:-|–|—|ถึง)\s*(?:[01]?\d|2[0-3])[:.]\d{2}\b/g, weight: 2 },
@@ -29,34 +34,185 @@ function matchCount(text, pattern) {
 function weightedScore(text, signals) {
     return signals.reduce((total, signal) => total + matchCount(text, signal.pattern) * signal.weight, 0);
 }
+/**
+ * How much weighted evidence a document needs before it may be called a
+ * receipt or a schedule at all.
+ *
+ * Calibrated against real documents: a genuine receipt scores in the high
+ * tens (37 for a shop receipt with a tax-invoice header) and a real timetable
+ * higher still (52), while incidental matches in ordinary prose -- a couple of
+ * weekday names, a time range -- top out around 4. Anything under this bar has
+ * not shown it is a structured document, so it stays plain text.
+ */
+const MIN_STRUCTURED_EVIDENCE = 10;
+/**
+ * Weekday tokens a timetable uses, keyed by day so repeats do not inflate the
+ * count: full Thai names, the dotted abbreviations grid headers use (จ. อ. พ.
+ * พฤ. ศ. ส. อา.), and English names or their three-letter forms.
+ *
+ * The Thai abbreviations are bounded on both sides by a non-Thai character,
+ * which is what keeps "พ.ศ.", "ส.ค.", "อ.เมือง" and "จ.เชียงใหม่" from reading
+ * as days. The English short forms must be capitalised, so ordinary prose
+ * ("sat down", "sun") does not count.
+ */
+const WEEKDAY_TOKENS = [
+    /จันทร์|(?<![ก-๙.])จ\.(?![ก-๙])|\b(?:[Mm]onday|MONDAY|MON|Mon)\b/,
+    /อังคาร|(?<![ก-๙.])อ\.(?![ก-๙])|\b(?:[Tt]uesday|TUESDAY|TUES?|Tues?)\b/,
+    /พุธ|(?<![ก-๙.])พ\.(?![ก-๙])|\b(?:[Ww]ednesday|WEDNESDAY|WED|Wed)\b/,
+    /พฤหัสบดี|พฤหัส|(?<![ก-๙.])พฤ\.(?![ก-๙])|\b(?:[Tt]hursday|THURSDAY|THUR?S?|Thur?s?)\b/,
+    /ศุกร์|(?<![ก-๙.])ศ\.(?![ก-๙])|\b(?:[Ff]riday|FRIDAY|FRI|Fri)\b/,
+    /เสาร์|(?<![ก-๙.])ส\.(?![ก-๙])|\b(?:[Ss]aturday|SATURDAY|SAT)\b/,
+    /อาทิตย์|(?<![ก-๙.])อา\.(?![ก-๙])|\b(?:[Ss]unday|SUNDAY|SUN)\b/,
+];
+const TIMETABLE_ANCHOR = /ตารางเรียน|ตารางสอบ|ตารางการเรียน|CLASS\s*SCHEDULE|STUDY\s*TIMETABLE|EXAM\s*SCHEDULE|DAY\s*\/\s*TIME/i;
+const TIME_RANGE = /\b(?:[01]?\d|2[0-3])[:.]\d{2}\s*(?:-|–|—|ถึง)\s*(?:[01]?\d|2[0-3])[:.]\d{2}\b/;
+const ALNUM_COURSE_CODE = /\b[A-Z]{2,5}\s?\d{3}(?:\s?-\s?\d{2})?\b/g;
+const NUMERIC_COURSE_CODE = /\b\d{6,7}(?:\s*-\s*\d{1,2})?\b/g;
+function weekdaysOn(line) {
+    return WEEKDAY_TOKENS.flatMap((pattern, day) => (pattern.test(line) ? [day] : []));
+}
+/**
+ * What only a timetable has: weekdays paired with time slots or course codes,
+ * line after line.
+ *
+ * Vocabulary is not enough in either direction. A real grid often has no
+ * "ตารางเรียน" header and abbreviates its days, so counting phrases called it a
+ * plain document; while "ปีการศึกษา" -- which sat in the old list of
+ * unmistakable anchors -- heads fee notices and academic calendars too, and
+ * those were being called schedules with certainty, never checked by the
+ * model.
+ */
+function scheduleStructure(text) {
+    const lines = text.split(/\r?\n/);
+    const days = new Set();
+    let slotLines = 0;
+    for (const line of lines) {
+        const onLine = weekdaysOn(line);
+        onLine.forEach((day) => days.add(day));
+        if (onLine.length && (TIME_RANGE.test(line) || /\b[A-Z]{2,5}\s?\d{3}\b|\b\d{6,7}\b/.test(line)))
+            slotLines += 1;
+    }
+    const anchor = TIMETABLE_ANCHOR.test(text);
+    // A bare six- or seven-digit number is as likely a tax, POS or account
+    // number as a course, so those only count beside some weekly structure.
+    const numeric = anchor || days.size >= 2 ? text.match(NUMERIC_COURSE_CODE)?.length ?? 0 : 0;
+    const courseCodes = (text.match(ALNUM_COURSE_CODE)?.length ?? 0) + numeric;
+    const dayCount = days.size;
+    // Without a timetable heading it takes several day-and-slot lines, and
+    // either course codes or a third such line -- two lines of opening hours
+    // ("จันทร์-ศุกร์ 08:00-17:00 / เสาร์ 09:00-12:00") must not be proof.
+    const proven = (anchor && (dayCount >= 2 || courseCodes >= 2 || slotLines >= 1)) ||
+        (dayCount >= 3 && slotLines >= 2 && (courseCodes >= 2 || slotLines >= 3));
+    return { courseCodes, dayCount, proven, slotLines };
+}
+const STATEMENT_ROW_DATE = /^\s*(?:\d{1,2}[\/.\-]\d{1,2}[\/.\-]\d{2,4}|\d{1,2}\s*(?:ม\.ค\.|ก\.พ\.|มี\.ค\.|เม\.ย\.|พ\.ค\.|มิ\.ย\.|ก\.ค\.|ส\.ค\.|ก\.ย\.|ต\.ค\.|พ\.ย\.|ธ\.ค\.)\s*\d{2,4}|\d{1,2}\s*(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[A-Z]*\.?\s*\d{2,4})/i;
+const MONEY_AMOUNT = /\d{1,3}(?:,\d{3})+\.\d{2}|\d+\.\d{2}/g;
+const STATEMENT_VOCABULARY = [
+    /สมุดบัญชี|บัญชีเงินฝาก/,
+    /รายการเดินบัญชี|STATEMENT/i,
+    /PASSBOOK/i,
+    /คงเหลือ|BALANCE/i,
+    /ยอดยกมา|B\/F|BROUGHT\s+FORWARD/i,
+    /ถอน|WITHDRAW/i,
+    /ฝาก|DEPOSIT/i,
+];
+const STATEMENT_DATES = [
+    /(?<!\d)\d{1,2}[\/.\-]\d{1,2}[\/.\-]\d{2,4}(?!\d)/g,
+    /(?<!\d)\d{1,2}\s*(?:ม\.ค\.|ก\.พ\.|มี\.ค\.|เม\.ย\.|พ\.ค\.|มิ\.ย\.|ก\.ค\.|ส\.ค\.|ก\.ย\.|ต\.ค\.|พ\.ย\.|ธ\.ค\.)\s*\d{2,4}(?!\d)/g,
+    /(?<!\d)\d{1,2}\s*(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[A-Z]*\.?\s*\d{2,4}(?!\d)/gi,
+];
+/**
+ * True for a passbook page or account statement: many distinct dates and
+ * amounts, in bank-statement vocabulary.
+ *
+ * A receipt is one transaction with one total, and everything downstream --
+ * the extractor, the model review, the save -- assumes that. A passbook is a
+ * list of them, so it came back with the bank's name as the merchant, the
+ * final balance as the total, and the rows as line items. The model
+ * classifier made it worse rather than better: its definition of a receipt
+ * was any record of a financial transaction, and a passbook is dozens.
+ *
+ * Deliberately indifferent to layout. Real table OCR puts every cell on its
+ * own line -- "01/08/69", "ยอดยกมา", "12,450.00" -- so the first version,
+ * which wanted a date and an amount on the same line, never fired on an
+ * actual scan. And the counts are of *distinct* values because the receipt
+ * path stores up to three transcripts of the same image: a receipt printing
+ * one date carries it three times, and must not look like three rows.
+ * A row-per-line running-balance column still counts where OCR keeps rows.
+ */
+function detectAccountStatement(text) {
+    const dates = new Set(STATEMENT_DATES.flatMap((pattern) => text.match(pattern) ?? [])
+        .map((date) => date.replace(/\s+/g, "").toUpperCase()));
+    const amounts = new Set(text.match(MONEY_AMOUNT) ?? []);
+    const vocabulary = STATEMENT_VOCABULARY.filter((pattern) => pattern.test(text)).length;
+    let balanceRows = 0;
+    for (const line of text.split(/\r?\n/)) {
+        if (STATEMENT_ROW_DATE.test(line) && (line.match(MONEY_AMOUNT)?.length ?? 0) >= 2)
+            balanceRows += 1;
+    }
+    return dates.size >= 3 && amounts.size >= 3 && (vocabulary >= 2 || balanceRows >= 3);
+}
 function classifyScanText(rawText) {
     const text = rawText.replace(/\u00a0/g, " ");
     let receipt = weightedScore(text, RECEIPT_SIGNALS);
     let schedule = weightedScore(text, SCHEDULE_SIGNALS);
+    // Settled before anything else: a statement carries amounts, dates and
+    // bank vocabulary, so every signal below would argue it is a receipt, and
+    // it is decided with certainty so the model -- which agrees with them --
+    // is not asked.
+    if (detectAccountStatement(text)) {
+        return { certain: true, confidence: 0.95, scores: { receipt, schedule }, type: "document" };
+    }
     const hardReceipt = matchCount(text, /(?:RECEIPT\s*\/\s*TAX\s*INVOICE|TAX\s*INVOICE|ใบเสร็จรับเงิน|ใบกำกับภาษี|ทำรายการสำเร็จ|เป๋าตัง|G\s*-?\s*WALLET|จำนวน(?:เงิน)?(?:ที่)?(?:ชำระ|จ่าย)|ยอด(?:เงิน)?ที่ชำระ)/gi);
-    const hardSchedule = matchCount(text, /(?:ตารางเรียน|ตารางสอบ|ปีการศึกษา|DAY\s*\/\s*TIME)/gi);
+    const structure = scheduleStructure(text);
     // Financial documents can contain dates, times, and long numeric IDs. Two
     // receipt anchors are enough to distinguish them from timetable evidence.
     const receiptAnchors = matchCount(text, /(?:RECEIPT(?:\s*\/\s*TAX\s*INVOICE)?|TAX\s*ID|POS\s*ID|QR\s*PAYMENT|PROMPT\s*QR|APPROVAL\s*CODE|VAT(?:ABLE|\s*7|\s*INCLUDED)|GRAND\s*TOTAL|TOTAL\s*(?:INCL\.?\s*VAT|AMOUNT)?|\u0e43\u0e1a\u0e01\u0e33\u0e01\u0e31\u0e1a\u0e20\u0e32\u0e29\u0e35|\u0e0a\u0e33\u0e23\u0e30\u0e40\u0e07\u0e34\u0e19\u0e2a\u0e33\u0e40\u0e23\u0e47\u0e08|\u0e08\u0e33\u0e19\u0e27\u0e19(?:\u0e40\u0e07\u0e34\u0e19)?(?:\u0e17\u0e35\u0e48)?(?:\u0e0a\u0e33\u0e23\u0e30|\u0e08\u0e48\u0e32\u0e22))/gi);
-    const weekdayCount = new Set([...text.matchAll(/(?:จันทร์|อังคาร|พุธ|พฤหัสบดี|ศุกร์|MONDAY|TUESDAY|WEDNESDAY|THURSDAY|FRIDAY)/gi)]
-        .map((match) => match[0].toLowerCase())).size;
-    // Long product, tax, POS, and reference numbers are not course codes.
-    // Numeric course-code evidence is considered only when schedule structure exists.
-    if (hardSchedule > 0 || weekdayCount >= 3) {
-        const courseCodes = text.match(/\b\d{6,7}(?:\s*[-,]\s*\d{1,2})?\b/g)?.length ?? 0;
-        schedule += Math.min(4, courseCodes) * 2;
+    // Course codes count only beside weekly structure; on their own they are
+    // indistinguishable from tax, POS and account numbers.
+    if (structure.proven || structure.slotLines > 0)
+        schedule += Math.min(4, structure.courseCodes) * 2;
+    // A category has to earn its claim, either through an unmistakable anchor
+    // phrase or through enough accumulated evidence. Without this gate the
+    // comparison below always picks a structured type, however little evidence
+    // there is.
+    const receiptClaimed = hardReceipt > 0 || receiptAnchors >= 2 || receipt >= MIN_STRUCTURED_EVIDENCE;
+    const scheduleClaimed = structure.proven || structure.slotLines >= 2 ||
+        (structure.dayCount >= 3 && structure.courseCodes >= 2);
+    if (!receiptClaimed && !scheduleClaimed) {
+        // Neither shape fits. Confidence here is confidence that this is *not* a
+        // receipt or a schedule, so it falls as the losing evidence approaches the
+        // bar rather than being pinned at a floor.
+        const strongest = Math.max(receipt, schedule);
+        const confidence = 0.55 + 0.44 * (1 - Math.min(1, strongest / MIN_STRUCTURED_EVIDENCE));
+        return {
+            certain: false,
+            confidence: Number(confidence.toFixed(2)),
+            scores: { receipt, schedule },
+            type: "document",
+        };
     }
     let type = schedule > receipt ? "schedule" : "receipt";
-    if (hardReceipt > 0 && hardSchedule === 0)
+    if (!scheduleClaimed)
         type = "receipt";
-    if (receiptAnchors >= 2 && hardSchedule === 0)
+    if (!receiptClaimed)
+        type = "schedule";
+    if (receiptClaimed && hardReceipt > 0 && !structure.proven)
         type = "receipt";
-    if (hardSchedule > 0 && hardReceipt === 0 && schedule >= receipt)
+    if (receiptClaimed && receiptAnchors >= 2 && !structure.proven)
+        type = "receipt";
+    if (structure.proven && hardReceipt === 0)
         type = "schedule";
     const winner = type === "receipt" ? receipt : schedule;
     const loser = type === "receipt" ? schedule : receipt;
-    const confidence = Math.min(0.99, Math.max(0.55, 0.55 + (winner - loser) / Math.max(1, winner + loser) * 0.44));
+    // Confidence blends the margin over the other category with how much
+    // absolute evidence was found. Margin alone reported 0.99 for a document
+    // scoring 4 against 0, which read as near-certainty on almost no evidence.
+    const margin = (winner - loser) / Math.max(1, winner + loser);
+    const strength = Math.min(1, winner / (MIN_STRUCTURED_EVIDENCE * 2));
+    const confidence = Math.min(0.99, Math.max(0.55, 0.55 + margin * strength * 0.44));
     return {
+        certain: type === "receipt" ? hardReceipt > 0 : structure.proven,
         confidence: Number(confidence.toFixed(2)),
         scores: { receipt, schedule },
         type,

@@ -5,12 +5,13 @@ import {ensureAppCheckReady} from '@/lib/app-check';
 import {firebaseApp} from '@/lib/firebase';
 import {uploadUserImage, type UploadKind} from '@/services/storage';
 
-export type ScanType = 'auto' | 'receipt' | 'schedule';
+export type ScanType = 'auto' | 'document' | 'receipt' | 'schedule';
 
 export type ScanClassification = {
   confidence: number;
   scores: {receipt: number; schedule: number};
-  type: 'receipt' | 'schedule';
+  /** `document` means readable text that is neither a receipt nor a schedule. */
+  type: 'document' | 'receipt' | 'schedule';
 };
 
 export type OcrResult = {
@@ -18,7 +19,7 @@ export type OcrResult = {
   logId: string;
   parsed: Record<string, unknown>;
   rawText: string;
-  scanType: 'receipt' | 'schedule';
+  scanType: 'document' | 'receipt' | 'schedule';
   storagePath?: string;
 };
 
@@ -31,7 +32,13 @@ const functions = getFunctions(firebaseApp, 'asia-southeast1');
 const analyzeScan = httpsCallable<
   {scanType: ScanType; sourceImageHash: string; storagePath: string},
   OcrResult
->(functions, 'analyzeScan');
+>(functions, 'analyzeScan', {
+  // The Firebase default is 70 s. A scan now waits on Gemini's review --
+  // until 2026-09-11 that call failed instantly, so the default was never
+  // tested -- and a slow model must not make the app give up on a scan the
+  // server (120 s) is still finishing.
+  timeout: 115_000,
+});
 
 export type ReviewedReceiptPayload = {
   amount: number;
@@ -75,16 +82,36 @@ export async function uploadAndAnalyzeScan({
   uri: string;
 }): Promise<UploadedOcrResult> {
   if (isDemoMode) {
-    const resolvedType: OcrResult['scanType'] = scanType === 'receipt' ? 'receipt' : 'schedule';
+    // `auto` resolves to `document` here on purpose: it is the honest demo of
+    // what the classifier now does with a page that is neither a receipt nor a
+    // timetable, which is the common case for scan-to-note. Asking for
+    // `receipt` or `schedule` explicitly still demos those.
+    const resolvedType: OcrResult['scanType'] = scanType === 'receipt'
+      ? 'receipt'
+      : scanType === 'schedule'
+        ? 'schedule'
+        : 'document';
+    const demoDocumentText = [
+      'ประกาศสำนักงาน ก.พ.',
+      'เรื่อง รับสมัครสอบเพื่อวัดความรู้ความสามารถทั่วไปด้วยระบบอิเล็กทรอนิกส์',
+      'ระดับ ปวช. ปวท. อนุปริญญา และปวส.',
+      'สอบภาคเช้า เวลา 09.00-12.00 น.',
+      'สอบภาคบ่าย เวลา 14.30-17.30 น.',
+    ].join('\n');
     return {
       classification: {
-        confidence: 0.94,
-        scores: {receipt: resolvedType === 'receipt' ? 8 : 2, schedule: resolvedType === 'schedule' ? 8 : 2},
+        confidence: resolvedType === 'document' ? 0.81 : 0.94,
+        scores: {
+          receipt: resolvedType === 'receipt' ? 37 : 0,
+          schedule: resolvedType === 'schedule' ? 48 : resolvedType === 'document' ? 4 : 0,
+        },
         type: resolvedType,
       },
       downloadUrl: uri,
       logId: 'demo-scan',
-      parsed: resolvedType === 'receipt'
+      parsed: resolvedType === 'document'
+        ? {documentText: demoDocumentText, kind: 'document', lineCount: 5}
+        : resolvedType === 'receipt'
         ? {merchant: "McDonald's", total: 89, currency: 'THB', date: new Date().toISOString().slice(0, 10), time: '12:20', reference: 'DEMO12345'}
         : {
           academicYear: '2569',
@@ -95,12 +122,16 @@ export async function uploadAndAnalyzeScan({
           semesterEnd: '2026-11-15',
           semesterStart: '2026-08-01',
         },
-      rawText: resolvedType === 'receipt' ? "McDonald's\nTotal 89.00 THB" : 'SC1-201 Data Structures MON 09:00-12:00\n110191 Project in Digital Tech TUE 13:00-16:00',
+      rawText: resolvedType === 'document'
+        ? demoDocumentText
+        : resolvedType === 'receipt'
+          ? "McDonald's\nTotal 89.00 THB"
+          : 'SC1-201 Data Structures MON 09:00-12:00\n110191 Project in Digital Tech TUE 13:00-16:00',
       scanType: resolvedType,
       storagePath: `users/${uid}/demo/${Date.now()}.jpg`,
     };
   }
-  const kind: UploadKind = scanType === 'auto' ? 'scans' : scanType === 'receipt' ? 'receipts' : 'schedules';
+  const kind: UploadKind = scanType === 'auto' || scanType === 'document' ? 'scans' : scanType === 'receipt' ? 'receipts' : 'schedules';
   const upload = await uploadUserImage({contentType, kind, uid, uri});
   const response = await analyzeScan({
     scanType,

@@ -4,6 +4,7 @@ import {
   Easing,
   findNodeHandle,
   Modal,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -319,6 +320,10 @@ export function AsyncActionOverlay({
 
   useEffect(() => {
     if (!visible) return;
+    // `findNodeHandle` throws outright on react-native-web, so on web this
+    // threw an uncaught error every time an overlay opened. The web platform
+    // moves focus for a modal on its own, so skipping it there loses nothing.
+    if (Platform.OS === 'web') return;
     const timer = setTimeout(() => {
       const handle = findNodeHandle(panelRef.current);
       if (handle) AccessibilityInfo.setAccessibilityFocus(handle);

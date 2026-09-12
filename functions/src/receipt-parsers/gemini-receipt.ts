@@ -1,3 +1,6 @@
+// Schemas here carry no minimum/maximum/maxItems/minItems: /v1/interactions
+// rejects them alongside nullable types ("Request contains an invalid
+// argument"), and the values are range-checked after parsing anyway.
 export const RECEIPT_EXTRACTION_SYSTEM_PROMPT = `Act as an expert Data Extraction AI specialized in Thai retail receipts, e-receipts, bank transfer slips, and e-wallets.
 
 Your ONLY task is to extract data from the supplied high-resolution document image and OCR text into the strict JSON response schema. Extract only details supported by the document.
@@ -29,13 +32,33 @@ PROCESSING RULES
 8. Return exactly four top-level fields: document_type, merchant_name, grand_total, and items. Each item must contain exactly name, quantity, original_price, discount_amount, and final_price.
 9. Return only raw valid JSON required by the response schema. Do not return Markdown, backticks, explanations, or additional properties.`;
 
+/**
+ * Kept in step with `src/config/expense-categories.ts`, which is what the app
+ * displays and stores. Note the model is NOT asked for a category -- it is not
+ * in the response schema -- so these are produced solely by the ladder in
+ * `normalizeResult` below, from the merchant and item names.
+ *
+ * They stay English because the client maps each onto its Thai label; adding a
+ * value here without an alias there would strand it in "อื่นๆ".
+ *
+ * `Fees` is the concrete reason this list grew: a bank transfer slip carries a
+ * "ค่าธรรมเนียม" line and there was no category for it to land in.
+ */
 const CATEGORY_VALUES = [
   "Food",
   "Groceries",
-  "Utilities",
   "Transport",
-  "Entertainment",
+  "Education",
+  "Housing",
+  "Utilities",
   "Shopping",
+  "Health",
+  "Entertainment",
+  "Fees",
+  "PersonalCare",
+  "Insurance",
+  "Savings",
+  "Gifts",
   "Others",
 ] as const;
 const DOCUMENT_TYPE_VALUES = ["receipt", "bank_slip", "e_wallet"] as const;
@@ -73,19 +96,18 @@ const RECEIPT_SCHEMA = {
   properties: {
     document_type: {type: "string", enum: DOCUMENT_TYPE_VALUES},
     merchant_name: {type: ["string", "null"]},
-    grand_total: {type: ["number", "null"], minimum: 0},
+    grand_total: {type: ["number", "null"]},
     items: {
       type: "array",
-      maxItems: 200,
       items: {
         type: "object",
         additionalProperties: false,
         properties: {
           name: {type: "string"},
-          quantity: {type: "number", minimum: 0},
-          original_price: {type: "number", minimum: 0},
-          discount_amount: {type: "number", minimum: 0},
-          final_price: {type: "number", minimum: 0},
+          quantity: {type: "number"},
+          original_price: {type: "number"},
+          discount_amount: {type: "number"},
+          final_price: {type: "number"},
         },
         required: ["name", "quantity", "original_price", "discount_amount", "final_price"],
       },
@@ -187,7 +209,14 @@ function normalizeResult(value: unknown, fallbackDate: string): GeminiReceiptRes
           /(?:PEA|MEA|ELECTRIC|WATER\s*BILL|INTERNET|AIS|TRUE|DTAC|ค่าไฟ|ค่าน้ำ|อินเทอร์เน็ต|โทรศัพท์)/i.test(categoryText) ? "Utilities" :
             /(?:NETFLIX|SPOTIFY|STEAM|CINEMA|MAJOR\s*CINEPLEX|GAME|ภาพยนตร์|บันเทิง|เกม)/i.test(categoryText) ? "Entertainment" :
               /(?:MR\.?\s*D\.?\s*I\.?\s*Y|SHOPEE|LAZADA|UNIQLO|ADVICE|ELECTRONIC|DEPARTMENT\s*STORE|ช้อป|ร้านค้า)/i.test(categoryText) ? "Shopping" :
-                "Others";
+                /(?:TRANSFER|BANK|FEE|ค่าธรรมเนียม|โอนเงิน|ธนาคาร)/i.test(categoryText) ? "Fees" :
+                  /(?:TUITION|BOOKSTORE|STATIONERY|ค่าเทอม|หนังสือ|เครื่องเขียน)/i.test(categoryText) ? "Education" :
+                    /(?:PHARMACY|HOSPITAL|CLINIC|ยา|โรงพยาบาล|คลินิก)/i.test(categoryText) ? "Health" :
+                      // A transfer slip carries no items and its payee is a
+                      // person's name, so nothing above can match it. The
+                      // transfer itself is the spend, which is what Fees means.
+                      documentType === "bank_slip" ? "Fees" :
+                        "Others";
   const confidenceScore = amount >= 0 && merchantName ? 0.9 : amount >= 0 || merchantName ? 0.7 : 0.4;
   return {
     category,
@@ -222,7 +251,11 @@ export async function extractReceiptWithGemini(rawText: string, apiKey: string, 
         model,
         store: false,
         system_instruction: RECEIPT_EXTRACTION_SYSTEM_PROMPT,
-        input: [
+        // /v1/interactions takes content parts only inside a user_input step. These
+        // were sent bare, which v1beta accepted and v1 rejects ("The value 'image'
+        // is not supported for 'type'"), so after the 2026-08-07 move to v1 every
+        // one of these reviews failed and the scan kept its unreviewed values.
+        input: [{type: "user_input", content: [
           {
             type: "text",
             text: `Current Bangkok date: ${currentBangkokDate}\n\nOCR text (may contain recognition errors; prefer visible image evidence):\n${rawText.slice(0, 30000)}`,
@@ -232,7 +265,7 @@ export async function extractReceiptWithGemini(rawText: string, apiKey: string, 
             data: image.data,
             mime_type: image.mimeType,
           },
-        ],
+        ]}],
         response_format: {
           type: "text",
           mime_type: "application/json",

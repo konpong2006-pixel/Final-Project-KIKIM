@@ -7,7 +7,7 @@ service cloud.firestore {
     // users/{uid}/{schedules|activities|notes|transactions|pendingReview|notifications|scanLogs|aiRecommendations|feedback}/{documentId}
     // users/{uid}/{schedulingBehaviorEvents|schedulingPatterns|schedulingSuggestions|scheduleChangeHistory|productivityInsights|pushTokens}/{documentId}
     // users/{uid}/monthlyBudgets/{monthKey}
-    // users/{uid}/settings/adaptiveScheduling
+    // users/{uid}/settings/{adaptiveScheduling|sleepBaseline}
     // users/{uid}/assistantConversations/{conversationId}/messages/{messageId}
     // users/{uid}/integrations/google-calendar
     // Admin access is derived only from the trusted `admin` custom claim.
@@ -88,6 +88,16 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function validSleepBaseline(data, userId) {
+      return data.keys().hasAll(['ownerId', 'bedtimeMinutes', 'wakeMinutes', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'bedtimeMinutes', 'wakeMinutes', 'createdAt', 'updatedAt'])
+        && data.ownerId == userId
+        && data.bedtimeMinutes is int && data.bedtimeMinutes >= 0 && data.bedtimeMinutes < 1440
+        && data.wakeMinutes is int && data.wakeMinutes >= 0 && data.wakeMinutes < 1440
+        && data.bedtimeMinutes != data.wakeMinutes
+        && data.createdAt is timestamp && data.updatedAt is timestamp;
+    }
+
     function validSchedule(data, userId) {
       return data.keys().hasAll(['ownerId', 'title', 'courseCode', 'startAt', 'endAt', 'location', 'color', 'source', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly(['ownerId', 'title', 'courseCode', 'courseName', 'startAt', 'endAt', 'location', 'color', 'seriesId', 'source', 'googleCalendarId', 'googleEventId', 'createdAt', 'updatedAt'])
@@ -112,7 +122,7 @@ service cloud.firestore {
           'note', 'reminder', 'category', 'priority', 'attendees',
           'actualDurationMinutes', 'actualEnd', 'actualStart', 'aiConfidence', 'aiReason', 'aiScheduled',
           'allowAiReschedule', 'clientRequestId', 'deadline', 'estimatedDurationMinutes', 'googleCalendarId', 'googleEventId',
-          'googleSyncStatus', 'isFlexible', 'isLocked', 'originalScheduledStart', 'scheduleVersion',
+          'fixedLocalDate', 'googleSyncStatus', 'isFlexible', 'isLocked', 'originalScheduledStart', 'scheduleVersion', 'userSelectedTime',
           'createdAt', 'updatedAt'
         ])
         && data.ownerId == userId
@@ -135,9 +145,11 @@ service cloud.firestore {
         && (!('allowAiReschedule' in data) || data.allowAiReschedule is bool)
         && (!('deadline' in data) || data.deadline == null || data.deadline is timestamp)
         && (!('estimatedDurationMinutes' in data) || (data.estimatedDurationMinutes is int && data.estimatedDurationMinutes >= 15 && data.estimatedDurationMinutes <= 720))
+        && (!('fixedLocalDate' in data) || (data.fixedLocalDate is string && data.fixedLocalDate.matches('^\\d{4}-\\d{2}-\\d{2}$')))
         && (!('googleCalendarId' in data) || (data.googleCalendarId is string && data.googleCalendarId.size() <= 128))
         && (!('googleEventId' in data) || (data.googleEventId is string && data.googleEventId.size() <= 512))
         && (!('googleSyncStatus' in data) || data.googleSyncStatus in ['failed', 'not_required', 'pending', 'synced'])
+        && (!('userSelectedTime' in data) || data.userSelectedTime is bool)
         && (!('isFlexible' in data) || data.isFlexible is bool)
         && (!('isLocked' in data) || data.isLocked is bool)
         && (!('originalScheduledStart' in data) || data.originalScheduledStart == null || data.originalScheduledStart is timestamp)
@@ -152,10 +164,16 @@ service cloud.firestore {
 
     function validNote(data, userId) {
       return data.keys().hasAll(['ownerId', 'title', 'content', 'category', 'relatedScheduleId', 'color', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'title', 'content', 'category', 'relatedScheduleId', 'color', 'priority', 'status', 'completedAt', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'ownerId', 'title', 'content', 'category', 'relatedScheduleId', 'color', 'priority', 'status', 'completedAt',
+          'bodyFormat', 'drawingPaths', 'folderId', 'linkedNoteIds', 'locked', 'pinned', 'scanLogId', 'tags',
+          'createdAt', 'updatedAt'
+        ])
         && data.ownerId == userId
         && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
-        && data.content is string && data.content.size() <= 20000
+        // Raised from 20,000: the rich-text body is stored as HTML in this same
+        // field, and markup costs several times the characters a user typed.
+        && data.content is string && data.content.size() <= 50000
         && data.category in ['study', 'work', 'idea', 'personal']
         && data.relatedScheduleId is string && data.relatedScheduleId.size() <= 128
         && validColor(data.color)
@@ -163,6 +181,47 @@ service cloud.firestore {
         && (!('status' in data) || data.status in ['pending', 'completed'])
         && (!('completedAt' in data) || data.completedAt == null || data.completedAt is timestamp)
         && (!('status' in data) || data.status != 'completed' || (('completedAt' in data) && data.completedAt is timestamp))
+        // --- v2 note fields -------------------------------------------------
+        // `content` holds plain text today and HTML once the rich-text editor
+        // lands; `bodyFormat` says which, so old notes keep rendering as text.
+        && (!('bodyFormat' in data) || data.bodyFormat in ['plain', 'html'])
+        // Folders are their own documents; a note carries only the id, and ''
+        // means "no folder" so the field never has to be removed.
+        && (!('folderId' in data) || (data.folderId is string && data.folderId.size() <= 128))
+        && (!('pinned' in data) || data.pinned is bool)
+        && (!('tags' in data) || (data.tags is list && data.tags.size() <= 20))
+        && (!('linkedNoteIds' in data) || (data.linkedNoteIds is list && data.linkedNoteIds.size() <= 50))
+        // Drawings are Storage paths, never image bytes: a base64 canvas would
+        // blow past both this size cap and Firestore's 1 MiB document limit.
+        && (!('drawingPaths' in data) || (data.drawingPaths is list && data.drawingPaths.size() <= 20))
+        // `locked` only marks the note; the PIN itself lives once per user in
+        // settings/noteLock, so a note document never carries a secret.
+        && (!('locked' in data) || data.locked is bool)
+        // Provenance for a note created from an OCR scan.
+        && (!('scanLogId' in data) || (data.scanLogId is string && data.scanLogId.size() <= 128))
+        && data.createdAt is timestamp && data.updatedAt is timestamp;
+    }
+
+    function validNoteFolder(data, userId) {
+      return data.keys().hasAll(['ownerId', 'name', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'name', 'color', 'icon', 'sortOrder', 'createdAt', 'updatedAt'])
+        && data.ownerId == userId
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 80
+        && (!('color' in data) || validColor(data.color))
+        && (!('icon' in data) || (data.icon is string && data.icon.size() <= 40))
+        && (!('sortOrder' in data) || (data.sortOrder is int && data.sortOrder >= 0 && data.sortOrder <= 999))
+        && data.createdAt is timestamp && data.updatedAt is timestamp;
+    }
+
+    function validNoteLock(data, userId) {
+      return data.keys().hasAll(['ownerId', 'hash', 'salt', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'hash', 'salt', 'hint', 'biometricEnabled', 'createdAt', 'updatedAt'])
+        && data.ownerId == userId
+        // A salted digest of the PIN, never the PIN itself. Hex SHA-256.
+        && data.hash is string && data.hash.matches('^[0-9a-f]{64}$')
+        && data.salt is string && data.salt.size() >= 16 && data.salt.size() <= 128
+        && (!('hint' in data) || (data.hint is string && data.hint.size() <= 80))
+        && (!('biometricEnabled' in data) || data.biometricEnabled is bool)
         && data.createdAt is timestamp && data.updatedAt is timestamp;
     }
 
@@ -246,7 +305,7 @@ service cloud.firestore {
       return data.diff(resource.data).affectedKeys().hasOnly([
         'title', 'type', 'startAt', 'endAt', 'location', 'color', 'status', 'source',
         'note', 'reminder', 'category', 'priority', 'attendees', 'deadline',
-        'estimatedDurationMinutes', 'isFlexible', 'isLocked', 'allowAiReschedule', 'updatedAt'
+        'estimatedDurationMinutes', 'fixedLocalDate', 'isFlexible', 'isLocked', 'allowAiReschedule', 'userSelectedTime', 'updatedAt'
       ]);
     }
 
@@ -357,9 +416,31 @@ service cloud.firestore {
       // Adaptive scheduling calculations and mutations are performed only by
       // authenticated callable/scheduled functions using the Admin SDK. The
       // client can read only the data below its own UID.
+      //
+      // `sleepBaseline` is the one exception: it is a preference the user types
+      // in for themselves, never a computed result, so the owner writes it
+      // directly. It is validated as strictly as any other owned document, and
+      // it stores only two clock values -- the burnout model treats it as a
+      // labelled fallback, never as logged sleep evidence.
       match /settings/{settingId} {
-        allow read: if (isOwner(userId) || isAdmin()) && settingId == 'adaptiveScheduling';
-        allow write: if false;
+        // `noteLock` joins `sleepBaseline` as an owner-written setting. It is
+        // deliberately NOT readable by an admin: even a salted digest of a
+        // personal PIN is not something support staff should be able to read.
+        allow read: if (isOwner(userId) || isAdmin()) && settingId in ['adaptiveScheduling', 'sleepBaseline'];
+        allow read: if isOwner(userId) && settingId == 'noteLock';
+        allow create: if isOwner(userId) && userExists(userId)
+          && (
+            (settingId == 'sleepBaseline' && validSleepBaseline(request.resource.data, userId))
+            || (settingId == 'noteLock' && validNoteLock(request.resource.data, userId))
+          )
+          && hasValidCreateMeta(request.resource.data, userId);
+        allow update: if isOwner(userId)
+          && (
+            (settingId == 'sleepBaseline' && validSleepBaseline(request.resource.data, userId))
+            || (settingId == 'noteLock' && validNoteLock(request.resource.data, userId))
+          )
+          && hasValidUpdateMeta(request.resource.data, userId);
+        allow delete: if isOwner(userId) && settingId in ['sleepBaseline', 'noteLock'];
       }
 
       match /schedulingBehaviorEvents/{eventId} {
@@ -397,6 +478,13 @@ service cloud.firestore {
         allow read: if isOwner(userId) || isAdmin();
         allow create: if isOwner(userId) && userExists(userId) && validNote(request.resource.data, userId) && hasValidCreateMeta(request.resource.data, userId);
         allow update: if isOwner(userId) && validNote(request.resource.data, userId) && hasValidUpdateMeta(request.resource.data, userId);
+        allow delete: if isOwner(userId);
+      }
+
+      match /noteFolders/{folderId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && userExists(userId) && validNoteFolder(request.resource.data, userId) && hasValidCreateMeta(request.resource.data, userId);
+        allow update: if isOwner(userId) && validNoteFolder(request.resource.data, userId) && hasValidUpdateMeta(request.resource.data, userId);
         allow delete: if isOwner(userId);
       }
 

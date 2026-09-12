@@ -1,17 +1,9 @@
 import {useCallback, useEffect, useState} from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import {ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View, } from 'react-native';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 import {MaterialIcon, UserGradientBackdrop, UserTabBar} from './user-ui';
 import {parseLineBankNotification} from '@/services/line-bank-parser';
+import {showToast} from '@/components/app-toast';
 import {
   submitBankText,
   listPendingNotifications,
@@ -50,10 +42,10 @@ export default function LineBankScreen({onNavigate, uid}: Props) {
          await submitBankText(uid, inputText);
          setInputText('');
          loadPending();
-         Alert.alert('สำเร็จ', 'ส่งข้อมูลไปรอตรวจแล้ว');
+         showToast('ส่งข้อมูลไปรอตรวจแล้ว', undefined, 'success');
       }
     } catch {
-      Alert.alert('ข้อผิดพลาด', 'ไม่สามารถวิเคราะห์ข้อความได้');
+      showToast('ข้อผิดพลาด', 'ไม่สามารถวิเคราะห์ข้อความได้');
     } finally {
       setIsAnalyzing(false);
     }

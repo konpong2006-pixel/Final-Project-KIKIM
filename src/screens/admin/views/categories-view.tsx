@@ -1,9 +1,11 @@
 import {useCallback, useState} from 'react';
-import {ActivityIndicator, Alert, Pressable, Text, TextInput, View} from 'react-native';
+import {ActivityIndicator, Pressable, Text, TextInput, View} from 'react-native';
 
 import {MaterialIcon} from '@/screens/native/user/user-ui';
 import {AdminCard, C, Empty, Pill, Row, SmallButton, items, styles as ui, text} from '../admin-ui';
 import type {AdminViewProps} from './view-props';
+import ConfirmDialog from '@/components/confirm-dialog';
+import {showToast} from '@/components/app-toast';
 
 const EMPTY_FORM = {
   color: '#6F8F6D',
@@ -19,6 +21,9 @@ export default function AdminCategoriesView({actionLoading, data, onAction}: Adm
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
+  // Asked with a Modal, not `Alert.alert`: the latter is an empty function on
+  // react-native-web, so the admin portal's delete never prompted or fired.
+  const [deleting, setDeleting] = useState<{id: string; title: string} | null>(null);
 
   const list = items(data.categories);
   const patch = (next: Partial<typeof EMPTY_FORM>) => setForm((current) => ({...current, ...next}));
@@ -35,7 +40,7 @@ export default function AdminCategoriesView({actionLoading, data, onAction}: Adm
 
   const save = useCallback(async () => {
     if (!form.labelTh || !form.labelEn || !form.icon || !form.color) {
-      Alert.alert('ข้อมูลไม่ครบ', 'กรุณากรอกข้อมูลให้ครบถ้วน');
+      showToast('ข้อมูลไม่ครบ', 'กรุณากรอกข้อมูลให้ครบถ้วน');
       return;
     }
     setSaving(true);
@@ -126,16 +131,21 @@ export default function AdminCategoriesView({actionLoading, data, onAction}: Adm
                   icon="delete"
                   label="ลบ"
                   loading={actionLoading === `${id}-del`}
-                  onPress={() => Alert.alert('ยืนยันการลบ', `ต้องการลบหมวดหมู่ "${text(item.labelTh)}" ใช่หรือไม่?`, [
-                    {style: 'cancel', text: 'ยกเลิก'},
-                    {onPress: () => { onAction(`${id}-del`, 'delete-category', {id}, 'ลบหมวดหมู่แล้ว'); }, style: 'destructive', text: 'ลบ'},
-                  ])}
+                  onPress={() => setDeleting({id, title: text(item.labelTh)})}
                   tone="red"
                 />
               </View>
             </Row>
           );
         }) : <Empty label="ยังไม่มีหมวดหมู่" />}
+      <ConfirmDialog
+        confirmLabel="ลบ"
+        message={deleting ? `ต้องการลบหมวดหมู่ "${deleting.title}" ใช่หรือไม่?` : ''}
+        onCancel={() => setDeleting(null)}
+        onConfirm={() => { const target = deleting; setDeleting(null); if (target) onAction(`${target.id}-del`, 'delete-category', {id: target.id}, 'ลบหมวดหมู่แล้ว'); }}
+        title="ยืนยันการลบ"
+        visible={Boolean(deleting)}
+      />
       </AdminCard>
     </>
   );

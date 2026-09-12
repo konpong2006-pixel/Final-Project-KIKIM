@@ -1,7 +1,9 @@
 import {useEffect, useMemo, useRef, useState} from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import NativeDateTimePicker from '@expo/ui/community/datetime-picker';
-import {ActivityIndicator, Alert, Animated, KeyboardAvoidingView, Modal, NativeModules, PermissionsAndroid, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
+import NativeDateTimePicker from '@/components/date-time-picker';
+import ScheduleConflictDialog from '@/components/schedule-conflict-dialog';
+import ConfirmDialog from '@/components/confirm-dialog';
+import {ActivityIndicator, Animated, KeyboardAvoidingView, Modal, NativeModules, PermissionsAndroid, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
 
 import {AsyncActionOverlay, type AsyncActionStatus} from '@/components/async-action-ui';
@@ -21,8 +23,11 @@ import {
 } from '@/services/assistant-conversation';
 import {classifyAssistantIntent} from '@/services/assistant-intent';
 import {uploadAndAnalyzeAssistantFile} from '@/services/assistant-file';
-import {assistantErrorMessage, classifyAssistantError} from '@/services/assistant-error';
+import {assistantActionErrorMessage, assistantErrorMessage, classifyAssistantError} from '@/services/assistant-error';
 import {calculateBurnoutDynamicInsight} from '@/services/dynamic-insights';
+import {baselineNightHours, loadSleepBaseline} from '@/services/sleep-log';
+import RiskMeter from '@/components/risk-meter';
+import {burnoutRiskBand} from '@/constants/burnout-risk';
 import {
   deleteAssistantConversation,
   listAssistantConversations,
@@ -34,9 +39,12 @@ import {
 import {loadLegacyPageData} from '@/services/legacy-data';
 import {sanitizeAssistantMessages} from '@/services/assistant-message-sanitizer';
 import {transcribeAssistantAudio} from '@/services/assistant-voice';
-import type {AssistantChatMessage, AssistantConversationState, AssistantFeedbackRating, AssistantProposedAction, ProposedActionStatus} from '@/types/assistant';
+import {recordTaskCompleted} from '@/services/behavior-tracking';
+import type {AssistantChatMessage, AssistantConversationState, AssistantFeedbackRating, AssistantPendingTaskShortcut, AssistantProposedAction, ProposedActionStatus} from '@/types/assistant';
+import {activities, type ScheduleConflict} from '@/services/firestore';
 import type {Activity, Schedule, WithId} from '@/types/smartlife';
 import {Card, MaterialIcon, UserShell, type UserNavigate, userStyles} from './user-ui';
+import {showToast} from '@/components/app-toast';
 
 function nowIso() {
   return new Date().toISOString();
@@ -257,17 +265,21 @@ function actionDetails(action: AssistantProposedAction) {
 function MessageBubble({
   message,
   onAsk,
+  onCompleteTask,
   onConfirm,
   onFeedback,
   onReject,
   onSpeak,
   speaking,
   busy,
+  completingTaskId,
   savingActionId,
 }: {
   busy: boolean;
+  completingTaskId: string;
   message: AssistantChatMessage;
   onAsk: (message: string) => void;
+  onCompleteTask: (messageIdValue: string, task: AssistantPendingTaskShortcut) => void;
   onConfirm: (messageIdValue: string, action: AssistantProposedAction) => void;
   onFeedback: (message: AssistantChatMessage, rating: AssistantFeedbackRating) => void;
   onReject: (messageIdValue: string, action: AssistantProposedAction) => void;
@@ -289,6 +301,35 @@ function MessageBubble({
             onConfirm={(updatedAction) => onConfirm(message.id, updatedAction)}
             onReject={() => onReject(message.id, message.proposedAction as AssistantProposedAction)}
           />
+        ) : null}
+        {!isUser && message.pendingTaskShortcuts?.length ? (
+          <View style={local.pendingTaskList}>
+            {message.pendingTaskShortcuts.map((task) => {
+              const completed = task.status === 'completed';
+              const completing = completingTaskId === task.id;
+              return (
+                <View key={task.id} style={local.pendingTaskRow}>
+                  <View style={local.pendingTaskCopy}>
+                    <Text numberOfLines={2} style={local.pendingTaskTitle}>{task.title}</Text>
+                    <Text style={local.pendingTaskDue}>{task.dueAt ? `กำหนด ${formatDate(task.dueAt)}` : 'ไม่ระบุกำหนด'}</Text>
+                  </View>
+                  <Pressable
+                    accessibilityLabel={completed ? `${task.title} เสร็จแล้ว` : `ทำเครื่องหมาย ${task.title} ว่าเสร็จแล้ว`}
+                    disabled={busy || Boolean(completingTaskId) || completed}
+                    onPress={() => onCompleteTask(message.id, task)}
+                    style={({pressed}) => [
+                      local.pendingTaskButton,
+                      completed && local.pendingTaskButtonDone,
+                      pressed && local.pressed,
+                      (busy || (Boolean(completingTaskId) && !completing) || completing) && local.disabled,
+                    ]}>
+                    {completing ? <ActivityIndicator color="#ffffff" size="small" /> : <MaterialIcon color={completed ? '#5b7c57' : '#ffffff'} name="check" size={15} />}
+                    <Text style={[local.pendingTaskButtonText, completed && local.pendingTaskButtonTextDone]}>{completed ? 'บันทึกแล้ว' : 'เสร็จแล้ว'}</Text>
+                  </Pressable>
+                </View>
+              );
+            })}
+          </View>
         ) : null}
         {!isUser && message.suggestions?.length ? (
           <View style={local.suggestionList}>
@@ -397,6 +438,7 @@ function ActionCard({
         estimatedDurationMinutes: durationMinutes,
         generatedForTimeZone: scheduleTimeZone,
         startAt: startAt.toISOString(),
+        userSelectedTime: true,
       },
     };
   };
@@ -595,7 +637,17 @@ function insightDate(item: Record<string, unknown>) {
 }
 
 // Added for AI Assistant insights: present seven-day workload, behavior, and focus using existing calendar data only.
-function AssistantInsights({adaptiveDashboard, data, onAsk}: {adaptiveDashboard: AdaptiveDashboard | null; data: WeeklyInsightData | null; onAsk: (prompt: string) => void}) {
+function AssistantInsights({adaptiveDashboard, data, onAsk, uid}: {adaptiveDashboard: AdaptiveDashboard | null; data: WeeklyInsightData | null; onAsk: (prompt: string) => void; uid: string}) {
+  // The declared window is the weaker fallback, so it is loaded here rather
+  // than derived from `data`: it is a preference, not part of the week's records.
+  const [sleepBaselineHours, setSleepBaselineHours] = useState<number | null>(null);
+  useEffect(() => {
+    let active = true;
+    void loadSleepBaseline(uid)
+      .then((baseline) => { if (active) setSleepBaselineHours(baselineNightHours(baseline)); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [uid]);
   const insight = useMemo(() => {
     const schedules = insightRecords(data?.schedules);
     const activities = insightRecords(data?.activities);
@@ -624,29 +676,35 @@ function AssistantInsights({adaptiveDashboard, data, onAsk}: {adaptiveDashboard:
       activities: activities as unknown as WithId<Activity>[],
       pendingTasks: activities.filter((item) => item.type === 'task') as unknown as WithId<Activity>[],
       schedules: schedules as unknown as WithId<Schedule>[],
+      sleepBaselineHours,
       weekActivities: activities as unknown as WithId<Activity>[],
       weekSchedules: schedules as unknown as WithId<Schedule>[],
     });
     const workload = all.length;
-    const risk = burnout.riskLevel === 'high' ? 'สูง' : burnout.riskLevel === 'medium' ? 'ปานกลาง' : 'ต่ำ';
-    const sleepEvidence = burnout.sleepDataDays > 0
-      ? `นอนเฉลี่ย ${burnout.averageSleepHours ?? '-'} ชม. จาก ${burnout.sleepDataDays} คืน`
-      : 'ยังไม่มีข้อมูลการนอน จึงไม่คาดเดา';
+    const risk = burnoutRiskBand(burnout.riskLevel).label;
+    const sleepEvidence = burnout.sleepEvidenceSource === 'logged'
+      ? `นอนจริงเฉลี่ย ${burnout.averageSleepHours ?? '-'} ชม. จาก ${burnout.sleepDataDays} คืนที่บันทึก`
+      : burnout.sleepEvidenceSource === 'baseline'
+        ? `ยังไม่มีบันทึกจริง ใช้ช่วงนอนปกติที่ตั้งไว้ ${burnout.averageSleepHours} ชม. เป็นค่าอ้างอิง`
+        : 'ยังไม่มีข้อมูลการนอน จึงไม่คาดเดา';
+    const debt = burnout.sleepDebtHours !== null && burnout.sleepDebtNights >= 3
+      ? ` · นอนขาดสะสม ${burnout.sleepDebtHours} ชม.`
+      : '';
     const ratio = burnout.studyWorkToSleepRatio === null ? '' : ` · สัดส่วนงานต่อการนอน ${burnout.studyWorkToSleepRatio}:1`;
-    const riskCopy = `คะแนน ${burnout.score}/100 · เรียน/งาน ${burnout.busyHoursThisWeek} ชม. · งานค้าง ${burnout.pendingTaskCount} · ${sleepEvidence}${ratio}`;
+    const riskCopy = `คะแนน ${burnout.score}/100 · เรียน/งาน ${burnout.busyHoursThisWeek} ชม. · งานค้าง ${burnout.pendingTaskCount} · ${sleepEvidence}${debt}${ratio}`;
     const focus: InsightItem[] = all.slice(0, 3).map((item) => ({icon: item.icon, subtitle: item.kind, title: item.title}));
     if (!focus.length) focus.push(
       {icon: 'calendar_month', subtitle: 'เริ่มจากข้อมูลที่มี', title: 'เพิ่มตารางของสัปดาห์นี้'},
       {icon: 'task_alt', subtitle: 'ช่วยจัดลำดับให้ได้', title: 'บันทึกงานที่ต้องส่ง'},
       {icon: 'savings', subtitle: 'วางแผนง่ายขึ้น', title: 'กำหนดงบสำหรับสัปดาห์นี้'},
     );
-    return {behaviorEvidence, focus, focusMinutes, preferred, risk, riskCopy, workload};
-  }, [adaptiveDashboard?.patterns, data]);
+    return {behaviorEvidence, focus, focusMinutes, preferred, risk, riskCopy, riskLevel: burnout.riskLevel, score: burnout.score, workload};
+  }, [adaptiveDashboard?.patterns, data, sleepBaselineHours]);
 
   return <View style={local.insightSection}>
     <View style={local.insightHeader}><Text style={local.insightHeading}>วิเคราะห์ข้อมูล 7 วันที่ผ่านมา</Text><Text style={local.insightCount}>{insight.workload} รายการ</Text></View>
     <View style={local.insightDivider} />
-    <View style={local.burnoutPanel}><View style={local.burnoutIcon}><MaterialIcon color="#8a8050" name="warning_amber" size={18} /></View><View style={{flex: 1}}><Text style={local.burnoutTitle}>ความเสี่ยงสภาวะหมดไฟ: {insight.risk}</Text><Text style={local.burnoutText}>{insight.riskCopy}</Text></View></View>
+    <View style={local.burnoutPanel}><View style={local.burnoutIcon}><MaterialIcon color="#8a8050" name="warning_amber" size={18} /></View><View style={{flex: 1}}><Text style={local.burnoutTitle}>ความเสี่ยงสภาวะหมดไฟ: {insight.risk}</Text><Text style={local.burnoutText}>{insight.riskCopy}</Text><RiskMeter level={insight.riskLevel} score={insight.score} /></View></View>
     <View style={local.behaviorPanel}><View style={local.behaviorHeading}><View style={local.behaviorIcon}><MaterialIcon color="#668d65" name="schedule" size={18} /></View><View style={{flex: 1}}><Text style={local.behaviorTitle}>AI เรียนรู้พฤติกรรม</Text><Text style={local.behaviorText}>{insight.behaviorEvidence}</Text></View></View><View style={local.behaviorTiming}><View style={local.timingTile}><Text style={local.timingLabel}>ช่วงที่เหมาะ</Text><Text style={local.timingValue}>{insight.preferred}</Text></View><View style={local.timingTile}><Text style={local.timingLabel}>ระยะเวลาที่แนะนำ</Text><Text style={local.timingValue}>โฟกัส {insight.focusMinutes} นาที</Text></View></View><Pressable onPress={() => onAsk(`ช่วยจัดช่วงโฟกัส ${insight.focusMinutes} นาทีให้เหมาะกับตารางของฉัน`)} style={local.behaviorAction}><MaterialIcon color="#fff" name="check" size={17} /><Text style={local.behaviorActionText}>ใช้แผน Adaptive ในแชตนี้</Text></Pressable></View>
     <View style={local.focusHeader}><Text style={local.focusHeading}>AI แนะนำให้โฟกัส</Text><Text style={local.focusCount}>{insight.focus.length} รายการ</Text></View>
     <View style={local.focusList}>{insight.focus.map((item, index) => <Pressable key={`${item.title}-${index}`} onPress={() => onAsk(`ช่วยวางแผน ${item.title}`)} style={local.focusItem}><View style={local.focusIcon}><MaterialIcon color="#678266" name={item.icon} size={17} /></View><View style={{flex: 1}}><Text numberOfLines={1} style={local.focusItemTitle}>{item.title}</Text><Text numberOfLines={1} style={local.focusText}>{item.subtitle}</Text></View><MaterialIcon color="#95a18f" name="chevron_right" size={18} /></Pressable>)}</View>
@@ -687,7 +745,7 @@ function ocrShortcutsKey(uid: string) {
 }
 
 function isAdaptiveSchedulingCommand(value: string) {
-  return /(หาเวลา(?:ให้|ทำ|อ่าน)|(?:ย้าย|เลื่อน|จัด|วาง|แบ่ง|แทรก).*(?:งาน|การบ้าน|อ่าน|เรียน|ออกกำลัง)|(?:งานค้าง|งานที่ยังไม่เสร็จ).*(?:ลง|ใส่|ย้าย|จัด).*(?:เวลาว่าง|ตาราง)|ตาราง.*(?:เบา|แน่น|ล้น)|(?:ช่วย)?จัด.*สัปดาห์|สัปดาห์.*(?:จัด|วาง|ปรับ)|สมดุล.*สัปดาห์|plan my|find time|move my unfinished|make tomorrow less busy|when am i most productive|productive|ประสิทธิภาพ|ช่วงไหน.*(?:ทำงาน|อ่าน|เรียน).*ดี|อย่า.*(?:จัด|วาง)|ไม่.*(?:จัด|วาง).*(?:เช้า|บ่าย|เย็น|ดึก)|do not schedule|always schedule|จัด.*(?:อ่าน|เรียน|ออกกำลัง|เขียนโปรแกรม).*(?:เช้า|บ่าย|เย็น|ดึก)|why.*move|ทำไม.*ย้าย)/i.test(value);
+  return /(หาเวลา(?:ให้|ทำ|อ่าน)|(?:ย้าย|เลื่อน|จัด|วาง|แบ่ง|แทรก).*(?:งาน|การบ้าน|อ่าน|เรียน|ออกกำลัง)|(?:จัด|วาง|เลื่อน|ย้าย|นัด).{0,100}(?:ช่วง(?:เช้า|สาย|บ่าย|เย็น|กลางคืน)|วัน(?:นี้|พรุ่งนี้|มะรืน|จันทร์|อังคาร|พุธ|พฤหัส(?:บดี)?|ศุกร์|เสาร์|อาทิตย์)|เวลา\s*\d{1,2}(?::\d{2})?|\d{1,2}\s*(?:โมง|ทุ่ม))|(?:งานค้าง|งานที่ยังไม่เสร็จ).*(?:ลง|ใส่|ย้าย|จัด).*(?:เวลาว่าง|ตาราง)|ตาราง.*(?:เบา|แน่น|ล้น)|(?:ช่วย)?จัด.*สัปดาห์|สัปดาห์.*(?:จัด|วาง|ปรับ)|สมดุล.*สัปดาห์|plan my|find time|move my unfinished|make tomorrow less busy|when am i most productive|productive|ประสิทธิภาพ|ช่วงไหน.*(?:ทำงาน|อ่าน|เรียน).*ดี|อย่า.*(?:จัด|วาง)|ไม่.*(?:จัด|วาง).*(?:เช้า|บ่าย|เย็น|ดึก)|do not schedule|always schedule|จัด.*(?:อ่าน|เรียน|ออกกำลัง|เขียนโปรแกรม).*(?:เช้า|บ่าย|เย็น|ดึก)|why.*move|ทำไม.*ย้าย)/i.test(value);
 }
 
 function adaptiveProposalAction(proposal: AdaptiveProposedActivity): AssistantProposedAction {
@@ -697,8 +755,9 @@ function adaptiveProposalAction(proposal: AdaptiveProposedActivity): AssistantPr
     payload: {
       aiReason: proposal.explanation,
       aiScheduled: true,
-      allowAiReschedule: true,
+      allowAiReschedule: !proposal.dateLocked,
       category: proposal.activityCategory,
+      dateLocked: proposal.dateLocked,
       deadline: proposal.deadline,
       endAt: proposal.endAt,
       estimatedDurationMinutes: proposal.durationMinutes,
@@ -710,18 +769,11 @@ function adaptiveProposalAction(proposal: AdaptiveProposedActivity): AssistantPr
       type: 'task',
     },
     status: 'pending',
-    summary: `เพิ่มงานยืดหยุ่น "${proposal.title}" ลงช่วงว่างที่ AI ตรวจแล้ว`,
+    summary: proposal.dateLocked
+      ? `เพิ่มนัดหมาย "${proposal.title}" ในวันที่กำหนด โดยเลือกช่วงว่างที่ AI ตรวจแล้ว`
+      : `เพิ่มงานยืดหยุ่น "${proposal.title}" ลงช่วงว่างที่ AI ตรวจแล้ว`,
     type: 'create',
   };
-}
-
-function confirmAdaptivePreference() {
-  return new Promise<boolean>((resolve) => Alert.alert(
-    'ยืนยันการตั้งค่า Adaptive',
-    'บันทึกช่วงเวลานี้เป็นข้อกำหนดสำหรับการจัดตารางครั้งต่อไปไหม?',
-    [{onPress: () => resolve(false), style: 'cancel', text: 'ยังไม่บันทึก'}, {onPress: () => resolve(true), text: 'บันทึก'}],
-    {cancelable: true, onDismiss: () => resolve(false)},
-  ));
 }
 
 function parseOcrShortcuts(raw: string | null): QuickAddSuggestion[] {
@@ -876,10 +928,12 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
   const inlineAdaptiveActionInFlightRef = useRef(false);
   const retryInlineAdaptiveActionRef = useRef<{action: () => Promise<unknown>; key: string; successMessage: string; title: string} | null>(null);
   const [busy, setBusy] = useState(false);
+  const [completingTaskId, setCompletingTaskId] = useState('');
   const [adaptiveActivationStatus, setAdaptiveActivationStatus] = useState<AsyncActionStatus>('idle');
   const [adaptiveActivationError, setAdaptiveActivationError] = useState('');
   const [confirmationActionStatus, setConfirmationActionStatus] = useState<AsyncActionStatus>('idle');
   const [confirmationActionError, setConfirmationActionError] = useState('');
+  const [pendingScheduleConflict, setPendingScheduleConflict] = useState<{action: Extract<AssistantProposedAction, {entity: 'schedule'}>; conflicts: ScheduleConflict[]; targetMessageId: string} | null>(null);
   const [pendingNavigationPage, setPendingNavigationPage] = useState('');
   const [savingActionId, setSavingActionId] = useState('');
   const [inlineAdaptiveBusyKey, setInlineAdaptiveBusyKey] = useState('');
@@ -891,6 +945,18 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
   const [chatHistory, setChatHistory] = useState<AssistantConversationSummary[]>([]);
   const [chatHistoryOpen, setChatHistoryOpen] = useState(false);
   const [chatHistoryLoading, setChatHistoryLoading] = useState(false);
+  const [deletingConversation, setDeletingConversation] = useState<AssistantConversationSummary | null>(null);
+  // The Adaptive preference gate is awaited mid-conversation, so the dialog has
+  // to hand its answer back to that `await`. `Alert.alert` could resolve from a
+  // button callback; on react-native-web it resolved nothing at all, because
+  // the alert never appeared -- the await simply hung until the dismiss path
+  // that also never ran. The resolver is parked in state instead.
+  const [adaptivePreferenceGate, setAdaptivePreferenceGate] = useState<{resolve: (value: boolean) => void} | null>(null);
+  const confirmAdaptivePreference = () => new Promise<boolean>((resolve) => setAdaptivePreferenceGate({resolve}));
+  const answerAdaptivePreference = (value: boolean) => {
+    adaptivePreferenceGate?.resolve(value);
+    setAdaptivePreferenceGate(null);
+  };
   const [conversationId, setConversationId] = useState(() => createAssistantConversationId());
   const [conversationState, setConversationState] = useState<AssistantConversationState>(() => createAssistantConversationState(conversationId));
   const [historyReady, setHistoryReady] = useState(false);
@@ -1097,7 +1163,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
   const appendAssistant = (
     content: string,
     proposedAction?: AssistantProposedAction,
-    metadata: Partial<Pick<AssistantReply, 'errorKind' | 'intent' | 'latencyMs' | 'source' | 'suggestions'>> = {},
+    metadata: Partial<Pick<AssistantReply, 'errorKind' | 'intent' | 'latencyMs' | 'pendingTaskShortcuts' | 'source' | 'suggestions'>> = {},
     id = messageId('assistant'),
     state = conversationState,
   ) => {
@@ -1128,6 +1194,33 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
       persistMessagePayload(updated);
       return updated;
     }));
+  };
+
+  const updatePendingTaskShortcutStatus = (targetMessageId: string, taskId: string, status: AssistantPendingTaskShortcut['status']) => {
+    setMessages((current) => current.map((message) => {
+      if (message.id !== targetMessageId || !message.pendingTaskShortcuts?.length) return message;
+      const updated = {
+        ...message,
+        pendingTaskShortcuts: message.pendingTaskShortcuts.map((task) => task.id === taskId ? {...task, status} : task),
+      };
+      persistMessagePayload(updated);
+      return updated;
+    }));
+  };
+
+  const completePendingTask = async (targetMessageId: string, task: AssistantPendingTaskShortcut) => {
+    if (busy || completingTaskId || task.status === 'completed') return;
+    setCompletingTaskId(task.id);
+    updatePendingTaskShortcutStatus(targetMessageId, task.id, 'completed');
+    try {
+      await activities.update(uid, task.id, {status: 'completed'});
+      void recordTaskCompleted(task.id);
+    } catch (error) {
+      updatePendingTaskShortcutStatus(targetMessageId, task.id, 'pending');
+      showToast('อัปเดตงานไม่สำเร็จ', assistantErrorMessage(classifyAssistantError(error)));
+    } finally {
+      setCompletingTaskId('');
+    }
   };
 
   const rateAssistant = (target: AssistantChatMessage, rating: AssistantFeedbackRating) => {
@@ -1172,7 +1265,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     try {
       setChatHistory(await listAssistantConversations(uid));
     } catch {
-      Alert.alert('เปิดประวัติไม่สำเร็จ', 'กรุณาตรวจการเชื่อมต่อแล้วลองอีกครั้ง');
+      showToast('เปิดประวัติไม่สำเร็จ', 'กรุณาตรวจการเชื่อมต่อแล้วลองอีกครั้ง');
     } finally {
       setChatHistoryLoading(false);
     }
@@ -1194,21 +1287,22 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
       setChatHistoryOpen(false);
       await AsyncStorage.setItem(assistantActiveConversationKey(uid), conversation.id);
     } catch {
-      Alert.alert('เปิดแชทไม่สำเร็จ', 'ไม่สามารถโหลดข้อความของแชทนี้ได้');
+      showToast('เปิดแชทไม่สำเร็จ', 'ไม่สามารถโหลดข้อความของแชทนี้ได้');
     } finally {
       setChatHistoryLoading(false);
     }
   };
 
-  const askDeleteHistoryConversation = (conversation: AssistantConversationSummary) => {
-    Alert.alert('ลบแชทนี้?', 'ข้อความในแชทนี้จะถูกลบออกจากบัญชีของคุณ', [
-      {style: 'cancel', text: 'ยกเลิก'},
-      {style: 'destructive', text: 'ลบ', onPress: () => {
-        deleteAssistantConversation(uid, conversation.id)
-          .then(() => setChatHistory((current) => current.filter((item) => item.id !== conversation.id)))
-          .catch(() => Alert.alert('ลบไม่สำเร็จ', 'กรุณาลองใหม่อีกครั้ง'));
-      }},
-    ]);
+  // Asked through `ConfirmDialog`, not `Alert.alert`: the latter is an empty
+  // function on react-native-web, so on web no prompt appeared and the delete
+  // it guarded was never reached.
+  const confirmDeleteHistoryConversation = () => {
+    const conversation = deletingConversation;
+    setDeletingConversation(null);
+    if (!conversation) return;
+    deleteAssistantConversation(uid, conversation.id)
+      .then(() => setChatHistory((current) => current.filter((item) => item.id !== conversation.id)))
+      .catch(() => showToast('ลบไม่สำเร็จ', 'กรุณาลองใหม่อีกครั้ง'));
   };
 
   const sendMessage = async (message?: string) => {
@@ -1411,6 +1505,11 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     setSavingActionId(action.id);
     try {
       const result = await confirmAssistantAction(uid, action);
+      if (action.entity === 'schedule' && 'requiresConflictConfirmation' in result && result.requiresConflictConfirmation) {
+        setPendingScheduleConflict({action, conflicts: result.conflicts, targetMessageId});
+        setConfirmationActionStatus('idle');
+        return;
+      }
       const stayInAssistant = action.entity === 'memory' || (action.entity === 'schedule' && action.payload.aiScheduled === true);
       updateActionStatus(targetMessageId, 'confirmed', action);
       appendAssistant(action.entity === 'memory'
@@ -1421,7 +1520,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
       setPendingNavigationPage(stayInAssistant ? '' : result.page);
       setConfirmationActionStatus('success');
     } catch (error) {
-      setConfirmationActionError(isAppCheckError(error) ? appCheckErrorMessage(error) : 'ยังบันทึกไม่สำเร็จ ข้อมูลเดิมยังไม่เปลี่ยน กรุณาลองอีกครั้งได้เลย');
+      setConfirmationActionError(isAppCheckError(error) ? appCheckErrorMessage(error) : assistantActionErrorMessage(error));
       setConfirmationActionStatus('error');
     } finally {
       confirmActionInFlightRef.current = false;
@@ -1455,7 +1554,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
       return [{detail: prompt.slice(0, 90), icon: 'document_scanner', prompt, title}];
     });
     if (!validShortcuts.length) {
-      Alert.alert('ยังบันทึกไม่ได้', 'กรุณาใส่ชื่อและคำถามอย่างน้อย 1 รายการ');
+      showToast('ยังบันทึกไม่ได้', 'กรุณาใส่ชื่อและคำถามอย่างน้อย 1 รายการ');
       return;
     }
     setOcrShortcuts(validShortcuts);
@@ -1764,6 +1863,40 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
         successMessage="ตรวจสอบและบันทึกเรียบร้อยแล้ว"
         title={confirmationActionStatus === 'success' ? 'บันทึกสำเร็จ' : confirmationActionStatus === 'error' ? 'บันทึกไม่สำเร็จ' : 'กำลังยืนยันรายการ'}
       />
+      <ScheduleConflictDialog
+        conflicts={pendingScheduleConflict?.conflicts ?? []}
+        onConfirm={() => {
+          const pending = pendingScheduleConflict;
+          if (!pending) return;
+          setPendingScheduleConflict(null);
+          void confirmAction(pending.targetMessageId, {...pending.action, payload: {...pending.action.payload, allowOverlap: true}});
+        }}
+        onEdit={() => setPendingScheduleConflict(null)}
+        proposedEndAt={pendingScheduleConflict?.action.payload.endAt ?? pendingScheduleConflict?.action.payload.startAt ?? new Date().toISOString()}
+        proposedStartAt={pendingScheduleConflict?.action.payload.startAt ?? new Date().toISOString()}
+        saving={Boolean(savingActionId)}
+        timeZone={pendingScheduleConflict?.action.payload.generatedForTimeZone}
+        visible={Boolean(pendingScheduleConflict)}
+      />
+      <ConfirmDialog
+        confirmLabel="ลบ"
+        message="ข้อความในแชทนี้จะถูกลบออกจากบัญชีของคุณ"
+        onCancel={() => setDeletingConversation(null)}
+        onConfirm={confirmDeleteHistoryConversation}
+        title="ลบแชทนี้?"
+        visible={Boolean(deletingConversation)}
+      />
+      <ConfirmDialog
+        cancelLabel="ยังไม่บันทึก"
+        confirmLabel="บันทึก"
+        icon="tune"
+        message="บันทึกช่วงเวลานี้เป็นข้อกำหนดสำหรับการจัดตารางครั้งต่อไปไหม?"
+        onCancel={() => answerAdaptivePreference(false)}
+        onConfirm={() => answerAdaptivePreference(true)}
+        title="ยืนยันการตั้งค่า Adaptive"
+        tone="neutral"
+        visible={Boolean(adaptivePreferenceGate)}
+      />
       {/* Refactored UI: keep the floating composer above the software keyboard. */}
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={local.keyboardAvoiding}>
       <View style={local.shell}>
@@ -1841,12 +1974,12 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
           </View>
 
           {/* Added for AI Assistant: keep insights visible before and during a conversation. */}
-          <AssistantInsights adaptiveDashboard={adaptiveInsightDashboard} data={weeklyInsights} onAsk={sendMessage} />
+          <AssistantInsights adaptiveDashboard={adaptiveInsightDashboard} data={weeklyInsights} onAsk={sendMessage} uid={uid} />
 
           {hasConversation ? <View style={local.chatStack}>
             {/* Refactored UI: conversations appear only after the first user interaction. */}
             {visibleMessages.map((message) => (
-              <MessageBubble busy={busy} key={message.id} message={message} onAsk={sendMessage} onConfirm={confirmAction} onFeedback={rateAssistant} onReject={rejectAction} onSpeak={(target) => void speakAssistantMessage(target)} savingActionId={savingActionId} speaking={speakingMessageId === message.id} />
+              <MessageBubble busy={busy} completingTaskId={completingTaskId} key={message.id} message={message} onAsk={sendMessage} onCompleteTask={(messageIdValue, task) => void completePendingTask(messageIdValue, task)} onConfirm={confirmAction} onFeedback={rateAssistant} onReject={rejectAction} onSpeak={(target) => void speakAssistantMessage(target)} savingActionId={savingActionId} speaking={speakingMessageId === message.id} />
             ))}
             <InlineAdaptivePanel
               busyKey={inlineAdaptiveBusyKey}
@@ -2014,7 +2147,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
                       <Text numberOfLines={1} style={local.historyPreview}>{conversation.lastMessagePreview || `${conversation.messageCount} ข้อความ`}</Text>
                       <Text style={local.historyDate}>{formatDate(conversation.updatedAt.toISOString())}</Text>
                     </View>
-                    <Pressable accessibilityLabel="ลบแชท" hitSlop={8} onPress={(event) => {event.stopPropagation(); askDeleteHistoryConversation(conversation);}} style={local.historyDelete}><MaterialIcon color="#9a6b6b" name="delete_outline" size={19} /></Pressable>
+                    <Pressable accessibilityLabel="ลบแชท" hitSlop={8} onPress={(event) => {event.stopPropagation(); setDeletingConversation(conversation);}} style={local.historyDelete}><MaterialIcon color="#9a6b6b" name="delete_outline" size={19} /></Pressable>
                   </Pressable>
                 ))}
                 {!chatHistory.length ? <View style={local.emptyHistory}><MaterialIcon color="#91a08d" name="history" size={34} /><Text style={local.modalOptionText}>ยังไม่มีแชทที่บันทึกไว้</Text></View> : null}
@@ -2095,7 +2228,7 @@ const local = StyleSheet.create({
   behaviorTiming: {flexDirection: 'row', gap: 8, marginTop: 11},
   behaviorTitle: {color: '#2d3a31', fontFamily: 'Prompt_800ExtraBold', fontSize: 13},
   burnoutIcon: {alignItems: 'center', backgroundColor: '#e8e9cc', borderRadius: 13, height: 34, justifyContent: 'center', width: 34},
-  burnoutPanel: {alignItems: 'center', backgroundColor: '#f0f1dc', borderColor: '#d9dcad', borderRadius: 18, borderWidth: 1, flexDirection: 'row', gap: 9, marginTop: 12, padding: 13},
+  burnoutPanel: {alignItems: 'flex-start', backgroundColor: '#f0f1dc', borderColor: '#d9dcad', borderRadius: 18, borderWidth: 1, flexDirection: 'row', gap: 9, marginTop: 12, padding: 13},
   burnoutText: {color: '#727560', fontFamily: 'Prompt_400Regular', fontSize: 10, lineHeight: 15, marginTop: 2},
   burnoutTitle: {color: '#35402d', fontFamily: 'Prompt_700Bold', fontSize: 11},
   chatContent: {gap: 14, paddingBottom: 138, paddingHorizontal: 18, paddingTop: 18},
@@ -2187,6 +2320,15 @@ const local = StyleSheet.create({
   modalSheet: {backgroundColor: '#ffffff', borderTopLeftRadius: 26, borderTopRightRadius: 26, paddingBottom: 24, paddingHorizontal: 18, paddingTop: 10},
   modalTitle: {color: '#26321f', fontFamily: 'Prompt_800ExtraBold', fontSize: 18},
   pressed: {opacity: .7, transform: [{translateY: -1}]},
+  pendingTaskButton: {alignItems: 'center', backgroundColor: '#5d8059', borderRadius: 12, flexDirection: 'row', gap: 5, justifyContent: 'center', minHeight: 38, paddingHorizontal: 10},
+  pendingTaskButtonDone: {backgroundColor: '#e8f1e5', borderColor: '#cdddc9', borderWidth: 1},
+  pendingTaskButtonText: {color: '#ffffff', fontFamily: 'Prompt_700Bold', fontSize: 10},
+  pendingTaskButtonTextDone: {color: '#5b7c57'},
+  pendingTaskCopy: {flex: 1, minWidth: 0},
+  pendingTaskDue: {color: '#7f8a7a', fontFamily: 'Prompt_400Regular', fontSize: 9, lineHeight: 14, marginTop: 2},
+  pendingTaskList: {gap: 7, marginTop: 10},
+  pendingTaskRow: {alignItems: 'center', backgroundColor: '#f5f8f2', borderColor: '#e0e8dc', borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: 9, padding: 9},
+  pendingTaskTitle: {color: '#33412e', fontFamily: 'Prompt_700Bold', fontSize: 11, lineHeight: 16},
   quickAddCopy: {flex: 1, minWidth: 0},
   quickAddBack: {alignItems: 'center', backgroundColor: '#edf4ea', borderRadius: 14, height: 36, justifyContent: 'center', width: 36},
   quickAddCategoryHeader: {alignItems: 'center', flexDirection: 'row', gap: 9},

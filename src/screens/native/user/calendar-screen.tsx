@@ -1,25 +1,18 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  Modal,
-  Pressable,
-  RefreshControl,
-  ScrollView,
-  StyleSheet,
-  Text,
-  useWindowDimensions,
-  View,
-} from 'react-native';
+import {ActivityIndicator, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, useWindowDimensions, View, } from 'react-native';
 import {CalendarList, CalendarProvider, WeekCalendar, type DateData} from 'react-native-calendars';
+import {Timestamp} from 'firebase/firestore';
 
 import {registerThaiCalendarLocale, THAI_MONTH_NAMES} from '@/lib/calendar-locale';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 import GoogleCalendarSyncCard from '@/components/google-calendar-sync-card';
 import AiActivityRecommendationCard from '@/components/ai-activity-recommendation-card';
+import ConfirmDialog from '@/components/confirm-dialog';
 import {activities, deleteCourseSeries, schedules} from '@/services/firestore';
+import {recordTaskCompleted, recordTaskPostponed} from '@/services/behavior-tracking';
 import {MaterialIcon, UserTabBar} from './user-ui';
+import {showToast} from '@/components/app-toast';
 
 type Page = 'smartlife_calendar_day' | 'smartlife_calendar_week' | 'smartlife_calendar_month';
 type PlannerTab = 'adaptive' | 'calendar' | 'notes';
@@ -64,6 +57,24 @@ function toDate(value: unknown) {
   const date = new Date(String(value ?? ''));
   return Number.isNaN(date.getTime()) ? new Date() : date;
 }
+/**
+ * Until now the app had no way to move a scheduled activity at all: the
+ * calendar could only complete or delete one, and the activity form only
+ * creates. That gap is the reason `task_postponed` had never been recorded by
+ * anything -- the action it names did not exist for the user to take. These
+ * three offsets cover the postpones the adaptive proposal is actually about (a
+ * morning slot pushed into the afternoon, or to the next day) without demanding
+ * a full date picker.
+ */
+const POSTPONE_OPTIONS: {hint: string; label: string; shift: (from: Date) => Date}[] = [
+  {hint: 'เลื่อนสั้น ๆ ให้ทำต่อทีหลัง', label: 'อีก 1 ชั่วโมง', shift: (from) => new Date(from.getTime() + 3600000)},
+  {hint: 'ย้ายงานเช้าไปทำช่วงบ่าย', label: 'บ่ายนี้ 13:00', shift: (from) => atBangkokHour(from, 13)},
+  {hint: 'ยกไปวันถัดไปเวลาเดิม', label: 'พรุ่งนี้เวลาเดิม', shift: (from) => new Date(from.getTime() + 86400000)},
+];
+function atBangkokHour(from: Date, hour: number) {
+  const parts = bangkokParts(from);
+  return new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), hour - 7));
+}
 function bangkokParts(value: Date) {
   const parts = new Intl.DateTimeFormat('en-US', {year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Bangkok'}).formatToParts(value);
   const get = (type: string) => parts.find((part) => part.type === type)?.value ?? '';
@@ -72,8 +83,16 @@ function bangkokParts(value: Date) {
 function todayKey() { const part = bangkokParts(new Date()); return `${part.year}-${part.month}-${part.day}`; }
 function dateKey(value: unknown) { const part = bangkokParts(toDate(value)); return `${part.year}-${part.month}-${part.day}`; }
 function formatTime(value: unknown) { return new Intl.DateTimeFormat('th-TH', {hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Bangkok'}).format(toDate(value)); }
-function formatLongDate(value: string) { return new Intl.DateTimeFormat('th-TH', {weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Bangkok'}).format(new Date(`${value}T12:00:00+07:00`)); }
-function formatMonth(value: string) { return new Intl.DateTimeFormat('th-TH', {month: 'long', year: 'numeric', timeZone: 'Asia/Bangkok'}).format(new Date(`${value}T12:00:00+07:00`)); }
+/**
+ * The Buddhist year, computed rather than left to the locale.
+ *
+ * `th-TH` resolves to the Buddhist calendar on web's full-ICU build but to the
+ * Gregorian one on Android's Hermes, so the same screen printed "กันยายน 2569"
+ * in a browser and "กันยายน ค.ศ. 2026" in the app.
+ */
+function buddhistYear(value: string) { return Number(value.slice(0, 4)) + 543; }
+function formatLongDate(value: string) { return `${new Intl.DateTimeFormat('th-TH', {weekday: 'long', day: 'numeric', month: 'long', timeZone: 'Asia/Bangkok'}).format(new Date(`${value}T12:00:00+07:00`))} ${buddhistYear(value)}`; }
+function formatMonth(value: string) { return `${new Intl.DateTimeFormat('th-TH', {month: 'long', timeZone: 'Asia/Bangkok'}).format(new Date(`${value}T12:00:00+07:00`))} ${buddhistYear(value)}`; }
 function shortDay(value: string) { return new Intl.DateTimeFormat('th-TH', {weekday: 'short', timeZone: 'Asia/Bangkok'}).format(new Date(`${value}T12:00:00+07:00`)); }
 function eventTitle(item: EventItem) { return typeof item.title === 'string' && item.title.trim() ? item.title : 'กิจกรรม'; }
 function textEvent(value: unknown, fallback: string) { return typeof value === 'string' && value.trim() ? value : fallback; }
@@ -125,11 +144,36 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
   const [mode, setMode] = useState<ViewMode>(page === 'smartlife_calendar_month' ? 'month' : page === 'smartlife_calendar_week' ? 'week' : 'day');
   const [selectedDate, setSelectedDate] = useState(today);
   const [visibleDate, setVisibleDate] = useState(today);
+  /**
+   * The month the list is anchored to. Moved only by a deliberate navigation,
+   * never by scrolling -- that separation is what stops the list from chasing
+   * its own scroll position, while `visibleDate` still follows the swipe so
+   * the header and the agenda track what is actually on screen.
+   */
+  const [monthAnchor, setMonthAnchor] = useState(today);
+  /**
+   * Bumped by every deliberate navigation, including one that re-selects the
+   * month already anchored. Swiping moves the list without moving the anchor,
+   * so after a swipe "วันนี้" sets an anchor that is already current -- without
+   * this the effect below would not re-run and the list would stay where the
+   * swipe left it.
+   */
+  const [reanchor, setReanchor] = useState(0);
+  const monthList = useRef<{scrollToMonth?: (date: string) => void} | null>(null);
+  /** Whether the user has actually dragged the month list since it was anchored. */
+  const monthDragged = useRef(false);
+  /** True while the list is still being pushed onto its anchor after a mount. */
+  const settling = useRef(true);
+
   const [events, setEvents] = useState<EventItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [completingId, setCompletingId] = useState('');
+  const [postponing, setPostponing] = useState<EventItem | null>(null);
+  const [postponeBusy, setPostponeBusy] = useState(false);
+  const [deleting, setDeleting] = useState<EventItem | null>(null);
+  const [deleteError, setDeleteError] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -153,46 +197,132 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
     return result;
   }, {}), [events]);
   const selectedEvents = grouped[selectedDate] ?? [];
+  // Only offer moves that are genuinely later than the slot being moved -- an
+  // option that lands before the current start would not be a postpone.
+  const postponeChoices = useMemo(() => {
+    if (!postponing) return [];
+    const from = toDate(postponing.startAt);
+    return POSTPONE_OPTIONS
+      .map((option) => ({hint: option.hint, label: option.label, startAt: option.shift(from)}))
+      .filter((option) => option.startAt.getTime() > from.getTime());
+  }, [postponing]);
   const dayStrip = useMemo(() => [-3, -2, -1, 0, 1, 2, 3].map((offset) => offsetDate(selectedDate, offset)), [selectedDate]);
   const yearMonths = useMemo(() => {
     const year = Number(visibleDate.slice(0, 4));
     return Array.from({length: 12}, (_, month) => ({month, days: miniMonthDays(year, month)}));
   }, [visibleDate]);
 
+  const anchorTo = (value: string) => { setMonthAnchor(value); setReanchor((count) => count + 1); };
   const openDay = (value: string, showDetails = false) => {
     setSelectedDate(value);
     setVisibleDate(value);
+    anchorTo(value);
     if (showDetails) setDetailsOpen(true);
   };
   const navigate = (direction: number) => {
     const next = shift(visibleDate, mode, direction);
     setVisibleDate(next);
     setSelectedDate(next);
+    anchorTo(next);
   };
-  const goToday = () => { setSelectedDate(today); setVisibleDate(today); };
+  const goToday = () => { setSelectedDate(today); setVisibleDate(today); anchorTo(today); };
 
+  /**
+   * Puts the list back on its anchor month once the list has actually been
+   * laid out.
+   *
+   * `CalendarList` positions itself with `initialScrollIndex` plus a
+   * `getItemLayout` that is memoised with an empty dependency list, and it
+   * applies both before the row has finished laying out. On WebKit that lands
+   * short by a varying number of months -- cold loads came up on index 12, 4
+   * and 14 of a 49-month window instead of the middle -- and because the list
+   * then reports whatever month it stopped on, the header agreed with it and
+   * the whole screen showed the wrong month. Re-asserting on layout costs
+   * nothing when the list is already in the right place, because the library
+   * skips a scroll of zero distance.
+   */
+  const anchorMonth = `${monthAnchor.slice(0, 7)}-01`;
+  const settleOnAnchor = useCallback(() => {
+    monthList.current?.scrollToMonth?.(anchorMonth);
+  }, [anchorMonth]);
+
+  /**
+   * Pushes the list onto its anchor until the layout stops moving under it.
+   *
+   * One assertion is not enough and the library's own callback cannot drive
+   * the retries: when a nudge lands on the same wrong month it reports
+   * nothing, so a callback-driven loop stalls exactly where it needs to keep
+   * going. A short timer does not care. Every attempt aims at the same fixed
+   * offset, so once the list is right the repeats are no-ops -- the library
+   * skips a scroll of zero distance -- and a drag ends it immediately so it
+   * can never fight the user.
+   */
+  useEffect(() => {
+    if (mode !== 'month') return undefined;
+    monthDragged.current = false;
+    settling.current = true;
+    let attempts = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const push = () => {
+      // Runs for a few seconds because the list can still be laying out well
+      // after mount on a slow load, and stopping early is exactly when it gets
+      // left on the wrong month. A real drag ends it at once.
+      if (monthDragged.current || attempts >= 24) {
+        settling.current = false;
+        return;
+      }
+      attempts += 1;
+      settleOnAnchor();
+      timer = setTimeout(push, 150);
+    };
+    push();
+    return () => { clearTimeout(timer); settling.current = false; };
+  }, [mode, reanchor, settleOnAnchor]);
+
+  /**
+   * Follows the list only once the user has actually dragged it.
+   *
+   * `CalendarList` reports `viewableItems[0]`, which during mount is not the
+   * centred page at all -- it fires repeatedly with months scattered either
+   * side, and whichever arrived last used to win, which is how the screen
+   * ended up captioned two years off. Until a drag there is nothing to learn
+   * from those reports: the month on display is the one the list was anchored
+   * to. After a drag the user has moved it somewhere only the list knows, so
+   * its reports are taken as they come.
+   */
+  const onMonthsVisible = (months: {dateString?: string}[]) => {
+    const next = months[0]?.dateString;
+    if (!next || !monthDragged.current) return;
+    setVisibleDate((previous) => next.slice(0, 7) === previous.slice(0, 7) ? previous : next);
+  };
+
+  // A course row deletes the whole series, a one-off row deletes just itself,
+  // so the confirmation has to say which. `deleting` holds the pending row and
+  // `ConfirmDialog` renders from it; this used to be `Alert.alert`, which is an
+  // empty function on react-native-web and so never ran the delete at all.
+  const seriesKey = (event: EventItem) => typeof event.courseCode === 'string' && event.courseCode.trim()
+    ? event.courseCode.replace(/\s+/g, '').toUpperCase()
+    : eventTitle(event);
   const deleteEvent = useCallback((event: EventItem) => {
     if (!event.id || !event.entityType) return;
+    setDeleting(event);
+  }, []);
+
+  const confirmDelete = useCallback(async () => {
+    const event = deleting;
+    if (!event?.id) return;
+    setDeleting(null);
+    const failed = () => { load().catch(() => undefined); setDeleteError(true); };
     if (event.entityType === 'schedule') {
-      const courseCode = typeof event.courseCode === 'string' && event.courseCode.trim() ? event.courseCode.replace(/\s+/g, '').toUpperCase() : eventTitle(event);
+      const courseCode = seriesKey(event);
       const seriesId = typeof event.seriesId === 'string' && event.seriesId.trim() ? event.seriesId : undefined;
-      Alert.alert('ลบวิชานี้ทั้งหมดหรือไม่?', `ตารางทั้งหมดของ ${courseCode} จะถูกลบออก`, [
-        {text: 'ยกเลิก', style: 'cancel'},
-        {text: 'ลบทั้งหมด', style: 'destructive', onPress: () => {
-          setEvents((current) => current.filter((item) => seriesId ? item.seriesId !== seriesId : item.courseCode?.replace(/\s+/g, '').toUpperCase() !== courseCode));
-          deleteCourseSeries(uid, courseCode, seriesId).catch(() => { load().catch(() => undefined); Alert.alert('ลบไม่สำเร็จ', 'กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่'); });
-        }},
-      ]);
+      setEvents((current) => current.filter((item) => seriesId ? item.seriesId !== seriesId : seriesKey(item) !== courseCode));
+      await deleteCourseSeries(uid, courseCode, seriesId).catch(failed);
       return;
     }
-    Alert.alert('ลบกิจกรรมนี้หรือไม่?', eventTitle(event), [
-      {text: 'ยกเลิก', style: 'cancel'},
-      {text: 'ลบ', style: 'destructive', onPress: () => {
-        setEvents((current) => current.filter((item) => item.id !== event.id));
-        activities.remove(uid, event.id as string).catch(() => { load().catch(() => undefined); Alert.alert('ลบไม่สำเร็จ', 'กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่'); });
-      }},
-    ]);
-  }, [load, uid]);
+    setEvents((current) => current.filter((item) => item.id !== event.id));
+    await activities.remove(uid, event.id as string).catch(failed);
+  }, [deleting, load, uid]);
 
   const completeEvent = useCallback(async (event: EventItem) => {
     if (!event.id || event.entityType !== 'activity' || completingId) return;
@@ -201,13 +331,40 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
     setEvents((current) => current.filter((item) => item.id !== id));
     try {
       await activities.update(uid, id, {status: 'completed'});
+      // Adaptive scheduling learns which hours this user actually finishes work
+      // in. Without this call `completionRate` stays at 0 forever and every
+      // suggestion is generated from defaults instead of from the user.
+      void recordTaskCompleted(id, {scheduledEndAt: toDate(event.endAt), scheduledStartAt: toDate(event.startAt)});
     } catch (error) {
       await load().catch(() => undefined);
-      Alert.alert('ทำเครื่องหมายไม่สำเร็จ', error instanceof Error ? error.message : 'กรุณาลองใหม่อีกครั้ง');
+      showToast('ทำเครื่องหมายไม่สำเร็จ', error instanceof Error ? error.message : 'กรุณาลองใหม่อีกครั้ง');
     } finally {
       setCompletingId('');
     }
   }, [completingId, load, uid]);
+
+  const postponeEvent = useCallback(async (event: EventItem, toStart: Date) => {
+    const id = event.id;
+    if (!id || event.entityType !== 'activity' || postponeBusy) return;
+    const fromStart = toDate(event.startAt);
+    const durationMs = Math.max(900000, toDate(event.endAt).getTime() - fromStart.getTime());
+    setPostponeBusy(true);
+    try {
+      await activities.update(uid, id, {
+        endAt: Timestamp.fromDate(new Date(toStart.getTime() + durationMs)),
+        startAt: Timestamp.fromDate(toStart),
+      });
+      // Recorded only after the move commits, so a rejected write never teaches
+      // the engine a postponement that did not happen.
+      void recordTaskPostponed(id, fromStart, toStart);
+      setPostponing(null);
+      await load();
+    } catch (error) {
+      showToast('เลื่อนไม่สำเร็จ', error instanceof Error ? error.message : 'กรุณาลองใหม่อีกครั้ง');
+    } finally {
+      setPostponeBusy(false);
+    }
+  }, [load, postponeBusy, uid]);
 
   const DayCell = ({date, state}: {date?: DateData; state?: string}) => {
     if (!date) return null;
@@ -230,9 +387,6 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
     backgroundColor: 'transparent',
     monthTextColor: C.label,
     textMonthFontFamily: F.b,
-    // Android's native text renderer rejects fontSize: 0. Keep the built-in
-    // CalendarList month label visually hidden without crashing month mode.
-    textMonthFontSize: 1,
     textSectionTitleColor: C.secondary,
     textDayHeaderFontFamily: F.s,
     textDayHeaderFontSize: 10,
@@ -244,17 +398,38 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
       <CalendarList
         calendarHeight={340}
         calendarWidth={calendarWidth}
-        current={visibleDate}
+        /* Anchored to a month the user actually chose, never to wherever the
+           list has scrolled. Passing the scrolled-to date back in made
+           `current` change on every scroll, and the library re-scrolls
+           whenever `current` changes -- on iOS Safari that fought momentum
+           scrolling and the view never came to rest. */
+        current={anchorMonth}
         dayComponent={DayCell}
         firstDay={1}
         futureScrollRange={24}
         horizontal
-        key={`month-${visibleDate.slice(0, 7)}`}
-        onVisibleMonthsChange={(months) => { if (months[0]?.dateString) setVisibleDate(months[0].dateString); }}
+        /* Remounted when the anchor month or the width changes, never from
+           the scroll callback. The width matters because the library captures
+           the page size into a `getItemLayout` memoised with an empty
+           dependency list, so a width that settles after mount -- normal in a
+           mobile browser, where the URL bar collapses -- would leave it
+           measuring pages at the old size. */
+        key={`${monthAnchor.slice(0, 7)}-${calendarWidth}`}
+        onLayout={settleOnAnchor}
+        ref={monthList}
+        onScrollBeginDrag={() => { monthDragged.current = true; }}
+        onVisibleMonthsChange={onMonthsVisible}
         pagingEnabled
         pastScrollRange={24}
+        /* Deliberately not `staticHeader`: that header is absolutely
+           positioned and only covers each page's own header when the theme
+           has an opaque background. This calendar is transparent by design,
+           so both were visible -- two month labels and two rows of weekday
+           names. One header per page instead, with its month text dropped
+           because the screen prints the Buddhist-era one just above; the
+           weekday row it renders is the one the user sees. */
+        renderHeader={() => null}
         showScrollIndicator={false}
-        staticHeader
         theme={calendarTheme}
       />
     );
@@ -265,7 +440,7 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
     );
     if (mode === 'year') return (
       <View style={styles.yearGrid}>{yearMonths.map(({month, days}) => (
-        <Pressable key={month} onPress={() => { const next = `${visibleDate.slice(0, 4)}-${pad(month + 1)}-01`; setSelectedDate(next); setVisibleDate(next); setMode('month'); }} style={styles.miniMonth}>
+        <Pressable key={month} onPress={() => { const next = `${visibleDate.slice(0, 4)}-${pad(month + 1)}-01`; setSelectedDate(next); setVisibleDate(next); anchorTo(next); setMode('month'); }} style={styles.miniMonth}>
           <Text style={styles.miniMonthTitle}>{THAI_MONTH_NAMES[month]}</Text>
           <View style={styles.miniDays}>{days.map((key, index) => key ? (
             <View key={key} style={[styles.miniDay, key === today && styles.miniToday]}><Text style={[styles.miniDayText, key === today && styles.miniTodayText]}>{Number(key.slice(-2))}</Text>{grouped[key]?.length ? <View style={styles.miniDot} /> : null}</View>
@@ -312,7 +487,7 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
           <AiActivityRecommendationCard onNavigate={onNavigate} uid={uid} />
 
           <View accessibilityRole="tablist" style={styles.segment}>{(['day', 'week', 'month', 'year'] as ViewMode[]).map((item) => (
-            <Pressable accessibilityRole="tab" accessibilityState={{selected: mode === item}} key={item} onPress={() => { setMode(item); setVisibleDate(selectedDate); }} style={[styles.segmentItem, mode === item && styles.segmentActive]}>
+            <Pressable accessibilityRole="tab" accessibilityState={{selected: mode === item}} key={item} onPress={() => { setMode(item); setVisibleDate(selectedDate); anchorTo(selectedDate); }} style={[styles.segmentItem, mode === item && styles.segmentActive]}>
               <Text style={[styles.segmentText, mode === item && styles.segmentTextActive]}>{item === 'day' ? 'วัน' : item === 'week' ? 'สัปดาห์' : item === 'month' ? 'เดือน' : 'ปี'}</Text>
             </Pressable>
           ))}</View>
@@ -328,7 +503,7 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
             {loading ? <View style={styles.calendarLoading}><ActivityIndicator color={C.accent} /><Text style={styles.loadingText}>กำลังโหลดปฏิทิน…</Text></View> : null}
           </View>
 
-          {mode !== 'day' ? <View style={styles.agendaSection}><View style={styles.sectionHeader}><View><Text style={styles.sectionTitle}>{selectedDate === today ? 'วันนี้' : formatLongDate(selectedDate)}</Text><Text style={styles.sectionSub}>{selectedEvents.length ? `${selectedEvents.length} รายการ` : 'ไม่มีกิจกรรม'}</Text></View><Pressable onPress={() => setDetailsOpen(true)}><Text style={styles.seeAll}>ดูทั้งหมด</Text></Pressable></View><AgendaList completingId={completingId} events={selectedEvents} onComplete={(event) => void completeEvent(event)} onOpen={() => setDetailsOpen(true)} /></View> : null}
+          {mode !== 'day' ? <View style={styles.agendaSection}><View style={styles.sectionHeader}><View><Text style={styles.sectionTitle}>{selectedDate === today ? 'วันนี้' : formatLongDate(selectedDate)}</Text><Text style={styles.sectionSub}>{selectedEvents.length ? `${selectedEvents.length} รายการ` : 'ไม่มีกิจกรรม'}</Text></View><Pressable onPress={() => setDetailsOpen(true)}><Text style={styles.seeAll}>ดูทั้งหมด</Text></Pressable></View><AgendaList completingId={completingId} events={selectedEvents} onComplete={(event) => void completeEvent(event)} onDelete={deleteEvent} onOpen={() => setDetailsOpen(true)} onPostpone={setPostponing} /></View> : null}
         </ScrollView>
 
         <Pressable accessibilityLabel="เพิ่มกิจกรรมใหม่" accessibilityRole="button" onPress={() => onNavigate('smartlife_add_activity')} style={({pressed}) => [styles.fab, pressed && styles.fabPressed]}><MaterialIcon color={C.accent} name="add" size={30} /></Pressable>
@@ -340,19 +515,79 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
             <View style={styles.sheet}>
               <View style={styles.handle} />
               <View style={styles.sheetHead}><View><Text style={styles.sheetTitle}>{formatLongDate(selectedDate)}</Text><Text style={styles.sheetSub}>{selectedEvents.length} รายการ</Text></View><Pressable onPress={() => setDetailsOpen(false)} style={styles.close}><MaterialIcon color={C.secondary} name="close" size={20} /></Pressable></View>
-              <ScrollView style={styles.sheetScroll}>{selectedEvents.length ? selectedEvents.map((event, index) => <EventRow completing={completingId === event.id} event={event} key={String(event.id ?? index)} onComplete={event.entityType === 'activity' ? () => void completeEvent(event) : undefined} onDelete={() => deleteEvent(event)} />) : <EmptyAgenda />}</ScrollView>
+              <ScrollView style={styles.sheetScroll}>{selectedEvents.length ? selectedEvents.map((event, index) => <EventRow completing={completingId === event.id} event={event} key={String(event.id ?? index)} onComplete={event.entityType === 'activity' ? () => void completeEvent(event) : undefined} onDelete={() => deleteEvent(event)} onPostpone={event.entityType === 'activity' ? () => setPostponing(event) : undefined} />) : <EmptyAgenda />}</ScrollView>
               <Pressable onPress={() => { setDetailsOpen(false); onNavigate('smartlife_add_activity'); }} style={styles.sheetAdd}><MaterialIcon color="#fff" name="add" size={20} /><Text style={styles.sheetAddText}>เพิ่มกิจกรรม</Text></Pressable>
             </View>
           </View>
         </Modal>
+
+        <Modal animationType="slide" onRequestClose={() => setPostponing(null)} transparent visible={Boolean(postponing)}>
+          <View style={styles.overlay}>
+            <View style={styles.sheet}>
+              <View style={styles.handle} />
+              <View style={styles.sheetHead}>
+                <View style={styles.postponeHeadCopy}>
+                  <Text numberOfLines={1} style={styles.sheetTitle}>เลื่อน {postponing ? eventTitle(postponing) : ''}</Text>
+                  <Text style={styles.sheetSub}>{postponing ? `เวลาเดิม ${formatTime(postponing.startAt)} น.` : ''}</Text>
+                </View>
+                <Pressable onPress={() => setPostponing(null)} style={styles.close}><MaterialIcon color={C.secondary} name="close" size={20} /></Pressable>
+              </View>
+              <View style={styles.postponeList}>
+                {postponeChoices.map((choice) => (
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={postponeBusy}
+                    key={choice.label}
+                    onPress={() => { if (postponing) void postponeEvent(postponing, choice.startAt); }}
+                    style={({pressed}) => [styles.postponeChoice, postponeBusy && styles.postponeChoiceDisabled, pressed && styles.pressed]}
+                  >
+                    <View style={styles.postponeChoiceCopy}>
+                      <Text style={styles.postponeChoiceLabel}>{choice.label}</Text>
+                      <Text style={styles.postponeChoiceHint}>{choice.hint} · {formatTime(choice.startAt)} น.</Text>
+                    </View>
+                    <MaterialIcon color={C.secondary} name="chevron_right" size={20} />
+                  </Pressable>
+                ))}
+                {postponeChoices.length ? null : <Text style={styles.postponeEmpty}>ช่วงเวลาที่เลือกได้ผ่านไปแล้วทั้งหมด</Text>}
+              </View>
+              <Text style={styles.postponeNote}>ระบบจะจดจำว่าคุณเลื่อนงานประเภทนี้ไปช่วงไหน เพื่อเสนอเวลาที่ตรงกับคุณมากขึ้นในครั้งถัดไป</Text>
+            </View>
+          </View>
+        </Modal>
+
+        <ConfirmDialog
+          confirmLabel={deleting?.entityType === 'schedule' ? 'ลบทั้งหมด' : 'ลบ'}
+          message={deleting?.entityType === 'schedule'
+            ? `ตารางทั้งหมดของ ${deleting ? seriesKey(deleting) : ''} จะถูกลบออก`
+            : deleting ? eventTitle(deleting) : ''}
+          onCancel={() => setDeleting(null)}
+          onConfirm={() => void confirmDelete()}
+          title={deleting?.entityType === 'schedule' ? 'ลบวิชานี้ทั้งหมดหรือไม่?' : 'ลบกิจกรรมนี้หรือไม่?'}
+          visible={Boolean(deleting)}
+        />
+        <ConfirmDialog
+          cancelLabel="ปิด"
+          confirmLabel="ลองใหม่"
+          icon="refresh"
+          message="กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่"
+          onCancel={() => setDeleteError(false)}
+          onConfirm={() => { setDeleteError(false); load().catch(() => undefined); }}
+          title="ลบไม่สำเร็จ"
+          tone="neutral"
+          visible={deleteError}
+        />
       </View>
     </ResponsiveSafeArea>
   );
 }
 
-function AgendaList({completingId, events, onComplete, onOpen}: {completingId: string; events: EventItem[]; onComplete: (event: EventItem) => void; onOpen: () => void}) {
+// `onDelete` is threaded through the same way `onComplete` and `onPostpone`
+// already were. `EventRow` has always known how to draw the trash button; it
+// simply was never handed a handler here, so deleting from the agenda meant
+// opening the day sheet first to reach the identical row.
+function AgendaList({completingId, events, onComplete, onDelete, onOpen, onPostpone}: {completingId: string; events: EventItem[]; onComplete: (event: EventItem) => void; onDelete: (event: EventItem) => void; onOpen: () => void; onPostpone: (event: EventItem) => void}) {
   if (!events.length) return <EmptyAgenda />;
-  return <View style={styles.eventList}>{events.map((event, index) => <EventRow completing={completingId === event.id} event={event} key={String(event.id ?? index)} onComplete={event.entityType === 'activity' ? () => onComplete(event) : undefined} onPress={onOpen} />)}</View>;
+  return <View style={styles.eventList}>{events.map((event, index) => <EventRow completing={completingId === event.id} event={event} key={String(event.id ?? index)} onComplete={event.entityType === 'activity' ? () => onComplete(event) : undefined} onDelete={() => onDelete(event)} onPostpone={event.entityType === 'activity' ? () => onPostpone(event) : undefined} onPress={onOpen} />)}</View>;
 }
 
 const HOUR_HEIGHT = 62;
@@ -399,7 +634,7 @@ function DayTimeline({date, events, isToday, onOpen}: {date: string; events: Eve
   </View>;
 }
 
-function EventRow({completing = false, event, onComplete, onDelete, onPress}: {completing?: boolean; event: EventItem; onComplete?: () => void; onDelete?: () => void; onPress?: () => void}) {
+function EventRow({completing = false, event, onComplete, onDelete, onPostpone, onPress}: {completing?: boolean; event: EventItem; onComplete?: () => void; onDelete?: () => void; onPostpone?: () => void; onPress?: () => void}) {
   const color = typeof event.color === 'string' ? event.color : event.entityType === 'schedule' ? C.green : C.blue;
   const priority = priorityInfo(event.priority);
   return (
@@ -407,7 +642,7 @@ function EventRow({completing = false, event, onComplete, onDelete, onPress}: {c
       <View style={[styles.eventColor, {backgroundColor: color}]} />
       <View style={styles.eventTime}><Text style={styles.eventStart}>{formatTime(event.startAt)}</Text><Text style={styles.eventEnd}>{formatTime(event.endAt)}</Text></View>
       <View style={styles.eventCopy}><Text numberOfLines={1} style={styles.eventTitle}>{eventTitle(event)}</Text><View style={styles.eventMetaRow}><Text numberOfLines={1} style={styles.eventMeta}>{textEvent(event.location, textEvent(event.courseCode, textEvent(event.type, 'กิจกรรม')))}</Text>{priority ? <View style={[styles.priorityBadge, {backgroundColor: priority.backgroundColor}]}><Text style={[styles.priorityBadgeText, {color: priority.color}]}>{priority.label}</Text></View> : null}</View></View>
-      <View style={styles.eventActions}>{onComplete ? <Pressable accessibilityLabel={`ทำ ${eventTitle(event)} ให้เสร็จ`} disabled={completing} onPress={(pressEvent) => { pressEvent.stopPropagation(); onComplete(); }} style={styles.completeEventButton}>{completing ? <ActivityIndicator color="#fff" size="small" /> : <MaterialIcon color="#fff" name="check" size={16} />}<Text style={styles.completeEventText}>เสร็จ</Text></Pressable> : null}{onDelete ? <Pressable accessibilityLabel={`ลบ ${eventTitle(event)}`} onPress={(pressEvent) => { pressEvent.stopPropagation(); onDelete(); }} style={styles.deleteButton}><MaterialIcon color={C.accent} name="delete_outline" size={20} /></Pressable> : !onComplete ? <MaterialIcon color={C.tertiary} name="chevron_right" size={20} /> : null}</View>
+      <View style={styles.eventActions}>{onPostpone ? <Pressable accessibilityLabel={`เลื่อน ${eventTitle(event)}`} disabled={completing} onPress={(pressEvent) => { pressEvent.stopPropagation(); onPostpone(); }} style={styles.postponeEventButton}><MaterialIcon color={C.secondary} name="schedule" size={15} /><Text style={styles.postponeEventText}>เลื่อน</Text></Pressable> : null}{onComplete ? <Pressable accessibilityLabel={`ทำ ${eventTitle(event)} ให้เสร็จ`} disabled={completing} onPress={(pressEvent) => { pressEvent.stopPropagation(); onComplete(); }} style={styles.completeEventButton}>{completing ? <ActivityIndicator color="#fff" size="small" /> : <MaterialIcon color="#fff" name="check" size={16} />}<Text style={styles.completeEventText}>เสร็จ</Text></Pressable> : null}{onDelete ? <Pressable accessibilityLabel={`ลบ ${eventTitle(event)}`} onPress={(pressEvent) => { pressEvent.stopPropagation(); onDelete(); }} style={styles.deleteButton}><MaterialIcon color={C.accent} name="delete_outline" size={20} /></Pressable> : !onComplete ? <MaterialIcon color={C.tertiary} name="chevron_right" size={20} /> : null}</View>
     </Pressable>
   );
 }
@@ -526,5 +761,16 @@ const styles = StyleSheet.create({
   sheetAddText: {color: '#fff', fontFamily: F.b, fontSize: 11},
   fab: {alignItems: 'center', backgroundColor: '#fff', borderColor: C.line, borderRadius: 28, borderWidth: 1, bottom: 78, boxShadow: '0 10px 22px rgba(55,86,54,.18)', height: 58, justifyContent: 'center', position: 'absolute', right: 20, width: 58, zIndex: 20},
   fabPressed: {opacity: .86, transform: [{scale: .96}]},
+  postponeChoice: {alignItems: 'center', backgroundColor: '#f6f8f4', borderRadius: 14, flexDirection: 'row', gap: 10, minHeight: 58, paddingHorizontal: 13},
+  postponeChoiceCopy: {flex: 1, minWidth: 0},
+  postponeChoiceDisabled: {opacity: .55},
+  postponeChoiceHint: {color: C.tertiary, fontFamily: F.s, fontSize: 10, marginTop: 2},
+  postponeChoiceLabel: {color: C.label, fontFamily: F.b, fontSize: 13},
+  postponeEmpty: {color: C.tertiary, fontFamily: F.s, fontSize: 11, paddingVertical: 12, textAlign: 'center'},
+  postponeEventButton: {alignItems: 'center', backgroundColor: '#eef2ea', borderRadius: 11, flexDirection: 'row', gap: 3, minHeight: 30, paddingHorizontal: 9},
+  postponeEventText: {color: C.secondary, fontFamily: F.b, fontSize: 10},
+  postponeHeadCopy: {flex: 1, minWidth: 0, paddingRight: 10},
+  postponeList: {gap: 8, marginTop: 12},
+  postponeNote: {color: C.tertiary, fontFamily: F.s, fontSize: 10, lineHeight: 15, marginTop: 14},
   pressed: {opacity: .62},
 });

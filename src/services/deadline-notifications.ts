@@ -4,6 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {router, type Href} from 'expo-router';
 import * as Notifications from 'expo-notifications';
 
+import {thailandDateKey, thailandDayStart} from '@/lib/thailand-time';
 import {activities} from '@/services/firestore';
 import type {Activity, WithId} from '@/types/smartlife';
 
@@ -51,20 +52,8 @@ function toDate(value: TimestampLike) {
   return null;
 }
 
-function addDays(date: Date, amount: number) {
-  const result = new Date(date);
-  result.setDate(result.getDate() + amount);
-  return result;
-}
-
 function addMinutes(date: Date, amount: number) {
   return new Date(date.getTime() + amount * 60000);
-}
-
-function startOfDay(date: Date) {
-  const result = new Date(date);
-  result.setHours(0, 0, 0, 0);
-  return result;
 }
 
 function leadMinutes(priority?: string) {
@@ -221,10 +210,14 @@ export async function syncDeadlineNotifications(uid: string) {
   if (!permissionGranted) return {immediateOverdue: 0, permissionGranted, scheduled: 0};
 
   const now = new Date();
-  const from = addDays(startOfDay(now), -30);
-  const to = addDays(startOfDay(now), 14);
+  // The window is a span of Bangkok days, matching `todayKey` just below and
+  // every reminder body, which are all formatted in Asia/Bangkok. Built from
+  // `setHours(0, 0, 0, 0)` it started at the device's midnight instead, so on a
+  // device away from UTC+7 the edges of the window fell on the wrong day.
+  const todayKey = thailandDateKey(now);
+  const from = thailandDayStart(now, -30);
+  const to = thailandDayStart(now, 14);
   const taskItems = (await activities.between(uid, from, to)).filter((item) => item.type === 'task' && item.status !== 'completed' && item.status !== 'cancelled');
-  const todayKey = new Intl.DateTimeFormat('en-CA', {timeZone: 'Asia/Bangkok'}).format(now);
   const overdueTasks = taskItems.filter((item) => {
     const dueAt = toDate(item.startAt);
     return dueAt ? dueAt < now : false;

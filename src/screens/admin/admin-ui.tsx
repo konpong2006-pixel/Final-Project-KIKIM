@@ -331,7 +331,17 @@ export function FeatureSection({icon, title, subtitle, accent, gradient, onOpen,
 
 export function Pill({label, selected, onPress, color}: {color?: string; label: string; onPress: () => void; selected: boolean}) {
   return (
-    <Pressable onPress={onPress} style={({pressed}) => [styles.pill, selected && styles.pillActive, color && selected ? {backgroundColor: color} : null, pressed && styles.pressed]}>
+    // Labelled as a filter, because several pill labels repeat as row badges
+    // further down the same screen -- "ต้องตรวจสอบ" is both a filter and a
+    // status badge -- and a bare label leaves them indistinguishable to a
+    // screen reader. `selected` is exposed so the active filter is announced.
+    <Pressable
+      accessibilityLabel={`ตัวกรอง ${label}`}
+      accessibilityRole="button"
+      accessibilityState={{selected}}
+      onPress={onPress}
+      style={({pressed}) => [styles.pill, selected && styles.pillActive, color && selected ? {backgroundColor: color} : null, pressed && styles.pressed]}
+    >
       <Text style={[styles.pillText, selected && styles.pillTextActive]}>{label}</Text>
     </Pressable>
   );

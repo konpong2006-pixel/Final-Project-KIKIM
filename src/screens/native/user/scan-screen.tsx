@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {showToast} from '@/components/app-toast';
+import ConfirmDialog from '@/components/confirm-dialog';
 import {
   ActivityIndicator,
-  Alert,
   Animated,
   Modal,
   Pressable,
@@ -13,12 +14,13 @@ import {
   useWindowDimensions,
   type GestureResponderEvent,
 } from "react-native";
-import NativeDateTimePicker from "@expo/ui/community/datetime-picker";
+import NativeDateTimePicker from "@/components/date-time-picker";
 import { Image } from "expo-image";
+import HtmlDocumentView from "@/components/html-document-view";
+import {EXPENSE_CATEGORIES, expenseCategoryIcon, normalizeExpenseCategory} from "@/config/expense-categories";
 import * as ImagePicker from "expo-image-picker";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { WebView } from "react-native-webview";
 
 import LoadingAndSuccessModal, {
   type FeedbackPhase,
@@ -60,10 +62,26 @@ type ScheduleEntry = {
   midtermExam?: string;
   periodLabel?: string;
   raw?: string;
+  reviewFields?: string[];
+  reviewNotes?: string[];
   room?: string;
   section?: string;
   startDate?: string;
   startTime?: string;
+};
+/**
+ * The label each flagged field's note starts with, as the server writes it --
+ * so editing a field can retire exactly that field's note.
+ */
+const REVIEW_FIELD_LABELS: Record<string, string> = {
+  buildingName: "ห้อง",
+  courseCode: "รหัสวิชา",
+  courseName: "ชื่อวิชา",
+  day: "วัน",
+  endTime: "เวลาสิ้นสุด",
+  room: "ห้อง",
+  section: "Section",
+  startTime: "เวลาเริ่ม",
 };
 type TimePickerTarget = {
   field: "endTime" | "startTime";
@@ -323,11 +341,7 @@ function ReceiptHtmlModal({
             <MaterialIcon color={C.pine} name="close" size={22} />
           </Pressable>
         </View>
-        <WebView
-          originWhitelist={["*"]}
-          source={{ html }}
-          style={localStyles.htmlWebView}
-        />
+        <HtmlDocumentView html={html} />
       </View>
     </Modal>
   );
@@ -399,7 +413,7 @@ function ReceiptScanDashboard({
     firstPresentValue(draft.total, draft.amount, draft.totalAmount),
     "0",
   );
-  const category = textValue(draft.category, "Food / อาหาร");
+  const category = normalizeExpenseCategory(textValue(draft.category, ""));
   const confidenceValue = Number(
     draft.confidenceScore ?? result?.classification.confidence ?? 0,
   );
@@ -512,26 +526,10 @@ function ReceiptScanDashboard({
                 </Text>
               </View>
             ) : null}
-            <View style={receiptStyles.sourceImageCard}>
-              <View style={receiptStyles.sourceImageHeader}>
-                <View style={{ flex: 1 }}>
-                  <Text style={receiptStyles.sourceImageTitle}>รูปต้นฉบับ</Text>
-                  <Text style={receiptStyles.sourceImageSubtitle}>
-                    ดูรูปเทียบกับข้อมูลด้านล่าง แล้วแตะช่องที่ต้องการแก้ไข
-                  </Text>
-                </View>
-                <Pressable onPress={() => pick("library")}>
-                  <MaterialIcon color={C.sage} name="refresh" size={20} />
-                </Pressable>
-              </View>
-              <Pressable onPress={() => setImageViewerOpen(true)}>
-                <Image
-                  contentFit="contain"
-                  source={{ uri: imageUri }}
-                  style={receiptStyles.sourceImage}
-                />
-              </Pressable>
-            </View>
+            {/* The source photo is deliberately not rendered once the receipt
+                has been read: the extracted fields are what the user works
+                with, and the image only pushed them down the page. The
+                timetable import keeps its image, by design. */}
             <View style={receiptStyles.editorCard}>
               <Text style={receiptStyles.editorTitle}>ตรวจและแก้ไขผล OCR</Text>
               <EditableRow
@@ -547,10 +545,8 @@ function ReceiptScanDashboard({
                 onChangeText={(value) => onDraftChange("total", value)}
                 value={String(firstPresentValue(draft.total, draft.amount, draft.totalAmount) ?? "")}
               />
-              <EditableRow
-                icon="category"
-                label="หมวดหมู่"
-                onChangeText={(value) => onDraftChange("category", value)}
+              <CategoryPickerRow
+                onChange={(value) => onDraftChange("category", value)}
                 value={textValue(draft.category, "")}
               />
               <PickerDataRow
@@ -1094,13 +1090,24 @@ export default function ScanScreen({
   const [schoolTerm, setSchoolTerm] = useState<SchoolTerm>(() =>
     suggestedSchoolTerm(),
   );
-  const [result, setResult] = useState<OcrResult | null>(null);
+  const [rawResult, setResult] = useState<OcrResult | null>(null);
+  // The classifier is good but never perfect, so the user can overrule it. The
+  // override is layered over the response rather than written into it, so the
+  // original verdict stays visible for comparison and a fresh scan starts clean.
+  const [typeOverride, setTypeOverride] = useState<OcrResult["scanType"] | null>(null);
+  const [ocrTextOpen, setOcrTextOpen] = useState(false);
+  const result = useMemo(
+    () => (rawResult && typeOverride ? {...rawResult, scanType: typeOverride} : rawResult),
+    [rawResult, typeOverride],
+  );
   const [draft, setDraft] = useState<Record<string, unknown>>({});
   const [imageUri, setImageUri] = useState("");
   const [pendingAssets, setPendingAssets] = useState<ImagePicker.ImagePickerAsset[]>([]);
   const [imageAspectRatio, setImageAspectRatio] = useState(1);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Holds the text of the "check before saving" prompt while it is open.
+  const [reviewPrompt, setReviewPrompt] = useState<string | null>(null);
   const [saveComplete, setSaveComplete] = useState(false);
   const [pickerTarget, setPickerTarget] = useState<"end" | "start" | null>(
     null,
@@ -1109,6 +1116,10 @@ export default function ScanScreen({
     useState<TimePickerTarget>(null);
   const [receiptPickerTarget, setReceiptPickerTarget] = useState<
     "date" | "time" | null
+  >(null);
+  /** The course awaiting delete confirmation, with the name to show. */
+  const [deletingEntry, setDeletingEntry] = useState<
+    { index: number; label: string } | null
   >(null);
   const [rawOcrText, setRawOcrText] = useState("");
   const [imageViewerOpen, setImageViewerOpen] = useState(false);
@@ -1151,6 +1162,7 @@ export default function ScanScreen({
     setImageCardFrame({ height: 0, top: 0 });
     setIsImagePinned(false);
     setResult(null);
+    setTypeOverride(null);
     setSaveComplete(false);
     setSaving(false);
     setFeedback(null);
@@ -1196,11 +1208,14 @@ export default function ScanScreen({
       });
       if (generation !== scanGeneration.current) return false;
       setResult(response);
+      setTypeOverride(null);
       setRawOcrText(response.rawText ?? "");
       setDraft(
-        response.scanType === "schedule"
-          ? scheduleDraft(response.parsed, institutionType, schoolTerm)
-          : {
+        response.scanType === "document"
+          ? {}
+          : response.scanType === "schedule"
+            ? scheduleDraft(response.parsed, institutionType, schoolTerm)
+            : {
               ...response.parsed,
               items: normalizeReceiptItems(response.parsed.items),
               total: firstPresentValue(
@@ -1214,9 +1229,11 @@ export default function ScanScreen({
         {
           phase: "success",
           subtitle:
-            response.scanType === "receipt"
-              ? "ตรวจพบสลิปหรือใบเสร็จ"
-              : `ตรวจพบตารางเรียน${institutionType === "high-school" ? "มัธยมศึกษา" : "มหาวิทยาลัย"}`,
+            response.scanType === "document"
+              ? "ไม่ใช่ใบเสร็จหรือตารางเรียน จึงดึงเฉพาะข้อความ"
+              : response.scanType === "receipt"
+                ? "ตรวจพบสลิปหรือใบเสร็จ"
+                : `ตรวจพบตารางเรียน${institutionType === "high-school" ? "มัธยมศึกษา" : "มหาวิทยาลัย"}`,
           title: "อ่านเอกสารสำเร็จ",
         },
         950,
@@ -1226,7 +1243,7 @@ export default function ScanScreen({
       const message = error instanceof Error ? error.message : String(error);
       console.error("[SmartScan] Read, upload, or OCR failed", {error, message});
       showFeedback(null);
-      Alert.alert("สแกนไม่สำเร็จ", message || "กรุณาถ่ายภาพใหม่ให้ชัดขึ้น");
+      showToast("สแกนไม่สำเร็จ", message || "กรุณาถ่ายภาพใหม่ให้ชัดขึ้น");
       return false;
     }
   };
@@ -1246,12 +1263,9 @@ export default function ScanScreen({
           source,
           status: permission.status,
         });
-        Alert.alert(
-          "ต้องอนุญาตสิทธิ์",
-          permission.canAskAgain
+        showToast("ต้องอนุญาตสิทธิ์", permission.canAskAgain
             ? "กรุณาอนุญาตให้ SmartLife ใช้กล้องหรือคลังรูปภาพ"
-            : "กรุณาเปิดสิทธิ์ SmartLife จาก Settings > Apps > SmartLife > Permissions",
-        );
+            : "กรุณาเปิดสิทธิ์ SmartLife จาก Settings > Apps > SmartLife > Permissions");
         return;
       }
 
@@ -1285,17 +1299,27 @@ export default function ScanScreen({
         source,
       });
       showFeedback(null);
-      Alert.alert("สแกนไม่สำเร็จ", message || "กรุณาถ่ายภาพใหม่ให้ชัดขึ้น");
+      showToast("สแกนไม่สำเร็จ", message || "กรุณาถ่ายภาพใหม่ให้ชัดขึ้น");
     }
   };
 
   const receipt = result?.scanType === "receipt" ? draft : null;
   const schedule = result?.scanType === "schedule" ? draft : null;
-  const entries = Array.isArray(schedule?.entries)
-    ? (schedule.entries as ScheduleEntry[])
-    : [];
+  // Memoised because `entryProblems` depends on it: rebuilding the array on
+  // every render would rebuild the problem map on every render too.
+  const scheduleEntryList = schedule?.entries;
+  const entries = useMemo(
+    () => (Array.isArray(scheduleEntryList) ? (scheduleEntryList as ScheduleEntry[]) : []),
+    [scheduleEntryList],
+  );
   const updateDraft = (key: string, value: string) =>
     setDraft((current) => ({ ...current, [key]: value }));
+  // What a document note saves when the user has not edited it -- the same
+  // precedence as saveOcrResult, so the box shows exactly what will be kept.
+  const scannedDocumentText =
+    typeof result?.parsed?.documentText === "string" && result.parsed.documentText.trim()
+      ? result.parsed.documentText
+      : rawOcrText;
   const receiptItems = normalizeReceiptItems(receipt?.items);
   const updateReceiptItem = (
     index: number,
@@ -1335,6 +1359,17 @@ export default function ScanScreen({
         ),
       })
     : "";
+  /** Removes a scanned course outright, for the ones OCR invented. */
+  const removeEntry = (index: number) =>
+    setDraft((current) => {
+      const currentEntries = Array.isArray(current.entries)
+        ? (current.entries as ScheduleEntry[])
+        : [];
+      return {
+        ...current,
+        entries: currentEntries.filter((_, entryIndex) => entryIndex !== index),
+      };
+    });
   const updateEntry = (
     index: number,
     key: keyof ScheduleEntry,
@@ -1346,11 +1381,47 @@ export default function ScanScreen({
         : [];
       return {
         ...current,
-        entries: currentEntries.map((entry, entryIndex) =>
-          entryIndex === index ? { ...entry, [key]: value } : entry,
-        ),
+        entries: currentEntries.map((entry, entryIndex) => {
+          if (entryIndex !== index) return entry;
+          // Editing a flagged field is the user reviewing it, so its flag and
+          // note go; the others stay until they are dealt with too.
+          const field = key === "buildingName" ? "room" : key;
+          const label = REVIEW_FIELD_LABELS[key];
+          return {
+            ...entry,
+            [key]: value,
+            reviewFields: (entry.reviewFields ?? []).filter((flagged) => flagged !== field),
+            reviewNotes: label
+              ? (entry.reviewNotes ?? []).filter((note) => !note.startsWith(label) &&
+                !(field === "courseCode" && note.startsWith("พบวิชานี้จาก AI")))
+              : entry.reviewNotes,
+          };
+        }),
       };
     });
+  /**
+   * The courses that cannot be saved, and why.
+   *
+   * Saving used to throw on the first bad course, which aborted the whole
+   * batch from inside the save call -- one blank field and nothing at all was
+   * written, with only a toast to say so. The same rules are checked here
+   * first so the problem is shown on the course it belongs to.
+   */
+  const entryProblems = useMemo(() => {
+    const problems = new Map<number, Partial<Record<'courseCode' | 'day' | 'endTime' | 'startTime', string>>>();
+    entries.forEach((entry, index) => {
+      const missing: Partial<Record<'courseCode' | 'day' | 'endTime' | 'startTime', string>> = {};
+      if (!textValue(entry.courseCode, "").trim() && !textValue(entry.courseName, "").trim()) {
+        missing.courseCode = "ต้องมีรหัสวิชาหรือชื่อวิชา";
+      }
+      if (!matchScanWeekday(textValue(entry.day, ""))) missing.day = "เลือกวันเรียน";
+      if (!/^\d{1,2}:\d{2}$/.test(textValue(entry.startTime, "").trim())) missing.startTime = "ต้องระบุเวลาเริ่ม";
+      if (!/^\d{1,2}:\d{2}$/.test(textValue(entry.endTime, "").trim())) missing.endTime = "ต้องระบุเวลาสิ้นสุด";
+      if (Object.keys(missing).length) problems.set(index, missing);
+    });
+    return problems;
+  }, [entries]);
+
   const selectedEntryTime = timePickerTarget
     ? entries[timePickerTarget.index]?.[timePickerTarget.field]
     : null;
@@ -1424,6 +1495,16 @@ export default function ScanScreen({
   const persistOcrResult = async () => {
     if (!result || saving) return;
     const nextAsset = pendingAssets[0];
+    if (result.scanType === "schedule" && entryProblems.size) {
+      // Named rather than counted: with the list scrolled, "2 รายการ" alone
+      // leaves the user hunting for which cards are marked.
+      const numbers = [...entryProblems.keys()].map((index) => index + 1).join(", ");
+      showToast(
+        "ยังบันทึกไม่ได้",
+        `รายวิชาที่ ${numbers} ยังกรอกไม่ครบ แก้ให้ครบหรือลบรายการนั้นออก`,
+      );
+      return;
+    }
     setSaving(true);
     showFeedback({
       phase: "loading",
@@ -1440,7 +1521,9 @@ export default function ScanScreen({
       showFeedback({
         phase: "success",
         subtitle:
-          result.scanType === "receipt"
+          result.scanType === "document"
+            ? "บันทึกข้อความเป็นโน้ตแล้ว"
+            : result.scanType === "receipt"
             ? saved.duplicate
               ? "ตรวจพบรายการเดิม จึงไม่เพิ่มยอดซ้ำ"
               : "เพิ่มรายการไปยังหน้าการเงินแล้ว"
@@ -1470,13 +1553,52 @@ export default function ScanScreen({
       });
       setSaving(false);
       showFeedback(null);
-      Alert.alert(
-        "\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e44\u0e21\u0e48\u0e2a\u0e33\u0e40\u0e23\u0e47\u0e08",
-        message ||
-          "\u0e01\u0e23\u0e38\u0e13\u0e32\u0e25\u0e2d\u0e07\u0e43\u0e2b\u0e21\u0e48\u0e2d\u0e35\u0e01\u0e04\u0e23\u0e31\u0e49\u0e07",
-      );
+      showToast("\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e44\u0e21\u0e48\u0e2a\u0e33\u0e40\u0e23\u0e47\u0e08", message ||
+          "\u0e01\u0e23\u0e38\u0e13\u0e32\u0e25\u0e2d\u0e07\u0e43\u0e2b\u0e21\u0e48\u0e2d\u0e35\u0e01\u0e04\u0e23\u0e31\u0e49\u0e07");
     }
   };
+
+  // Rendered by both branches below, because the receipt dashboard returns
+  // early and the review gate belongs to whichever one is on screen.
+  /**
+   * Removing a scanned course is destructive and easy to mis-tap next to the
+   * edit fields, so it goes through the same confirmation as every other
+   * delete in the app.
+   */
+  const deleteEntryDialog = (
+    <ConfirmDialog
+      confirmLabel="ลบรายวิชา"
+      message={
+        deletingEntry
+          ? `${deletingEntry.label} จะถูกลบออกจากรายการนี้ ยังไม่มีผลกับปฏิทินจนกว่าจะกดบันทึก`
+          : ""
+      }
+      onCancel={() => setDeletingEntry(null)}
+      onConfirm={() => {
+        if (deletingEntry) removeEntry(deletingEntry.index);
+        setDeletingEntry(null);
+      }}
+      title="ลบรายวิชานี้ออกหรือไม่?"
+      visible={Boolean(deletingEntry)}
+    />
+  );
+
+  const reviewDialog = (
+    <ConfirmDialog
+      confirmLabel="ตรวจสอบแล้ว บันทึก"
+      icon="save"
+      message={reviewPrompt ?? ""}
+      onCancel={() => setReviewPrompt(null)}
+      onConfirm={() => {
+        setReviewPrompt(null);
+        void persistOcrResult();
+      }}
+      cancelLabel="กลับไปตรวจสอบ"
+      title="ตรวจสอบข้อมูลก่อนบันทึก"
+      tone="neutral"
+      visible={Boolean(reviewPrompt)}
+    />
+  );
 
   const confirmAndSave = () => {
     if (!result || saving) return;
@@ -1491,35 +1613,33 @@ export default function ScanScreen({
           .filter((reason) => typeof reason === "string")
           .join("\n• ")
       : "";
-    Alert.alert(
-      "ตรวจสอบข้อมูลก่อนบันทึก",
+    // `Alert.alert` does nothing on react-native-web, so on web this review
+    // gate silently blocked the save instead of asking about it.
+    setReviewPrompt(
       `ระบบจะไม่บันทึกข้อมูลที่ไม่แน่นอนโดยอัตโนมัติ${
         reasons ? `\n\n• ${reasons}` : ""
       }\n\nหากตรวจสอบและแก้ไขข้อมูลแล้ว จึงยืนยันบันทึกได้`,
-      [
-        { style: "cancel", text: "กลับไปตรวจสอบ" },
-        {
-          onPress: () => void persistOcrResult(),
-          text: "ตรวจสอบแล้ว บันทึก",
-        },
-      ],
     );
   };
 
   if (page === "smartlife_scan_finance") {
     return (
-      <ReceiptScanDashboard
-        confirmAndSave={confirmAndSave}
-        draft={draft}
-        imageUri={imageUri}
-        onDraftChange={updateDraft}
-        onNavigate={onNavigate}
-        pendingCount={pendingAssets.length}
-        pick={pick}
-        result={result}
-        saving={saving}
-        updateReceiptItem={updateReceiptItem}
-      />
+      <>
+        <ReceiptScanDashboard
+          confirmAndSave={confirmAndSave}
+          draft={draft}
+          imageUri={imageUri}
+          onDraftChange={updateDraft}
+          onNavigate={onNavigate}
+          pendingCount={pendingAssets.length}
+          pick={pick}
+          result={result}
+          saving={saving}
+          updateReceiptItem={updateReceiptItem}
+        />
+        {reviewDialog}
+        {deleteEntryDialog}
+      </>
     );
   }
 
@@ -1592,7 +1712,11 @@ export default function ScanScreen({
             </LinearGradient>
           </Card>
 
-          {imageUri ? (
+          {/* The source image stays visible while the timetable import is being
+              checked row by row, which is how that flow is meant to work. For a
+              receipt or a general document the result card is the point, so the
+              picture stops taking up the screen once the result arrives. */}
+          {imageUri && (!result || result.scanType === "schedule") ? (
             <View
               onLayout={(event) =>
                 setImageCardFrame({
@@ -1635,7 +1759,7 @@ export default function ScanScreen({
           {imageUri || result ? (
             <View style={localStyles.scanActions}>
               <Pressable
-                accessibilityLabel="\u0e2a\u0e41\u0e01\u0e19\u0e43\u0e2b\u0e21\u0e48"
+                accessibilityLabel="สแกนใหม่"
                 disabled={saving}
                 onPress={() => setPickerOpen(true)}
                 style={({ pressed }) => [
@@ -1654,7 +1778,7 @@ export default function ScanScreen({
               </Pressable>
               <Pressable
                 accessibilityHint="ล้างรูปและข้อมูล OCR ทั้งหมด"
-                accessibilityLabel="\u0e25\u0e49\u0e32\u0e07\u0e1c\u0e25\u0e2a\u0e41\u0e01\u0e19"
+                accessibilityLabel="ล้างผลสแกน"
                 accessibilityRole="button"
                 disabled={saving}
                 onPress={handleClearData}
@@ -1681,30 +1805,46 @@ export default function ScanScreen({
                     localStyles.resultIcon,
                     {
                       backgroundColor:
-                        result.scanType === "receipt" ? "#ececf6" : "#e5eee1",
+                        result.scanType === "document"
+                          ? "#eef0ec"
+                          : result.scanType === "receipt"
+                            ? "#ececf6"
+                            : "#e5eee1",
                     },
                   ]}
                 >
                   <MaterialIcon
-                    color={result.scanType === "receipt" ? C.finance : C.sage}
+                    color={
+                      result.scanType === "document"
+                        ? "#6d786c"
+                        : result.scanType === "receipt"
+                          ? C.finance
+                          : C.sage
+                    }
                     name={
-                      result.scanType === "receipt"
-                        ? "receipt_long"
-                        : "calendar_month"
+                      result.scanType === "document"
+                        ? "description"
+                        : result.scanType === "receipt"
+                          ? "receipt_long"
+                          : "calendar_month"
                     }
                     size={24}
                   />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={localStyles.resultEyebrow}>
-                    AI จำแนกเอกสารสำเร็จ
+                    {result.scanType === "document"
+                      ? "AI อ่านข้อความจากเอกสาร"
+                      : "AI จำแนกเอกสารสำเร็จ"}
                   </Text>
                   <Text style={localStyles.resultTitle}>
-                    {result.scanType === "receipt"
-                      ? "สลิป / ใบเสร็จการเงิน"
-                      : institutionType === "high-school"
-                        ? "ตารางเรียนมัธยมศึกษา"
-                        : "ตารางเรียนมหาวิทยาลัย"}
+                    {result.scanType === "document"
+                      ? "เอกสารทั่วไป (ข้อความล้วน)"
+                      : result.scanType === "receipt"
+                        ? "สลิป / ใบเสร็จการเงิน"
+                        : institutionType === "high-school"
+                          ? "ตารางเรียนมัธยมศึกษา"
+                          : "ตารางเรียนมหาวิทยาลัย"}
                   </Text>
                 </View>
                 <View style={localStyles.confidence}>
@@ -1714,11 +1854,50 @@ export default function ScanScreen({
                 </View>
               </View>
               <View style={localStyles.editNotice}>
-                <MaterialIcon color={C.sage} name="edit" size={16} />
+                <MaterialIcon
+                  color={C.sage}
+                  name={result.scanType === "document" ? "info" : "edit"}
+                  size={16}
+                />
                 <Text style={localStyles.editNoticeText}>
-                  แตะช่องข้อมูลเพื่อแก้ไขผล OCR ก่อนบันทึก
+                  {result.scanType === "document"
+                    ? "เอกสารนี้ไม่ใช่ใบเสร็จหรือตารางเรียน ระบบจึงไม่เดาเป็นรายการเงิน แต่ดึงข้อความออกมาให้ใช้ต่อในโน้ตได้ แตะข้อความเพื่อแก้ไขก่อนบันทึก"
+                    : "แตะช่องข้อมูลเพื่อแก้ไขผล OCR ก่อนบันทึก"}
                 </Text>
               </View>
+              {result.scanType === "document" ? (
+                <DocumentTextBox
+                  onChange={(value) => updateDraft("documentText", value)}
+                  original={scannedDocumentText}
+                  text={typeof draft.documentText === "string" ? draft.documentText : scannedDocumentText}
+                />
+              ) : null}
+              <DocumentTypePicker
+                current={result.scanType}
+                onChange={(next) => {
+                  if (next === result.scanType) return;
+                  setTypeOverride(next);
+                  // The draft is shaped for whichever type is in force, so it
+                  // has to be rebuilt -- otherwise switching to "receipt"
+                  // would show a schedule's fields, or none at all.
+                  setDraft(
+                    next === "document"
+                      ? {}
+                      : next === "schedule"
+                        ? scheduleDraft(rawResult?.parsed ?? {}, institutionType, schoolTerm)
+                        : {
+                            ...(rawResult?.parsed ?? {}),
+                            items: normalizeReceiptItems(rawResult?.parsed?.items),
+                            total: firstPresentValue(
+                              rawResult?.parsed?.total,
+                              rawResult?.parsed?.amount,
+                              rawResult?.parsed?.totalAmount,
+                            ) ?? "",
+                          },
+                  );
+                  showToast("เปลี่ยนประเภทเอกสารแล้ว", "ตรวจข้อมูลอีกครั้งก่อนบันทึก", "success");
+                }}
+              />
               {receipt?.needsReview ? (
                 <View style={localStyles.reviewWarning}>
                   <MaterialIcon color="#a36b28" name="warning" size={18} />
@@ -1838,6 +2017,10 @@ export default function ScanScreen({
                       ) ?? "",
                     )}
                   />
+                  <CategoryPickerRow
+                    onChange={(value) => updateDraft("category", value)}
+                    value={textValue(receipt.category, "")}
+                  />
                   <PickerDataRow
                     icon="event"
                     label="วันที่"
@@ -1903,7 +2086,12 @@ export default function ScanScreen({
                         style={localStyles.courseCard}
                       >
                         <View style={localStyles.courseTop}>
-                          <View style={localStyles.courseNumber}>
+                          <View
+                            style={[
+                              localStyles.courseNumber,
+                              entryProblems.has(index) && localStyles.courseNumberProblem,
+                            ]}
+                          >
                             <Text style={localStyles.courseNumberText}>
                               {index + 1}
                             </Text>
@@ -1922,7 +2110,47 @@ export default function ScanScreen({
                             value={textValue(entry.courseCode, "")}
                           />
                           <MaterialIcon color={C.sage} name="edit" size={16} />
+                          <Pressable
+                            accessibilityLabel={`ลบรายวิชาที่ ${index + 1}`}
+                            accessibilityRole="button"
+                            onPress={() =>
+                              setDeletingEntry({
+                                index,
+                                label: textValue(entry.courseCode, "").trim() ||
+                                  textValue(entry.courseName, "").trim() ||
+                                  `รายวิชาที่ ${index + 1}`,
+                              })
+                            }
+                            style={localStyles.courseDelete}
+                          >
+                            <MaterialIcon color="#c1766f" name="delete_outline" size={17} />
+                          </Pressable>
                         </View>
+                        {entryProblems.get(index)?.courseCode ? (
+                          <Text style={localStyles.entryError}>
+                            {entryProblems.get(index)?.courseCode}
+                          </Text>
+                        ) : null}
+                        {entry.reviewNotes?.length ? (
+                          /* Values the AI read that the OCR text does not bear
+                             out, or that disagree with the grid. They are
+                             filled in so the user is not retyping, but they
+                             are never passed off as confirmed. */
+                          <View
+                            accessibilityLabel={`ตรวจสอบรายวิชาที่ ${index + 1}: ${entry.reviewNotes.join(" ")}`}
+                            style={localStyles.reviewBanner}
+                          >
+                            <MaterialIcon color="#9a6a1f" name="fact_check" size={15} />
+                            <View style={{ flex: 1 }}>
+                              <Text style={localStyles.reviewTitle}>ตรวจสอบก่อนบันทึก</Text>
+                              {entry.reviewNotes.map((note, noteIndex) => (
+                                <Text key={`review-${index}-${noteIndex}`} style={localStyles.reviewNote}>
+                                  • {note}
+                                </Text>
+                              ))}
+                            </View>
+                          </View>
+                        ) : null}
                         <SmallInput
                           label="ชื่อวิชา"
                           onChangeText={(value) =>
@@ -1960,11 +2188,9 @@ export default function ScanScreen({
                               "",
                             )}
                           />
-                          <SmallInput
-                            label="วัน"
-                            onChangeText={(value) =>
-                              updateEntry(index, "day", value)
-                            }
+                          <DayPickerRow
+                            error={entryProblems.get(index)?.day}
+                            onChange={(value) => updateEntry(index, "day", value)}
                             value={textValue(entry.day, "")}
                           />
                           {entry.periodLabel ? (
@@ -1995,6 +2221,16 @@ export default function ScanScreen({
                               value={textValue(entry.endTime, "")}
                             />
                           </View>
+                          {/* Times block saving as much as a missing code or
+                              day does, so they say so where they are, not
+                              only in the toast the save button raises. */}
+                          {entryProblems.get(index)?.startTime || entryProblems.get(index)?.endTime ? (
+                            <Text style={localStyles.entryError}>
+                              {[entryProblems.get(index)?.startTime, entryProblems.get(index)?.endTime]
+                                .filter(Boolean)
+                                .join(" · ")}
+                            </Text>
+                          ) : null}
                           {textValue(entry.midtermExam, "").trim() ||
                           textValue(entry.finalExam, "").trim() ? (
                             <>
@@ -2051,12 +2287,7 @@ export default function ScanScreen({
               ) : null}
               <Pressable
                 accessibilityLabel="ดูข้อความ OCR ทั้งหมด"
-                onPress={() =>
-                  Alert.alert(
-                    "ข้อความที่ OCR อ่านได้",
-                    rawOcrText.slice(0, 3000) || "ไม่มีข้อความ OCR",
-                  )
-                }
+                onPress={() => setOcrTextOpen(true)}
                 style={localStyles.rawButton}
               >
                 <MaterialIcon color={C.pine} name="text_snippet" size={18} />
@@ -2150,8 +2381,10 @@ export default function ScanScreen({
                   </Text>
                 </View>
               ) : null}
+              {/* A general document has no receipt or schedule to commit, but
+                  it still saves -- as a note holding the extracted text. */}
               <Pressable
-                accessibilityLabel="\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e02\u0e49\u0e2d\u0e21\u0e39\u0e25"
+                accessibilityLabel="บันทึกข้อมูล"
                 accessibilityRole="button"
                 accessibilityState={{ disabled: saving }}
                 disabled={saving}
@@ -2187,17 +2420,27 @@ export default function ScanScreen({
                       ? "\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e2a\u0e33\u0e40\u0e23\u0e47\u0e08"
                       : saving
                         ? "\u0e01\u0e33\u0e25\u0e31\u0e07\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01..."
-                        : "\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e02\u0e49\u0e2d\u0e21\u0e39\u0e25"}
+                        : result.scanType === "document"
+                          ? "\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e40\u0e1b\u0e47\u0e19\u0e42\u0e19\u0e49\u0e15"
+                          : "\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e02\u0e49\u0e2d\u0e21\u0e39\u0e25"}
                   </Text>
                 </LinearGradient>
               </Pressable>
               <Text style={localStyles.saveHint}>
-                {result.scanType === "receipt"
+                {result.scanType === "document"
+                  ? "เก็บข้อความที่อ่านได้ไว้เป็นโน้ตใหม่ แก้ไขต่อได้ในหน้าโน้ต"
+                  : result.scanType === "receipt"
                   ? "\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e41\u0e25\u0e49\u0e27\u0e44\u0e1b\u0e2b\u0e19\u0e49\u0e32\u0e01\u0e32\u0e23\u0e40\u0e07\u0e34\u0e19\u0e2d\u0e31\u0e15\u0e42\u0e19\u0e21\u0e31\u0e15\u0e34"
                   : "\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e41\u0e25\u0e49\u0e27\u0e44\u0e1b\u0e2b\u0e19\u0e49\u0e32\u0e1b\u0e0f\u0e34\u0e17\u0e34\u0e19\u0e2d\u0e31\u0e15\u0e42\u0e19\u0e21\u0e31\u0e15\u0e34"}
               </Text>
             </Card>
           ) : null}
+
+          <OcrTextModal
+            onClose={() => setOcrTextOpen(false)}
+            text={rawOcrText}
+            visible={ocrTextOpen}
+          />
 
           <Modal
             animationType="fade"
@@ -2284,6 +2527,8 @@ export default function ScanScreen({
           onClose={() => setReceiptHtmlOpen(false)}
           visible={receiptHtmlOpen}
         />
+        {reviewDialog}
+        {deleteEntryDialog}
       </View>
     </UserShell>
   );
@@ -2503,7 +2748,460 @@ const shadow = {
   shadowOpacity: 0.12,
   shadowRadius: 18,
 };
+/**
+ * Extracted text from a general document, kept inside a fixed box.
+ *
+ * OCR on a dense page -- especially a table, which comes back as a flat run of
+ * fragments rather than rows -- can be thousands of characters. Rendering it
+ * all inline pushed the result card and the save button far below the fold and
+ * left the user scrolling the whole page to get past it. A long document now
+ * shows a clamped preview that scrolls inside itself and expands on request.
+ */
+function DocumentTextBox({
+  onChange,
+  original,
+  text,
+}: {
+  onChange: (value: string) => void;
+  /** The text as scanned, so an edit can be undone. */
+  original: string;
+  text: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const trimmed = text.trim();
+  const edited = text !== original;
+  const isLong = trimmed.length > PREVIEW_CHARS;
+  const shown = !isLong || expanded ? trimmed : `${trimmed.slice(0, PREVIEW_CHARS).trimEnd()}...`;
+
+  // OCR is never exact, so the text is the user's to correct before it
+  // becomes a note -- the same as every field on a receipt or a timetable.
+  const header = (
+    <View style={localStyles.documentHeader}>
+      <Text style={localStyles.documentHeaderText}>
+        {edited ? "ข้อความที่แก้ไขแล้ว" : "ข้อความที่อ่านได้"}
+      </Text>
+      {edited ? (
+        <Pressable
+          accessibilityLabel="คืนค่าข้อความที่สแกน"
+          accessibilityRole="button"
+          onPress={() => onChange(original)}
+          style={localStyles.documentAction}
+        >
+          <MaterialIcon color="#5f875f" name="undo" size={15} />
+          <Text style={localStyles.documentActionText}>คืนค่าเดิม</Text>
+        </Pressable>
+      ) : null}
+      <Pressable
+        accessibilityLabel={editing ? "แก้ไขข้อความเสร็จแล้ว" : "แก้ไขข้อความที่สแกน"}
+        accessibilityRole="button"
+        onPress={() => setEditing((current) => !current)}
+        style={localStyles.documentAction}
+      >
+        <MaterialIcon color="#5f875f" name={editing ? "check" : "edit"} size={15} />
+        <Text style={localStyles.documentActionText}>{editing ? "เสร็จ" : "แก้ไข"}</Text>
+      </Pressable>
+    </View>
+  );
+
+  if (editing) {
+    return (
+      <View style={localStyles.documentTextBox}>
+        {header}
+        <TextInput
+          accessibilityLabel="ข้อความของเอกสาร"
+          autoFocus
+          multiline
+          onChangeText={onChange}
+          placeholder="พิมพ์ข้อความของเอกสาร"
+          placeholderTextColor="#9aa596"
+          scrollEnabled
+          style={[localStyles.documentText, localStyles.documentInput]}
+          textAlignVertical="top"
+          value={text}
+        />
+      </View>
+    );
+  }
+
+  if (!trimmed) {
+    return (
+      <View style={localStyles.documentTextBox}>
+        {header}
+        <Text onPress={() => setEditing(true)} style={localStyles.documentText}>
+          {edited ? "ยังไม่มีข้อความ แตะเพื่อพิมพ์" : "ไม่พบข้อความในภาพนี้ แตะเพื่อพิมพ์เอง"}
+        </Text>
+      </View>
+    );
+  }
+
+  return (
+    <View style={localStyles.documentTextBox}>
+      {header}
+      <ScrollView
+        nestedScrollEnabled
+        style={expanded ? localStyles.documentScrollExpanded : localStyles.documentScroll}
+      >
+        <Text
+          accessibilityHint="แตะเพื่อแก้ไขข้อความ"
+          onPress={() => setEditing(true)}
+          style={localStyles.documentText}
+        >
+          {shown}
+        </Text>
+      </ScrollView>
+      {isLong ? (
+        <Pressable
+          accessibilityLabel={expanded ? "ย่อข้อความที่สแกน" : "ดูข้อความที่สแกนทั้งหมด"}
+          accessibilityRole="button"
+          onPress={() => setExpanded((current) => !current)}
+          style={localStyles.documentToggle}
+        >
+          <MaterialIcon
+            color="#5f875f"
+            name={expanded ? "expand_less" : "expand_more"}
+            size={16}
+          />
+          <Text style={localStyles.documentToggleText}>
+            {expanded
+              ? "ย่อข้อความ"
+              : `ดูทั้งหมด (${trimmed.length.toLocaleString("th-TH")} ตัวอักษร)`}
+          </Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
+/** How much of a long scan to show before asking the user to expand. */
+const PREVIEW_CHARS = 320;
+
+/**
+ * The full OCR text, in a readable panel.
+ *
+ * This used to be a `showToast` call, which meant the raw text appeared in the
+ * error-toned toast -- pink, clamped to three lines and gone after four
+ * seconds. It is reference material, not a warning, so it gets a normal modal
+ * that scrolls and stays open until dismissed.
+ */
+function OcrTextModal({
+  onClose,
+  text,
+  visible,
+}: {
+  onClose: () => void;
+  text: string;
+  visible: boolean;
+}) {
+  const trimmed = text.trim();
+  return (
+    <Modal animationType="fade" onRequestClose={onClose} transparent visible={visible}>
+      <Pressable accessibilityLabel="ปิดข้อความ OCR" onPress={onClose} style={localStyles.ocrOverlay}>
+        <View onStartShouldSetResponder={() => true} style={localStyles.ocrCard}>
+          <View style={localStyles.ocrHeader}>
+            <View style={{ flex: 1 }}>
+              <Text style={localStyles.ocrTitle}>ข้อความที่ OCR อ่านได้</Text>
+              <Text style={localStyles.ocrSubtitle}>
+                {trimmed ? `${trimmed.length.toLocaleString("th-TH")} ตัวอักษร` : "ไม่พบข้อความในภาพนี้"}
+              </Text>
+            </View>
+            <Pressable accessibilityLabel="ปิด" onPress={onClose} style={localStyles.ocrClose}>
+              <MaterialIcon color={C.pine} name="close" size={22} />
+            </Pressable>
+          </View>
+          <ScrollView style={localStyles.ocrScroll}>
+            <Text selectable style={localStyles.ocrBody}>
+              {trimmed || "ไม่พบข้อความในภาพนี้"}
+            </Text>
+          </ScrollView>
+        </View>
+      </Pressable>
+    </Modal>
+  );
+}
+
+/**
+ * The days a class can fall on, in the order a Thai week is read.
+ *
+ * These are the exact strings `scan-save` matches when it turns a course into
+ * calendar entries, so picking from this list cannot produce a day the save
+ * step will reject -- which typing the day by hand very much could.
+ */
+const SCAN_WEEKDAYS = [
+  "จันทร์",
+  "อังคาร",
+  "พุธ",
+  "พฤหัสบดี",
+  "ศุกร์",
+  "เสาร์",
+  "อาทิตย์",
+] as const;
+
+/**
+ * The other spellings a scan can produce for each of those days.
+ *
+ * The grid parser writes Thai but the list parser writes "MON", and
+ * `scan-save` accepts both. Recognising only the Thai label here would have
+ * left a correctly scanned English timetable looking unset -- and, worse, the
+ * new save gate would have refused to save it.
+ */
+const WEEKDAY_ALIASES: Record<(typeof SCAN_WEEKDAYS)[number], string[]> = {
+  "จันทร์": ["จันทร์", "monday", "mon"],
+  "อังคาร": ["อังคาร", "tuesday", "tue"],
+  "พุธ": ["พุธ", "wednesday", "wed"],
+  "พฤหัสบดี": ["พฤหัสบดี", "พฤหัส", "thursday", "thu"],
+  "ศุกร์": ["ศุกร์", "friday", "fri"],
+  "เสาร์": ["เสาร์", "saturday", "sat"],
+  "อาทิตย์": ["อาทิตย์", "sunday", "sun"],
+};
+
+/** The listed day a scanned value means, or null when it means none of them. */
+function matchScanWeekday(value: string) {
+  const needle = value.trim().toLowerCase();
+  if (!needle) return null;
+  return SCAN_WEEKDAYS.find((weekday) =>
+    WEEKDAY_ALIASES[weekday].some((alias) => needle.includes(alias)),
+  ) ?? null;
+}
+
+/** Picks the day a scanned course falls on. */
+function DayPickerRow({
+  error,
+  onChange,
+  value,
+}: {
+  error?: string;
+  onChange: (value: string) => void;
+  value: string;
+}) {
+  const current = matchScanWeekday(value);
+  return (
+    <View style={localStyles.dayPicker}>
+      <Text style={[localStyles.dayPickerLabel, error && localStyles.dayPickerLabelError]}>
+        {error ? `วัน · ${error}` : "วัน"}
+      </Text>
+      <View style={localStyles.dayRow}>
+        {SCAN_WEEKDAYS.map((weekday) => {
+          const active = weekday === current;
+          return (
+            <Pressable
+              accessibilityLabel={`ตั้งวัน ${weekday}`}
+              accessibilityRole="button"
+              accessibilityState={{ selected: active }}
+              key={weekday}
+              onPress={() => onChange(weekday)}
+              style={[
+                localStyles.dayChip,
+                active && localStyles.dayChipActive,
+                !current && error ? localStyles.dayChipError : null,
+              ]}
+            >
+              <Text style={[localStyles.dayChipText, active && localStyles.dayChipTextActive]}>
+                {weekday}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+const DOCUMENT_TYPES = [
+  { icon: "receipt_long", label: "สลิป / ใบเสร็จ", value: "receipt" },
+  { icon: "calendar_month", label: "ตารางเรียน", value: "schedule" },
+  { icon: "description", label: "เอกสารทั่วไป", value: "document" },
+] as const;
+
+/**
+ * Lets the user overrule the detected document type.
+ *
+ * However good the classifier gets it will sometimes be wrong, and without
+ * this the user is stuck with whatever it decided -- a receipt read as a
+ * general document could not be filed as an expense at all.
+ */
+function DocumentTypePicker({
+  current,
+  onChange,
+}: {
+  current: OcrResult["scanType"];
+  onChange: (next: OcrResult["scanType"]) => void;
+}) {
+  return (
+    <View style={localStyles.typePicker}>
+      <Text style={localStyles.typePickerLabel}>เปลี่ยนประเภทเอกสาร</Text>
+      <View style={localStyles.typeRow}>
+        {DOCUMENT_TYPES.map((option) => {
+          const active = option.value === current;
+          return (
+            <Pressable
+              accessibilityLabel={`ตั้งเป็น ${option.label}`}
+              accessibilityRole="button"
+              accessibilityState={{ selected: active }}
+              key={option.value}
+              onPress={() => onChange(option.value)}
+              style={[localStyles.typeChip, active && localStyles.typeChipActive]}
+            >
+              <MaterialIcon color={active ? "#fff" : "#6d786c"} name={option.icon} size={15} />
+              <Text style={[localStyles.typeChipText, active && localStyles.typeChipTextActive]}>
+                {option.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+/**
+ * Picks the spending category for a scanned receipt.
+ *
+ * This was a free-text field, so the AI's guess could be corrected only by
+ * retyping it -- which produced spellings that grouped as separate categories
+ * in the spending charts. The list is the app's single shared one, so a
+ * scanned row and a manually entered one land in the same bucket.
+ */
+function CategoryPickerRow({
+  onChange,
+  value,
+}: {
+  onChange: (value: string) => void;
+  value: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const current = normalizeExpenseCategory(value);
+  return (
+    <View style={localStyles.categoryRow}>
+      <Pressable
+        accessibilityLabel={`เลือกหมวดหมู่ ปัจจุบัน ${current}`}
+        accessibilityRole="button"
+        onPress={() => setOpen((previous) => !previous)}
+        style={localStyles.categoryHeader}
+      >
+        <View style={localStyles.categoryIcon}>
+          <MaterialIcon color={C.sage} name={expenseCategoryIcon(current)} size={18} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={localStyles.categoryLabel}>หมวดหมู่</Text>
+          <Text style={localStyles.categoryValue}>{current}</Text>
+        </View>
+        <MaterialIcon color={C.muted} name={open ? "expand_less" : "expand_more"} size={20} />
+      </Pressable>
+      {open ? (
+        <View style={localStyles.categoryOptions}>
+          {EXPENSE_CATEGORIES.map((entry) => {
+            const active = entry.label === current;
+            return (
+              <Pressable
+                accessibilityLabel={`ตั้งหมวดหมู่ ${entry.label}`}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+                key={entry.label}
+                onPress={() => {
+                  onChange(entry.label);
+                  setOpen(false);
+                }}
+                style={[localStyles.categoryOption, active && localStyles.categoryOptionActive]}
+              >
+                <MaterialIcon color={active ? "#fff" : "#6d786c"} name={entry.icon} size={14} />
+                <Text style={[localStyles.categoryOptionText, active && localStyles.categoryOptionTextActive]}>
+                  {entry.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 const localStyles = StyleSheet.create({
+  reviewBanner: { alignItems: "flex-start", backgroundColor: "#fdf4e3", borderColor: "#ecd3a3", borderRadius: 12, borderWidth: 1, flexDirection: "row", gap: 7, marginTop: 8, padding: 9 },
+  reviewNote: { color: "#7a5a24", fontFamily: "Prompt_400Regular", fontSize: 10, lineHeight: 16, marginTop: 1 },
+  reviewTitle: { color: "#7a5a24", fontFamily: "Prompt_700Bold", fontSize: 10 },
+  courseDelete: { alignItems: "center", backgroundColor: "#fbeeed", borderRadius: 14, height: 28, justifyContent: "center", marginLeft: 6, width: 28 },
+  courseNumberProblem: { backgroundColor: "#e3a19a" },
+  dayChip: { backgroundColor: "#eef1eb", borderRadius: 99, paddingHorizontal: 10, paddingVertical: 7 },
+  dayChipActive: { backgroundColor: "#5f875f" },
+  dayChipError: { backgroundColor: "#fbeeed" },
+  dayChipText: { color: "#6d786c", fontFamily: "Prompt_700Bold", fontSize: 10 },
+  dayChipTextActive: { color: "#fff" },
+  dayPicker: { marginTop: 8 },
+  dayPickerLabel: { color: "#8b948a", fontFamily: "Prompt_600SemiBold", fontSize: 9, marginBottom: 6 },
+  dayPickerLabelError: { color: "#c1766f" },
+  dayRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  entryError: { color: "#c1766f", fontFamily: "Prompt_600SemiBold", fontSize: 9, marginTop: 4 },
+  categoryHeader: { alignItems: "center", flexDirection: "row", gap: 10, minHeight: 52 },
+  categoryIcon: { alignItems: "center", backgroundColor: "#eef3ea", borderRadius: 12, height: 36, justifyContent: "center", width: 36 },
+  categoryLabel: { color: "#8b948a", fontFamily: "Prompt_600SemiBold", fontSize: 9 },
+  categoryOption: { alignItems: "center", backgroundColor: "#f1f3ef", borderRadius: 99, flexDirection: "row", gap: 5, paddingHorizontal: 10, paddingVertical: 7 },
+  categoryOptionActive: { backgroundColor: "#5f875f" },
+  categoryOptionText: { color: "#6d786c", fontFamily: "Prompt_700Bold", fontSize: 10 },
+  categoryOptionTextActive: { color: "#fff" },
+  categoryOptions: { flexDirection: "row", flexWrap: "wrap", gap: 6, paddingBottom: 10 },
+  categoryRow: { borderBottomColor: "rgba(44,52,27,.07)", borderBottomWidth: 1 },
+  categoryValue: { color: "#2f3d2c", fontFamily: "Prompt_700Bold", fontSize: 13, marginTop: 1 },
+  ocrBody: { color: "#41513f", fontFamily: "Prompt_400Regular", fontSize: 12, lineHeight: 20 },
+  ocrCard: { backgroundColor: "#fbfcf7", borderRadius: 24, maxHeight: "82%", maxWidth: 520, padding: 18, width: "94%" },
+  ocrClose: { alignItems: "center", backgroundColor: "#eef2ea", borderRadius: 18, height: 36, justifyContent: "center", width: 36 },
+  ocrHeader: { alignItems: "center", flexDirection: "row", gap: 10, marginBottom: 10 },
+  ocrOverlay: { alignItems: "center", backgroundColor: "rgba(32, 40, 31, .58)", flex: 1, justifyContent: "center", padding: 16 },
+  ocrScroll: { backgroundColor: "#f5f7f2", borderColor: "#e1e7dd", borderRadius: 14, borderWidth: 1, maxHeight: 420, padding: 12 },
+  ocrSubtitle: { color: "#8b948a", fontFamily: "Prompt_400Regular", fontSize: 10, marginTop: 2 },
+  ocrTitle: { color: "#2f3d2c", fontFamily: "Prompt_800ExtraBold", fontSize: 16 },
+  typeChip: { alignItems: "center", backgroundColor: "#eef1eb", borderRadius: 99, flexDirection: "row", gap: 5, paddingHorizontal: 11, paddingVertical: 8 },
+  typeChipActive: { backgroundColor: "#5f875f" },
+  typeChipText: { color: "#6d786c", fontFamily: "Prompt_700Bold", fontSize: 10 },
+  typeChipTextActive: { color: "#fff" },
+  typePicker: { borderTopColor: "#e6ebe2", borderTopWidth: 1, marginTop: 12, paddingTop: 12 },
+  typePickerLabel: { color: "#7c857b", fontFamily: "Prompt_700Bold", fontSize: 10, marginBottom: 8 },
+  typeRow: { flexDirection: "row", flexWrap: "wrap", gap: 7 },
+  documentText: {
+    color: "#41513f",
+    fontFamily: "Prompt_400Regular",
+    fontSize: 12,
+    lineHeight: 19,
+  },
+  documentAction: { alignItems: "center", flexDirection: "row", gap: 3, paddingHorizontal: 6, paddingVertical: 4 },
+  documentActionText: { color: "#5f875f", fontFamily: "Prompt_700Bold", fontSize: 10 },
+  documentHeader: { alignItems: "center", flexDirection: "row", gap: 4, marginBottom: 6 },
+  documentHeaderText: { color: "#7b8a78", flex: 1, fontFamily: "Prompt_700Bold", fontSize: 10 },
+  documentInput: {
+    backgroundColor: "#ffffff",
+    borderColor: "#cfdccb",
+    borderRadius: 10,
+    borderWidth: 1,
+    maxHeight: 340,
+    minHeight: 150,
+    padding: 10,
+  },
+  documentScroll: { maxHeight: 150 },
+  documentScrollExpanded: { maxHeight: 340 },
+  documentTextBox: {
+    backgroundColor: "#f5f7f2",
+    borderColor: "#e1e7dd",
+    borderRadius: 14,
+    borderWidth: 1,
+    marginTop: 10,
+    padding: 12,
+  },
+  documentToggle: {
+    alignItems: "center",
+    borderTopColor: "#e1e7dd",
+    borderTopWidth: 1,
+    flexDirection: "row",
+    gap: 5,
+    justifyContent: "center",
+    marginTop: 8,
+    paddingTop: 8,
+  },
+  documentToggleText: {
+    color: "#5f875f",
+    fontFamily: "Prompt_700Bold",
+    fontSize: 10,
+  },
   academicLabel: { color: C.muted, fontFamily: F.r, fontSize: 10 },
   academicRow: {
     alignItems: "center",

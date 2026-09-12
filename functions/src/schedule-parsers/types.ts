@@ -10,6 +10,13 @@ export type StandardScheduleEntry = {
   midtermExam?: string | null;
   parserSource?: string;
   raw?: string;
+  /**
+   * Fields the user should look at before saving: a model reading that the
+   * OCR text does not bear out, or one that disagrees with what the grid read.
+   */
+  reviewFields?: string[];
+  /** Why each of those fields was flagged, in Thai, for the review card. */
+  reviewNotes?: string[];
   room: string | null;
   section?: string | null;
   startDate?: string | null;

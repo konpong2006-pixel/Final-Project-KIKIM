@@ -1,9 +1,11 @@
 /* eslint-disable react-hooks/set-state-in-effect */
-import NativeDateTimePicker from '@expo/ui/community/datetime-picker';
+import ConfirmDialog from '@/components/confirm-dialog';
+import {thailandDateKey, thailandTimeKey, thailandWallClockToDate} from '@/lib/thailand-time';
+import NativeDateTimePicker from '@/components/date-time-picker';
+import {showToast} from '@/components/app-toast';
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Platform,
   Pressable,
   StyleSheet,
@@ -203,12 +205,17 @@ function EditableDraftCard({
     }
     const current = new Date(draft.occurredAt);
     const base = Number.isNaN(current.getTime()) ? new Date() : current;
-    if (picker === 'date') {
-      base.setFullYear(selected.getFullYear(), selected.getMonth(), selected.getDate());
-    } else {
-      base.setHours(selected.getHours(), selected.getMinutes(), 0, 0);
-    }
-    update('occurredAt', base.toISOString());
+    // The picker reports a `Date` built from the device's clock, and this row
+    // is rendered with `timeZone: 'Asia/Bangkok'` a few lines below, so the
+    // digits the user chose are read as Bangkok wall clock and combined with
+    // whichever half of `occurredAt` was not being edited. Writing them back
+    // with `setFullYear`/`setHours` stored the device's wall clock instead,
+    // which the row then redrew shifted by the offset.
+    const pad = (value: number) => String(value).padStart(2, '0');
+    const next = picker === 'date'
+      ? thailandWallClockToDate(`${selected.getFullYear()}-${pad(selected.getMonth() + 1)}-${pad(selected.getDate())}`, thailandTimeKey(base))
+      : thailandWallClockToDate(thailandDateKey(base), `${pad(selected.getHours())}:${pad(selected.getMinutes())}`);
+    update('occurredAt', (Number.isNaN(next.getTime()) ? base : next).toISOString());
     setPicker(null);
   };
 
@@ -273,7 +280,7 @@ function EditableDraftCard({
         disabled={disabled}
         onPress={() => {
           if (!draft.amount || !draft.merchant.trim()) {
-            Alert.alert('ตรวจข้อมูลก่อน', 'กรุณาระบุจำนวนเงินและชื่อผู้โอน ร้านค้า หรือที่มาของเงิน');
+            showToast('ตรวจข้อมูลก่อน', 'กรุณาระบุจำนวนเงินและชื่อผู้โอน ร้านค้า หรือที่มาของเงิน');
             return;
           }
           onConfirm({...draft, needsReview: false}).catch(() => undefined);
@@ -288,20 +295,23 @@ function EditableDraftCard({
   </Card>;
 }
 
-function duplicateAlert(
+type DuplicatePrompt = {rerun: (action: 'skip' | 'update_note') => Promise<void>};
+
+/**
+ * Decides whether the save hit a duplicate and, if so, hands the two ways
+ * forward to the caller's dialog state.
+ *
+ * This was an `Alert.alert` with three buttons, which is an empty function on
+ * react-native-web: the save looked like it had succeeded while the duplicate
+ * was silently left unresolved.
+ */
+function duplicatePrompt(
   result: ConfirmLineTransactionResult,
   rerun: (action: 'skip' | 'update_note') => Promise<void>,
+  open: (prompt: DuplicatePrompt | null) => void,
 ) {
   if (!result.duplicate || result.skipped || result.updatedNote) return false;
-  Alert.alert(
-    'พบรายการนี้แล้ว',
-    'ลายนิ้วมือข้อความตรงกับรายการเดิม เลือกข้าม หรืออัปเดตโน้ตของรายการเดิม',
-    [
-      {style: 'cancel', text: 'กลับไปตรวจ'},
-      {onPress: () => rerun('skip').catch(() => undefined), text: 'ข้ามรายการ'},
-      {onPress: () => rerun('update_note').catch(() => undefined), text: 'อัปเดตโน้ต'},
-    ],
-  );
+  open({rerun});
   return true;
 }
 
@@ -311,13 +321,14 @@ function ManualImport({onNavigate, uid}: {onNavigate: UserNavigate; uid: string}
   const [source, setSource] = useState<TransactionSource>('line_paste');
   const [analyzing, setAnalyzing] = useState(false);
   const [saving, setSaving] = useState<string | null>(null);
+  const [duplicate, setDuplicate] = useState<DuplicatePrompt | null>(null);
   const [consent, setConsent] = useState<LineConsentProfile>({});
   const [nativeState, setNativeState] = useState(EMPTY_NATIVE_STATE);
   const autoReady = Platform.OS === 'android' && consent.consentTier === 'line_auto_sync' && nativeState.permissionGranted;
 
   const analyze = useCallback(async (text = rawText, nextSource: TransactionSource = source) => {
     if (!text.trim()) {
-      Alert.alert('ยังไม่มีข้อความ', 'ช่องนี้เป็นทางเลือกสำรอง ใช้เมื่ออยากตรวจข้อความเองหรือแชร์จาก LINE เข้ามา');
+      showToast('ยังไม่มีข้อความ', 'ช่องนี้เป็นทางเลือกสำรอง ใช้เมื่ออยากตรวจข้อความเองหรือแชร์จาก LINE เข้ามา');
       return;
     }
     setAnalyzing(true);
@@ -326,10 +337,10 @@ function ManualImport({onNavigate, uid}: {onNavigate: UserNavigate; uid: string}
       setSource(nextSource);
       setDrafts(results);
       if (!results.length) {
-        Alert.alert('ยังอ่านรายการไม่ได้', 'ไม่พบจำนวนเงินที่มีคำว่า บาท, THB หรือสัญลักษณ์ ฿ กรุณาตรวจข้อความแล้วลองใหม่');
+        showToast('ยังอ่านรายการไม่ได้', 'ไม่พบจำนวนเงินที่มีคำว่า บาท, THB หรือสัญลักษณ์ ฿ กรุณาตรวจข้อความแล้วลองใหม่');
       }
     } catch {
-      Alert.alert('วิเคราะห์ไม่สำเร็จ', 'กรุณาตรวจอินเทอร์เน็ตแล้วลองใหม่ ระบบจะไม่บันทึกข้อมูลอัตโนมัติ');
+      showToast('วิเคราะห์ไม่สำเร็จ', 'กรุณาตรวจอินเทอร์เน็ตแล้วลองใหม่ ระบบจะไม่บันทึกข้อมูลอัตโนมัติ');
     } finally {
       setAnalyzing(false);
     }
@@ -364,11 +375,11 @@ function ManualImport({onNavigate, uid}: {onNavigate: UserNavigate; uid: string}
     setSaving(draft.fingerprint);
     try {
       const result = await confirmLineTransaction(draft, source, {duplicateAction});
-      if (duplicateAlert(result, (action) => confirm(draft, action))) return;
+      if (duplicatePrompt(result, (action) => confirm(draft, action), setDuplicate)) return;
       setDrafts((current) => current.filter((item) => item.fingerprint !== draft.fingerprint));
-      Alert.alert(result.updatedNote ? 'อัปเดตโน้ตแล้ว' : result.skipped ? 'ข้ามรายการแล้ว' : 'บันทึกแล้ว', 'ข้อความดิบไม่ได้ถูกเก็บไว้ในรายการการเงิน');
+      showToast(result.updatedNote ? 'อัปเดตโน้ตแล้ว' : result.skipped ? 'ข้ามรายการแล้ว' : 'บันทึกแล้ว', 'ข้อความดิบไม่ได้ถูกเก็บไว้ในรายการการเงิน', 'success');
     } catch (error) {
-      Alert.alert('บันทึกไม่สำเร็จ', error instanceof Error ? error.message : 'กรุณาลองใหม่อีกครั้ง');
+      showToast('บันทึกไม่สำเร็จ', error instanceof Error ? error.message : 'กรุณาลองใหม่อีกครั้ง');
     } finally {
       setSaving(null);
     }
@@ -414,6 +425,18 @@ function ManualImport({onNavigate, uid}: {onNavigate: UserNavigate; uid: string}
       <Pressable onPress={() => onNavigate('smartlife_line_pending')} style={styles.quickLink}><MaterialIcon color={C.violet} name="fact_check" size={19} /><Text style={styles.quickLinkText}>รายการรอตรวจ</Text></Pressable>
       <Pressable onPress={() => onNavigate('smartlife_line_settings')} style={styles.quickLink}><MaterialIcon color={C.violet} name="settings" size={19} /><Text style={styles.quickLinkText}>ตั้งค่าการเชื่อมต่อ</Text></Pressable>
     </View>
+    <ConfirmDialog
+      confirmLabel="ข้ามรายการ"
+      extraAction={{icon: 'edit_note', label: 'อัปเดตโน้ต', onPress: () => { const prompt = duplicate; setDuplicate(null); void prompt?.rerun('update_note').catch(() => undefined); }}}
+      icon="content_copy"
+      cancelLabel="กลับไปตรวจ"
+      message="ลายนิ้วมือข้อความตรงกับรายการเดิม เลือกข้าม หรืออัปเดตโน้ตของรายการเดิม"
+      onCancel={() => setDuplicate(null)}
+      onConfirm={() => { const prompt = duplicate; setDuplicate(null); void prompt?.rerun('skip').catch(() => undefined); }}
+      title="พบรายการนี้แล้ว"
+      tone="neutral"
+      visible={Boolean(duplicate)}
+    />
     {drafts.map((draft) => <EditableDraftCard actionLabel="ยืนยันและบันทึก" disabled={saving === draft.fingerprint} draft={draft} key={draft.fingerprint} onConfirm={confirm} />)}
   </UserShell>;
 }
@@ -507,25 +530,35 @@ function PendingReview({onNavigate, uid}: {onNavigate: UserNavigate; uid: string
         draftId: item.id,
         duplicateAction,
       });
-      if (duplicateAlert(result, (action) => confirm(item, draft, action))) return;
-      Alert.alert(result.updatedNote ? 'อัปเดตโน้ตแล้ว' : result.skipped ? 'ข้ามรายการแล้ว' : 'บันทึกแล้ว', 'ข้อความดิบถูกลบทันทีหลังยืนยัน');
+      if (duplicatePrompt(result, (action) => confirm(item, draft, action), setDuplicate)) return;
+      showToast(result.updatedNote ? 'อัปเดตโน้ตแล้ว' : result.skipped ? 'ข้ามรายการแล้ว' : 'บันทึกแล้ว', 'ข้อความดิบถูกลบทันทีหลังยืนยัน', 'success');
     } catch (error) {
-      Alert.alert('บันทึกไม่สำเร็จ', error instanceof Error ? error.message : 'กรุณาลองใหม่อีกครั้ง');
+      showToast('บันทึกไม่สำเร็จ', error instanceof Error ? error.message : 'กรุณาลองใหม่อีกครั้ง');
     } finally {
       setSaving(null);
     }
   };
 
-  const reject = (item: WithId<PendingLineReview>) => Alert.alert(
-    'ลบรายการรอตรวจ?',
-    'ข้อความดิบของรายการนี้จะถูกลบและไม่บันทึกเป็นธุรกรรม',
-    [
-      {style: 'cancel', text: 'ยกเลิก'},
-      {onPress: () => rejectLinePendingReview(item.id).catch(() => Alert.alert('ลบไม่สำเร็จ', 'กรุณาลองใหม่')), style: 'destructive', text: 'ลบทิ้ง'},
-    ],
-  );
+  // Asked with a Modal, not `Alert.alert`, which is an empty function on
+  // react-native-web and so never showed the prompt or ran the delete there.
+  const [rejecting, setRejecting] = useState<WithId<PendingLineReview> | null>(null);
+  const [duplicate, setDuplicate] = useState<DuplicatePrompt | null>(null);
+  const reject = (item: WithId<PendingLineReview>) => setRejecting(item);
+  const confirmReject = () => {
+    const item = rejecting;
+    setRejecting(null);
+    if (item) rejectLinePendingReview(item.id).catch(() => showToast('ลบไม่สำเร็จ', 'กรุณาลองใหม่'));
+  };
 
   return <UserShell active="smartlife_finance_day" onNavigate={onNavigate}>
+    <ConfirmDialog
+      confirmLabel="ลบทิ้ง"
+      message="ข้อความดิบของรายการนี้จะถูกลบและไม่บันทึกเป็นธุรกรรม"
+      onCancel={() => setRejecting(null)}
+      onConfirm={confirmReject}
+      title="ลบรายการรอตรวจ?"
+      visible={Boolean(rejecting)}
+    />
     <Header onBack={() => onNavigate('smartlife_line_import')} subtitle="เฉพาะรายการที่ระบบยังไม่มั่นใจเท่านั้น รายการมั่นใจสูงจะลงการเงินจริงอัตโนมัติ" title="รายการที่ต้องตรวจ" />
     <Card colors={['#eef1fa', '#f7f8fd']} style={styles.privacyCard}>
       <View style={styles.infoRow}><MaterialIcon color={C.violet} name="verified_user" size={22} /><View style={{flex: 1}}><Text style={styles.infoTitle}>เก็บชั่วคราวไม่เกิน 7 วัน</Text><Text style={styles.infoText}>ยืนยันแล้วข้อความดิบจะถูกลบทันที หากไม่ทำอะไรระบบจะลบอัตโนมัติเมื่อครบกำหนด</Text></View></View>
@@ -541,6 +574,18 @@ function PendingReview({onNavigate, uid}: {onNavigate: UserNavigate; uid: string
       </Pressable>
     </Card> : null}
     {!loading && !loadError && !items.length ? <Card style={styles.emptyCard}><MaterialIcon color={C.sage} name="task_alt" size={34} /><Text style={styles.emptyTitle}>ไม่มีรายการที่ต้องตรวจ</Text><Text style={styles.infoText}>ถ้าระบบมั่นใจสูง รายการจาก LINE จะถูกบันทึกเข้าหน้าการเงินทันที</Text></Card> : null}
+    <ConfirmDialog
+      confirmLabel="ข้ามรายการ"
+      extraAction={{icon: 'edit_note', label: 'อัปเดตโน้ต', onPress: () => { const prompt = duplicate; setDuplicate(null); void prompt?.rerun('update_note').catch(() => undefined); }}}
+      icon="content_copy"
+      cancelLabel="กลับไปตรวจ"
+      message="ลายนิ้วมือข้อความตรงกับรายการเดิม เลือกข้าม หรืออัปเดตโน้ตของรายการเดิม"
+      onCancel={() => setDuplicate(null)}
+      onConfirm={() => { const prompt = duplicate; setDuplicate(null); void prompt?.rerun('skip').catch(() => undefined); }}
+      title="พบรายการนี้แล้ว"
+      tone="neutral"
+      visible={Boolean(duplicate)}
+    />
     {items.map((item) => <EditableDraftCard
       actionLabel="ยืนยันลงการเงิน"
       disabled={saving === item.id}
@@ -557,6 +602,7 @@ function ListenerSettings({onNavigate, uid}: {onNavigate: UserNavigate; uid: str
   const [nativeState, setNativeState] = useState(EMPTY_NATIVE_STATE);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
+  const [tierPrompt, setTierPrompt] = useState<'disable' | 'enable' | null>(null);
   const isAuto = consent.consentTier === 'line_auto_sync';
 
   const refresh = useCallback(async () => {
@@ -580,35 +626,19 @@ function ListenerSettings({onNavigate, uid}: {onNavigate: UserNavigate; uid: str
       if (!result.backendMissing) {
         await refresh();
       } else {
-        Alert.alert(
-          'เปิดสิทธิ์ในเครื่องแล้ว',
-          'MuMu อนุญาตให้ SmartLife อ่านแจ้งเตือน LINE แล้ว แต่ Firebase Functions ของระบบ LINE ยังไม่ได้ deploy จึงยังสร้างรายการรอตรวจบน Firebase ไม่ได้',
-        );
+        showToast('เปิดสิทธิ์ในเครื่องแล้ว', 'MuMu อนุญาตให้ SmartLife อ่านแจ้งเตือน LINE แล้ว แต่ Firebase Functions ของระบบ LINE ยังไม่ได้ deploy จึงยังสร้างรายการรอตรวจบน Firebase ไม่ได้', 'success');
       }
     } catch (error) {
-      Alert.alert('เปลี่ยนการตั้งค่าไม่สำเร็จ', error instanceof Error ? error.message : 'กรุณาลองใหม่');
+      showToast('เปลี่ยนการตั้งค่าไม่สำเร็จ', error instanceof Error ? error.message : 'กรุณาลองใหม่');
     } finally {
       setWorking(false);
     }
   };
 
-  const enableAuto = () => Alert.alert(
-    'อนุญาตให้อ่านแจ้งเตือน LINE?',
-    'SmartLife จะตรวจเฉพาะแจ้งเตือนจากแอป LINE ที่มีจำนวนเงิน ไม่อ่านแชตย้อนหลัง ไม่อ่านข้อความจากแอปอื่น และไม่บันทึกเป็นธุรกรรมจนกว่าคุณจะยืนยัน',
-    [
-      {style: 'cancel', text: 'ยังไม่เปิด'},
-      {onPress: () => changeTier('line_auto_sync').then(() => openLineNotificationAccessSettings()), text: 'ยินยอมและไปตั้งค่า'},
-    ],
-  );
-
-  const disableAuto = () => Alert.alert(
-    'ปิดอ่านแจ้งเตือนอัตโนมัติ?',
-    'ระบบจะหยุดรับรายการใหม่และล้างคิวที่ยังอยู่ในเครื่อง ส่วนร่างใน Firebase จะยังให้ตรวจได้จนหมดอายุ 7 วัน',
-    [
-      {style: 'cancel', text: 'ยกเลิก'},
-      {onPress: () => changeTier('manual_only'), style: 'destructive', text: 'ปิดการทำงาน'},
-    ],
-  );
+  // Both consent gates were `Alert.alert`, so on web neither prompt appeared
+  // and neither tier change could be reached.
+  const enableAuto = () => setTierPrompt('enable');
+  const disableAuto = () => setTierPrompt('disable');
 
   const status = useMemo(() => {
     if (Platform.OS !== 'android') return {label: 'โหมดอัตโนมัติรองรับ Android เท่านั้น', tone: C.muted};
@@ -649,6 +679,26 @@ function ListenerSettings({onNavigate, uid}: {onNavigate: UserNavigate; uid: str
       </Card>
       <Pressable onPress={() => onNavigate('smartlife_line_import')} style={styles.analyzeButton}><MaterialIcon color="#fff" name="add_card" size={20} /><Text style={styles.analyzeText}>ไปหน้านำเข้ารายการ</Text></Pressable>
     </>}
+    <ConfirmDialog
+      cancelLabel="ยังไม่เปิด"
+      confirmLabel="ยินยอมและไปตั้งค่า"
+      icon="notifications_active"
+      message="SmartLife จะตรวจเฉพาะแจ้งเตือนจากแอป LINE ที่มีจำนวนเงิน ไม่อ่านแชตย้อนหลัง ไม่อ่านข้อความจากแอปอื่น และไม่บันทึกเป็นธุรกรรมจนกว่าคุณจะยืนยัน"
+      onCancel={() => setTierPrompt(null)}
+      onConfirm={() => { setTierPrompt(null); void changeTier('line_auto_sync').then(() => openLineNotificationAccessSettings()); }}
+      title="อนุญาตให้อ่านแจ้งเตือน LINE?"
+      tone="neutral"
+      visible={tierPrompt === 'enable'}
+    />
+    <ConfirmDialog
+      confirmLabel="ปิดการทำงาน"
+      icon="notifications_off"
+      message="ระบบจะหยุดรับรายการใหม่และล้างคิวที่ยังอยู่ในเครื่อง ส่วนร่างใน Firebase จะยังให้ตรวจได้จนหมดอายุ 7 วัน"
+      onCancel={() => setTierPrompt(null)}
+      onConfirm={() => { setTierPrompt(null); void changeTier('manual_only'); }}
+      title="ปิดอ่านแจ้งเตือนอัตโนมัติ?"
+      visible={tierPrompt === 'disable'}
+    />
   </UserShell>;
 }
 

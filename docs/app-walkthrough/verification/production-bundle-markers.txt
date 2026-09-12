@@ -1,0 +1,10 @@
+Checked https://smartlife-budget.web.app/ at 2026-08-27T10:56:01.009Z
+Bundles: https://smartlife-budget.web.app/_expo/static/js/web/entry-3d1dae0ce9b1fb4bcb0cd8f42fbd6d8c.js
+
+PRESENT  sleep card subtitle
+PRESENT  เข้านอน / ตื่นนอน buttons
+PRESENT  baseline editor
+PRESENT  risk meter aria-label
+PRESENT  forgotten-wake prompt
+PRESENT  logged-vs-baseline copy
+PRESENT  long-sleep lower weight

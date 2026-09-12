@@ -14,6 +14,7 @@ import {
   calculateSchedulingPatterns as calculatePatterns,
   DEFAULT_ADAPTIVE_PREFERENCES,
   findAdaptiveTimeSlots,
+  overlappingScheduleItems,
   parseClockMinutes,
   validateCandidateSlot,
   validateMovableScheduleItem,
@@ -36,8 +37,22 @@ import {validateGeminiNaturalLanguageIntent, ValidatedNaturalLanguageIntent} fro
 const MINUTE_MS = 60_000;
 const DAY_MS = 24 * 60 * MINUTE_MS;
 const PENDING_SUGGESTION_TTL_MS = 7 * DAY_MS;
+/** How far back the outcome sweep looks for slots that quietly went by. */
+const OUTCOME_SWEEP_WINDOW_MS = 3 * DAY_MS;
+/** A slot is not "skipped" the second it ends; the user may still be finishing. */
+const OUTCOME_SWEEP_GRACE_MS = 30 * MINUTE_MS;
 const SUGGESTION_MINIMUM_LEAD_MS = 10 * MINUTE_MS;
 const GEMINI_EXPLANATION_TIMEOUT_MS = 4_500;
+/** Parsing runs before anything is shown, so it may think a little longer. */
+const GEMINI_PARSE_TIMEOUT_MS = 9_000;
+/**
+ * The same ordered candidates the assistant, receipt and schedule parsers use.
+ *
+ * A single hardcoded model is how this file quietly stopped reaching Gemini at
+ * all: the request 404s and the deterministic fallback answers instead, with
+ * nothing in the logs to say so.
+ */
+const GEMINI_MODEL_CANDIDATES = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-2.5-flash"];
 
 type AdaptiveFactoryOptions = {
   db: Firestore;
@@ -52,6 +67,7 @@ type ActivityRecord = {
   durationMinutes: number;
   endMs: number;
   estimatedDurationMinutes: number;
+  fixedLocalDate: string | null;
   googleEventId: string;
   id: string;
   isFlexible: boolean;
@@ -68,9 +84,49 @@ type ActivityRecord = {
 type NaturalLanguageIntent = ValidatedNaturalLanguageIntent;
 
 type GeminiInteractionResponse = {
+  error?: {message?: string};
   outputs?: {text?: string}[];
   steps?: {content?: {text?: string; type?: string}[]; type?: string}[];
 };
+
+/**
+ * One Gemini interactions call, retried down the model list on a 404.
+ *
+ * Failures are logged with the model and status only. The key never leaves the
+ * request headers, and the user's message is not logged either.
+ */
+async function geminiInteraction(apiKey: string, body: Record<string, unknown>, timeoutMs: number, label: string) {
+  const models = [...new Set([
+    process.env.GEMINI_ASSISTANT_MODEL,
+    ...GEMINI_MODEL_CANDIDATES,
+  ].filter((value): value is string => Boolean(value)))];
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    for (const [index, model] of models.entries()) {
+      const response = await fetch("https://generativelanguage.googleapis.com/v1/interactions", {
+        body: JSON.stringify({...body, model}),
+        headers: {"Content-Type": "application/json", "x-goog-api-key": apiKey},
+        method: "POST",
+        signal: controller.signal,
+      });
+      const payload = await response.json() as GeminiInteractionResponse;
+      if (response.ok) return {model, ok: true as const, payload};
+      if (response.status !== 404 || index === models.length - 1) {
+        console.error(`${label}: Gemini request failed.`, {
+          detail: text(payload.error?.message, 240),
+          model,
+          status: response.status,
+        });
+        return {model, ok: false as const, payload};
+      }
+      console.warn(`${label}: Gemini model unavailable, trying the next candidate.`, {model, status: response.status});
+    }
+    return {model: "", ok: false as const, payload: {} as GeminiInteractionResponse};
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 function interactionText(response: GeminiInteractionResponse) {
   const stepText = response.steps
@@ -142,14 +198,28 @@ function category(value: unknown): AdaptiveActivityCategory {
 function adaptiveTitleFromMessage(value: string) {
   return value
     .trim()
-    .replace(/^(?:ช่วย|อยาก|ขอ|please)?\s*(?:ให้)?\s*(?:หาเวลา|จัดเวลา|วางแผน|ลงตาราง|เพิ่ม|สร้าง|บันทึก)?\s*/i, "")
+    // The filler is tied to the verb: "จัดให้ที" is all preamble, but a bare
+    // leading "ที" is far more likely to be the start of a real word.
+    .replace(/^(?:ช่วย|อยาก|ขอ|please)?\s*(?:ให้)?\s*(?:(?:หาเวลา|จัดเวลา|จัดตาราง|จัดให้|วางแผน|ลงตาราง|เพิ่ม|สร้าง|บันทึก)(?:\s*(?:ที|หน่อย|ด้วย))?)?\s*/i, "")
     .replace(/[๐-๙\d]+(?:\.[๐-๙\d]+)?\s*(?:ชั่วโมง|ชม\.?|hours?|นาที|minutes?)(?:\s*(?:ครึ่ง|and a half))?(?=\s|$)/gi, " ")
     .replace(/(?:ก่อน|ภายใน|ไม่เกิน)\s*(?:วัน|วันที่|พรุ่งนี้|มะรืน|สัปดาห์|อาทิตย์).*$/i, " ")
+    // Written-out dates belong to the schedule, never to the activity name.
+    .replace(/[๐-๙\d]{4}-[๐-๙\d]{1,2}-[๐-๙\d]{1,2}/g, " ")
+    .replace(new RegExp(`(?:วันที่|วัน|on)?\\s*[๐-๙\\d]{1,2}\\s*(?:st|nd|rd|th)?\\s*(?:เดือน\\s*)?(?:${MONTH_NAME_SOURCE})(?:\\s*(?:ปี|พ\\.?ศ\\.?|ค\\.?ศ\\.?)\\s*[๐-๙\\d]{2,4}|\\s*[๐-๙\\d]{4})?`, "gi"), " ")
+    // The leading "on" goes with the date it introduces, or "buy manga on Sep 1"
+    // keeps a dangling preposition once the date is taken out.
+    .replace(new RegExp(`(?:\\bon\\s+)?(?:${MONTH_NAME_SOURCE})\\s*[๐-๙\\d]{1,2}\\s*(?:st|nd|rd|th)?,?(?:\\s*[๐-๙\\d]{4})?`, "gi"), " ")
+    .replace(/(?:วันที่\s*)?[๐-๙\d]{1,2}\s*\/\s*[๐-๙\d]{1,2}(?:\s*\/\s*[๐-๙\d]{2,4})?/g, " ")
+    .replace(/วันที่\s*[๐-๙\d]{1,2}/g, " ")
     .replace(/(?:วัน)?(?:จันทร์|อังคาร|พุธ|พฤหัส(?:บดี)?|ศุกร์|เสาร์|อาทิตย์|monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:นี้|หน้า)?/gi, " ")
+    .replace(/(?:(?:วัน)?มะรืน(?:นี้)?|พรุ่งนี้|วันนี้|day\s*after\s*tomorrow|tomorrow|today|tonight|this\s+(?:morning|afternoon|evening|noon|night))(?:\s*(?:ตอน|ช่วง)?\s*(?:เช้า|สาย|เที่ยง|บ่าย|เย็น|ค่ำ|คืน|ดึก))?/gi, " ")
+    .replace(/(?:ตอน|ช่วง|ช่อง)?\s*(?:เช้า|สาย|เที่ยง|บ่าย|เย็น|ค่ำ|คืน|ดึก)นี้/gi, " ")
     .replace(/^\s*(?:ช่วย|อยาก|จะ|ขอ|please)?\s*(?:ให้)?\s*(?:หาเวลา|จัดเวลา|วางแผน|ลงตาราง|เพิ่ม|สร้าง|บันทึก)?\s*/i, "")
     .replace(/(?:ตอน|ช่วง|ช่อง)\s*(?:เช้า|สาย|เที่ยง|บ่าย|เย็น|ค่ำ|กลางคืน|ดึก).*$/i, " ")
     .replace(/(?:หลัง|ตั้งแต่|ไม่ก่อน|ก่อน|ไม่เกิน|ไม่หลัง|เวลา|ตอน)\s*(?:เวลา)?\s*(?:ตี|บ่าย|เที่ยง)?\s*(?:[๐-๙\d]{1,2}|หนึ่ง|สอง|สาม|สี่|ห้า|หก|เจ็ด|แปด|เก้า|สิบ|สิบเอ็ด|สิบสอง)(?:[:.][๐-๙\d]{2})?\s*(?:โมงเช้า|โมงเย็น|โมง|ทุ่ม|นาฬิกา|น\.|am|pm)?/gi, " ")
-    .replace(/(?:ให้หน่อย|หน่อย|ที|นะ|ครับ|ค่ะ|คับ)\s*$/i, "")
+    // Politeness stacks up in real messages ("จัดให้ที", "ให้หน่อยนะครับ"), so
+    // one pass over a single word is not enough to keep it out of the title.
+    .replace(/(?:\s*(?:ให้หน่อย|ให้ที|ให้ด้วย|จัดให้|ช่วยด้วย|หน่อย|ด้วย|ที|นะ|ครับ|ค่ะ|คับ|จ้า))+\s*$/i, "")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 160);
@@ -189,8 +259,154 @@ function isExclusiveAfterClock(message: string) {
   return /(?:หลัง|after)\s*(?:เวลา)?\s*(?:ตี|บ่าย|เที่ยง)?\s*(?:\d{1,2}|หนึ่ง|สอง|สาม|สี่|ห้า|หก|เจ็ด|แปด|เก้า|สิบ|สิบเอ็ด|สิบสอง)/i.test(normalized);
 }
 
+/**
+ * Day words that name a calendar day relative to today instead of by weekday.
+ *
+ * "บ่ายนี้", "เย็นนี้" and the rest name a part of *today*, so they resolve to
+ * the same day as a bare "วันนี้"; the part of day is handled separately as a
+ * preferred period. Longer offsets are listed first because "มะรืนนี้" also
+ * ends in "นี้" and must not be mistaken for one of the today forms.
+ */
+const RELATIVE_DAY_PATTERNS: {offset: number; pattern: RegExp}[] = [
+  {offset: 2, pattern: /(?:วัน)?มะรืน(?:นี้)?|day\s*after\s*tomorrow/i},
+  {offset: 1, pattern: /พรุ่งนี้|tomorrow/i},
+  {offset: 0, pattern: /วันนี้|today|tonight|this\s+(?:morning|afternoon|evening|noon|night)|(?:เช้า|สาย|เที่ยง|บ่าย|เย็น|ค่ำ|ดึก)นี้|(?<!เที่ยง)คืนนี้/i},
+];
+
+/**
+ * The hour half of the same "this <part of day>" phrases.
+ *
+ * Resolving only their date left "อ่านหนังสือคืนนี้" landing at six in the
+ * morning: the day was right, but nothing on the server claimed the evening,
+ * and the model does not reliably fill the period in either. The server owns
+ * this the same way it owns weekdays and relative dates.
+ */
+const RELATIVE_PERIOD_PATTERNS: {pattern: RegExp; period: RequestedPeriod}[] = [
+  {pattern: /เช้านี้|this\s+morning/i, period: "morning"},
+  {pattern: /สายนี้/i, period: "late_morning"},
+  {pattern: /บ่ายนี้|this\s+afternoon/i, period: "afternoon"},
+  {pattern: /เย็นนี้|this\s+evening/i, period: "evening"},
+  {pattern: /ค่ำนี้|ดึกนี้|tonight|this\s+night|(?<!เที่ยง)คืนนี้/i, period: "night"},
+];
+
+/**
+ * Month names as people actually write them: full, shortened, and the dotted
+ * abbreviations, Thai and English.
+ *
+ * Longer spellings come first inside each entry so "กันยายน" is matched whole
+ * instead of as "กันยา" with a stray "ยน" left in the title.
+ */
+const MONTH_NAME_PATTERNS: {month: number; pattern: string}[] = [
+  {month: 1, pattern: "มกราคม|มกรา|ม\\.?ค\\.?|jan(?:uary)?"},
+  {month: 2, pattern: "กุมภาพันธ์|กุมภา|ก\\.?พ\\.?|feb(?:ruary)?"},
+  {month: 3, pattern: "มีนาคม|มีนา|มี\\.?ค\\.?|mar(?:ch)?"},
+  {month: 4, pattern: "เมษายน|เมษา|เม\\.?ย\\.?|apr(?:il)?"},
+  {month: 5, pattern: "พฤษภาคม|พฤษภา|พ\\.?ค\\.?|may"},
+  {month: 6, pattern: "มิถุนายน|มิถุนา|มิ\\.?ย\\.?|jun(?:e)?"},
+  {month: 7, pattern: "กรกฎาคม|กรกฎา|ก\\.?ค\\.?|jul(?:y)?"},
+  {month: 8, pattern: "สิงหาคม|สิงหา|ส\\.?ค\\.?|aug(?:ust)?"},
+  {month: 9, pattern: "กันยายน|กันยา|ก\\.?ย\\.?|sep(?:t(?:ember)?)?"},
+  {month: 10, pattern: "ตุลาคม|ตุลา|ต\\.?ค\\.?|oct(?:ober)?"},
+  {month: 11, pattern: "พฤศจิกายน|พฤศจิกา|พ\\.?ย\\.?|nov(?:ember)?"},
+  {month: 12, pattern: "ธันวาคม|ธันวา|ธ\\.?ค\\.?|dec(?:ember)?"},
+];
+
+const MONTH_NAME_SOURCE = MONTH_NAME_PATTERNS.map((entry) => `(?:${entry.pattern})`).join("|");
+/**
+ * A year only counts when it is unmistakably a year: four digits, or two
+ * digits behind an explicit ปี/พ.ศ. marker. Without that, "1 กันยา 10 โมง"
+ * reads its start time as the year 2010 and schedules the past.
+ */
+const YEAR_SUFFIX_SOURCE = "(?:\\s*(?:ปี|พ\\.?ศ\\.?|ค\\.?ศ\\.?)\\s*(\\d{2,4})|\\s*(\\d{4}))?(?!\\d)";
+
+function monthFromName(value: string) {
+  return MONTH_NAME_PATTERNS.find((entry) => new RegExp(`^(?:${entry.pattern})$`, "i").test(value.trim()))?.month ?? null;
+}
+
+/**
+ * Turns a day/month/year triple into a local ISO date.
+ *
+ * Thai users write both eras, so 2569 and a bare 69 both mean 2026. When no
+ * year is written at all the nearest future occurrence is meant, never a date
+ * that has already gone by.
+ */
+function resolveCalendarDate(day: number, month: number, rawYear: number | null, localDate: string) {
+  if (!Number.isInteger(day) || day < 1 || day > 31 || !Number.isInteger(month) || month < 1 || month > 12) return null;
+  const todayMs = Date.parse(`${localDate}T12:00:00Z`);
+  if (Number.isNaN(todayMs)) return null;
+  const year = rawYear === null ? new Date(todayMs).getUTCFullYear() :
+    rawYear >= 2400 ? rawYear - 543 :
+      rawYear >= 1900 ? rawYear :
+        rawYear >= 60 ? 2500 + rawYear - 543 : 2000 + rawYear;
+  // The Date constructor rolls 31 กันยายน into 1 October; a day that does not
+  // exist is a parse failure, not a different date.
+  const build = (value: number) => {
+    const candidate = new Date(Date.UTC(value, month - 1, day, 12));
+    return candidate.getUTCMonth() === month - 1 && candidate.getUTCDate() === day ? candidate : null;
+  };
+  const first = build(year);
+  const resolved = first && rawYear === null && first.getTime() < todayMs ? build(year + 1) : first;
+  return resolved ? resolved.toISOString().slice(0, 10) : null;
+}
+
+/**
+ * Reads a written-out calendar date: "วันที่ 1 กันยา", "1 ก.ย. 2569", "1/9",
+ * "2026-09-01", "Sep 1", or a bare "วันที่ 5" meaning the next fifth.
+ *
+ * This is the piece the deterministic layer never had, which is why an
+ * unambiguous "วันที่ 1 กันยา" was dropped and the search ranged freely over
+ * the whole fortnight.
+ */
+function explicitDateFromMessage(message: string, localDate: string) {
+  const normalized = normalizeThaiDigits(message);
+  const year = (marked: string | undefined, bare: string | undefined) =>
+    marked ? Number(marked) : bare ? Number(bare) : null;
+
+  const iso = /(?:^|\D)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)/.exec(normalized);
+  if (iso) return resolveCalendarDate(Number(iso[3]), Number(iso[2]), Number(iso[1]), localDate);
+
+  const dayMonth = new RegExp(
+    `(?:วันที่|วัน|on)?\\s*(\\d{1,2})\\s*(?:st|nd|rd|th)?\\s*(?:เดือน\\s*)?(${MONTH_NAME_SOURCE})${YEAR_SUFFIX_SOURCE}`,
+    "i",
+  ).exec(normalized);
+  if (dayMonth) {
+    const month = monthFromName(dayMonth[2]);
+    if (month) return resolveCalendarDate(Number(dayMonth[1]), month, year(dayMonth[3], dayMonth[4]), localDate);
+  }
+
+  const monthDay = new RegExp(
+    `(${MONTH_NAME_SOURCE})\\s*(\\d{1,2})\\s*(?:st|nd|rd|th)?,?${YEAR_SUFFIX_SOURCE}`,
+    "i",
+  ).exec(normalized);
+  if (monthDay) {
+    const month = monthFromName(monthDay[1]);
+    if (month) return resolveCalendarDate(Number(monthDay[2]), month, year(monthDay[3], monthDay[4]), localDate);
+  }
+
+  // "1/2 ชั่วโมง" is a fraction of an hour, not the first of February.
+  const slashed = /(?:^|\D)(\d{1,2})\s*\/\s*(\d{1,2})(?:\s*\/\s*(\d{2,4}))?(?!\s*[:.]?\d)(?!\s*(?:ชั่วโมง|ชม\.?|นาที|hours?|minutes?))/.exec(normalized);
+  if (slashed) return resolveCalendarDate(Number(slashed[1]), Number(slashed[2]), slashed[3] ? Number(slashed[3]) : null, localDate);
+
+  const dayOnly = /วันที่\s*(\d{1,2})(?!\s*[:.]?\d)/.exec(normalized);
+  if (dayOnly) {
+    const todayMs = Date.parse(`${localDate}T12:00:00Z`);
+    if (Number.isNaN(todayMs)) return null;
+    const today = new Date(todayMs);
+    const thisMonth = resolveCalendarDate(Number(dayOnly[1]), today.getUTCMonth() + 1, today.getUTCFullYear(), localDate);
+    if (thisMonth && Date.parse(`${thisMonth}T12:00:00Z`) >= todayMs) return thisMonth;
+    const next = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 1, 1, 12));
+    return resolveCalendarDate(Number(dayOnly[1]), next.getUTCMonth() + 1, next.getUTCFullYear(), localDate);
+  }
+
+  return null;
+}
+
 function requestedDateFromMessage(message: string, localDate?: string) {
   if (!localDate || !/^\d{4}-\d{2}-\d{2}$/.test(localDate)) return null;
+  // An explicit calendar date is unambiguous, so it outranks both a weekday
+  // word and a relative day word appearing in the same sentence.
+  const explicit = explicitDateFromMessage(message, localDate);
+  if (explicit) return explicit;
   const weekdayPatterns: {day: number; pattern: RegExp}[] = [
     {day: 0, pattern: /(?:วัน)?อาทิตย์|sunday/i},
     {day: 1, pattern: /(?:วัน)?จันทร์|monday/i},
@@ -200,12 +416,21 @@ function requestedDateFromMessage(message: string, localDate?: string) {
     {day: 5, pattern: /(?:วัน)?ศุกร์|friday/i},
     {day: 6, pattern: /(?:วัน)?เสาร์|saturday/i},
   ];
-  const requestedDay = weekdayPatterns.find((entry) => entry.pattern.test(message))?.day;
-  if (requestedDay === undefined) return null;
   const base = new Date(`${localDate}T12:00:00Z`);
   if (Number.isNaN(base.getTime())) return null;
-  let dayOffset = (requestedDay - base.getUTCDay() + 7) % 7;
-  if (/(?:สัปดาห์หน้า|อาทิตย์หน้า|next week)/i.test(message)) dayOffset += 7;
+  const requestedDay = weekdayPatterns.find((entry) => entry.pattern.test(message))?.day;
+  let dayOffset: number;
+  if (requestedDay !== undefined) {
+    dayOffset = (requestedDay - base.getUTCDay() + 7) % 7;
+    if (/(?:สัปดาห์หน้า|อาทิตย์หน้า|next week)/i.test(message)) dayOffset += 7;
+  } else {
+    // Without this the day word is simply dropped and the engine is free to
+    // range over the whole 14-day search window, which is how "วันนี้" used to
+    // come back as a slot two days out.
+    const relative = RELATIVE_DAY_PATTERNS.find((entry) => entry.pattern.test(message));
+    if (!relative) return null;
+    dayOffset = relative.offset;
+  }
   base.setUTCDate(base.getUTCDate() + dayOffset);
   return base.toISOString().slice(0, 10);
 }
@@ -213,9 +438,11 @@ function requestedDateFromMessage(message: string, localDate?: string) {
 function namedClockSemantics(message: string) {
   const normalized = normalizeThaiDigits(message).toLowerCase();
   const isMidnight = /เที่ยงคืน|midnight/.test(normalized);
-  const isNoon = !isMidnight && /เที่ยง(?!คืน)|noon|midday/.test(normalized);
+  // Word boundaries matter here: without them the "noon" inside "afternoon"
+  // matched, and "this afternoon" was scheduled at 12:00 sharp.
+  const isNoon = !isMidnight && /เที่ยง(?!คืน)|\bnoon\b|\bmidday\b/.test(normalized);
   if (!isMidnight && !isNoon) return null;
-  const phrase = isMidnight ? "(?:เที่ยงคืน|midnight)" : "(?:เที่ยง(?!คืน)|noon|midday)";
+  const phrase = isMidnight ? "(?:เที่ยงคืน|midnight)" : "(?:เที่ยง(?!คืน)|\\bnoon\\b|\\bmidday\\b)";
   if (new RegExp(`(?:หลัง|after)\\s*(?:เวลา)?\\s*${phrase}`, "i").test(normalized)) {
     return {clock: isMidnight ? "00:00" : "12:00", exclusive: true, period: isMidnight ? "night" as const : "noon" as const, relation: "after" as const};
   }
@@ -235,9 +462,15 @@ export function applyDeterministicTemporalSemantics(
 ): NaturalLanguageIntent {
   const requestedLocalDate = requestedDateFromMessage(message, temporalContext?.localDate);
   const namedClock = namedClockSemantics(message);
+  // An exact clock the user gave always beats a broad part of day, so this only
+  // fills the gap the model left rather than overruling a stated time.
+  const hasExplicitClock = Boolean(intent.earliestLocalStartTime || intent.latestLocalStartTime);
+  const relativePeriod = namedClock || hasExplicitClock ? undefined :
+    RELATIVE_PERIOD_PATTERNS.find((entry) => entry.pattern.test(message))?.period;
   return {
     ...intent,
     ...(requestedLocalDate ? {requestedLocalDate} : {}),
+    ...(relativePeriod ? {preferredPeriod: relativePeriod} : {}),
     ...(namedClock ? {
       earliestLocalStartExclusive: namedClock.relation === "after" && namedClock.exclusive,
       earliestLocalStartTime: namedClock.relation === "before" ? null : namedClock.clock,
@@ -255,7 +488,9 @@ export function fallbackAdaptiveNaturalLanguageIntent(message: string, temporalC
   const durationHasHalfHour = durationIsHours && /(?:ชั่วโมง|ชม\.?|hours?)\s*(?:ครึ่ง|and a half)/i.test(normalizedMessage);
   const durationMinutes = durationMatch ? Math.round(Number(durationMatch[1]) * (durationIsHours ? 60 : 1) + (durationHasHalfHour ? 30 : 0)) : null;
   const namedClock = namedClockSemantics(message);
-  const preferredPeriod = namedClock?.period ?? (/บ่าย|afternoon/i.test(message) ? "afternoon" : /เย็น|evening/i.test(message) ? "evening" : /กลางคืน|ดึก|night/i.test(message) ? "night" : /เช้า|morning/i.test(message) ? "morning" : null);
+  // "คืนนี้" belongs in the night branch: /night/ only ever matched it through
+  // the English "tonight", so the Thai wording alone produced no period at all.
+  const preferredPeriod = namedClock?.period ?? (/บ่าย|afternoon/i.test(message) ? "afternoon" : /เย็น|evening/i.test(message) ? "evening" : /กลางคืน|ดึก|ค่ำ|(?<!เที่ยง)คืนนี้|night/i.test(message) ? "night" : /เช้า|morning/i.test(message) ? "morning" : null);
   const earliestLocalStartTime = relationClock(message, "after") ?? (namedClock?.relation === "after" ? namedClock.clock : null);
   const latestLocalStartTime = relationClock(message, "before") ?? (namedClock?.relation === "before" ? namedClock.clock : null);
   const exactLocalStartTime = earliestLocalStartTime || latestLocalStartTime ? null : relationClock(message, "at") ?? (namedClock?.relation === "exact" ? namedClock.clock : null);
@@ -288,6 +523,22 @@ export function fallbackAdaptiveNaturalLanguageIntent(message: string, temporalC
   };
 }
 
+/**
+ * True when the user clearly named a day or a time and nothing resolved it.
+ *
+ * Only consulted when Gemini was unreachable and the regex fallback answered
+ * instead: an unread date word there means the request would otherwise be
+ * silently widened to "anywhere in the next fortnight", which is exactly how a
+ * confident-looking wrong answer gets produced. Asking is the honest move.
+ */
+export function unresolvedTemporalMention(message: string, intent: NaturalLanguageIntent) {
+  if (intent.requestedLocalDate || intent.earliestLocalStartTime || intent.latestLocalStartTime ||
+    intent.preferredPeriod || intent.deadline) return false;
+  const normalized = normalizeThaiDigits(message);
+  return new RegExp(`\\d\\s*(?:${MONTH_NAME_SOURCE})|(?:${MONTH_NAME_SOURCE})\\s*\\d`, "i").test(normalized) ||
+    /วันที่|เดือนหน้า|สัปดาห์หน้า|อาทิตย์หน้า|next\s+(?:week|month)|\d{1,2}\s*[/-]\s*\d{1,2}|\d{1,2}[:.]\d{2}|\d{1,2}\s*(?:โมง|ทุ่ม|นาฬิกา|น\.)/i.test(normalized);
+}
+
 type RequestedPeriod = NonNullable<NaturalLanguageIntent["preferredPeriod"]>;
 
 const REQUESTED_PERIOD_WINDOWS: Record<RequestedPeriod, {endTime: string; startTime: string}> = {
@@ -296,7 +547,10 @@ const REQUESTED_PERIOD_WINDOWS: Record<RequestedPeriod, {endTime: string; startT
   evening: {endTime: "21:00", startTime: "17:00"},
   late_morning: {endTime: "13:00", startTime: "11:00"},
   morning: {endTime: "11:00", startTime: "08:00"},
-  night: {endTime: "23:59", startTime: "21:00"},
+  // Night intentionally wraps across midnight. Explicit late-night requests
+  // may use 00:00-05:00, while automatic suggestions still honor the user's
+  // normal wake/sleep and earliest/latest settings.
+  night: {endTime: "05:00", startTime: "21:00"},
   noon: {endTime: "13:00", startTime: "12:00"},
 };
 
@@ -415,6 +669,7 @@ function activityFromDocument(document: QueryDocumentSnapshot<DocumentData> | {i
     durationMinutes,
     endMs,
     estimatedDurationMinutes: Math.round(boundedNumber(data.estimatedDurationMinutes, 15, 720, durationMinutes)),
+    fixedLocalDate: /^\d{4}-\d{2}-\d{2}$/.test(text(data.fixedLocalDate, 10)) ? text(data.fixedLocalDate, 10) : null,
     googleEventId: text(data.googleEventId, 512),
     id: document.id,
     isFlexible: data.isFlexible === true || (!Object.prototype.hasOwnProperty.call(data, "isFlexible") && inferredFlexible),
@@ -458,6 +713,19 @@ function localDateKey(timestamp: number, timeZone: string) {
     timeZone,
     year: "numeric",
   }).format(new Date(timestamp));
+}
+
+function userFacingConflicts(startMs: number, endMs: number, items: EngineScheduleItem[]) {
+  return overlappingScheduleItems(startMs, endMs, items)
+    .filter((item) => item.kind !== "suggestion")
+    .map((item) => ({
+      endAt: new Date(item.endMs).toISOString(),
+      id: item.id,
+      kind: item.kind === "schedule" ? "schedule" as const : "activity" as const,
+      startAt: new Date(item.startMs).toISOString(),
+      title: item.title || "รายการในตาราง",
+    }))
+    .sort((left, right) => left.startAt.localeCompare(right.startAt));
 }
 
 function localTime(timestamp: number, timeZone: string) {
@@ -560,6 +828,65 @@ function serializeDocument(document: QueryDocumentSnapshot<DocumentData>) {
     if (typeof timestamp?.toDate === "function") return [key, timestamp.toDate().toISOString()];
     return [key, value];
   }));
+}
+
+/**
+ * The slot to offer for a new activity, relaxing what was asked for only as far
+ * as it has to.
+ *
+ * A request for an exact hour that is already taken used to be a dead end: the
+ * user was told to go and pick another time themselves. Now the same search
+ * that serves open-ended requests runs again with one constraint loosened at a
+ * time, so a clash comes back as a concrete alternative the user can accept in
+ * one tap instead of a refusal.
+ *
+ * Every step calls `findAdaptiveTimeSlots` on a copy of the same request, so
+ * conflict checks, availability, workload limits and the learned-pattern
+ * scoring all apply exactly as they do on the first attempt -- this is not a
+ * second "next free slot" search that ignores what 3a has learned.
+ */
+export function nearestAvailableSlot(request: AdaptiveSlotRequest, intent: NaturalLanguageIntent) {
+  const exact = findAdaptiveTimeSlots(request, 1)[0];
+  if (exact) return {slot: exact, unavailableRequest: ""};
+
+  // Nothing to fall back from: the request never named a time or a day.
+  if (!request.requiredLocalTimeWindow && !request.requiredLocalDate) return {slot: undefined, unavailableRequest: ""};
+
+  const askedClock = request.requiredLocalTimeWindow?.startTime;
+  const askedFor = [
+    request.requiredLocalDate ? `วันที่ ${request.requiredLocalDate}` : "",
+    askedClock ? `เวลา ${askedClock}` : "",
+  ].filter(Boolean).join(" ");
+
+  /** Widen the exact hour to the part of day it sits in, keeping the day. */
+  const surroundingPeriod = () => {
+    if (!askedClock) return undefined;
+    const minutes = parseClockMinutes(askedClock);
+    if (minutes === null) return undefined;
+    const period: RequestedPeriod = intent.preferredPeriod ?? adaptiveTimePeriod(Math.floor(minutes / 60));
+    const window = REQUESTED_PERIOD_WINDOWS[period];
+    // Only useful if it is genuinely wider than what already failed.
+    return window.startTime === request.requiredLocalTimeWindow?.startTime ? undefined : window;
+  };
+
+  // A calendar date the user named is a hard constraint. Widen an exact hour
+  // to another free hour on that date, but never silently move a birthday,
+  // appointment, exam, or other dated activity to a different day.
+  const relaxations: {requiredLocalDate?: string; requiredLocalTimeWindow?: {endTime: string; startTime: string}}[] = request.requiredLocalDate
+    ? [
+      {requiredLocalDate: request.requiredLocalDate, requiredLocalTimeWindow: surroundingPeriod()},
+      {requiredLocalDate: request.requiredLocalDate, requiredLocalTimeWindow: undefined},
+    ]
+    : [
+      {requiredLocalDate: undefined, requiredLocalTimeWindow: surroundingPeriod()},
+      {requiredLocalDate: undefined, requiredLocalTimeWindow: undefined},
+    ];
+
+  for (const relaxation of relaxations) {
+    const slot = findAdaptiveTimeSlots({...request, ...relaxation}, 1)[0];
+    if (slot) return {slot, unavailableRequest: askedFor};
+  }
+  return {slot: undefined, unavailableRequest: ""};
 }
 
 export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: AdaptiveFactoryOptions) {
@@ -676,7 +1003,7 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
       const startMs = timestampMs(data.startAt);
       const endMs = timestampMs(data.endAt);
       if (startMs === null || endMs === null) return [];
-      return [{category: category(data.courseCode || data.title), endMs, id: document.id, isDifficult: true, isFixed: true, startMs}];
+      return [{category: category(data.courseCode || data.title), endMs, id: document.id, isDifficult: true, isFixed: true, kind: "schedule" as const, startMs, title: text(data.title, 120) || text(data.courseName, 120) || "ตารางเรียน"}];
     });
     activitySnapshot.docs.forEach((document) => {
       if (document.id === excludeActivityId) return;
@@ -688,7 +1015,9 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
         id: item.id,
         isDifficult: ["high", "urgent"].includes(item.priority) || item.durationMinutes >= 90,
         isFixed: !item.isFlexible || item.isLocked,
+        kind: "activity",
         startMs: item.startMs,
+        title: item.title,
       });
     });
     suggestionSnapshot.docs.forEach((document) => {
@@ -704,7 +1033,9 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
         id: `suggestion-${document.id}`,
         isDifficult: false,
         isFixed: true,
+        kind: "suggestion",
         startMs,
+        title: text(data.taskTitle, 120) || "คำแนะนำที่รอยืนยัน",
       });
     });
     return scheduleItems;
@@ -716,17 +1047,26 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
     preferredStartMs?: number,
     requiredLocalTimeWindow?: {endTime: string; startTime: string},
     requiredLocalDate?: string,
+    allowOutsideAvailability = false,
   ) {
     const setting = await preferences(uid);
+    const effectiveRequiredLocalDate = requiredLocalDate ?? activity.fixedLocalDate ?? undefined;
     const durationMinutes = activity.estimatedDurationMinutes || activity.durationMinutes;
     const now = Date.now();
-    const earliestStartMs = preferredStartMs ?? Math.max(now + 15 * MINUTE_MS, activity.startMs - DAY_MS);
-    const latestEndMs = Math.min(activity.deadlineMs ?? now + 14 * DAY_MS, now + 14 * DAY_MS);
+    // An explicit date may be years away. Jump the scan directly to that local
+    // day instead of walking every 30-minute slot from today or clipping it to
+    // the old 60-day horizon.
+    const requestedReferenceMs = effectiveRequiredLocalDate ? Date.parse(`${effectiveRequiredLocalDate}T12:00:00Z`) : Number.NaN;
+    const requestedDayStartMs = Number.isNaN(requestedReferenceMs) ? null : zonedDayStart(requestedReferenceMs, setting.timeZone);
+    const earliestStartMs = preferredStartMs ?? (requestedDayStartMs === null ? Math.max(now + 15 * MINUTE_MS, activity.startMs - DAY_MS) : Math.max(now + 15 * MINUTE_MS, requestedDayStartMs));
+    const horizonMs = requestedDayStartMs === null ? now + 14 * DAY_MS : requestedDayStartMs + DAY_MS;
+    const latestEndMs = Math.min(activity.deadlineMs ?? horizonMs, horizonMs);
     const [patterns, scheduleItems] = await Promise.all([
       listPatterns(uid),
       constraints(uid, earliestStartMs, latestEndMs, activity.id),
     ]);
     const request: AdaptiveSlotRequest = {
+      allowOutsideAvailability,
       category: activity.category,
       deadlineMs: activity.deadlineMs,
       durationMinutes,
@@ -735,7 +1075,7 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
       patterns,
       preferences: setting,
       priority: activity.priority,
-      requiredLocalDate,
+      requiredLocalDate: effectiveRequiredLocalDate,
       requiredLocalTimeWindow,
       scheduleItems,
     };
@@ -744,7 +1084,10 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
 
   async function proposeNewFlexibleActivity(uid: string, intent: NaturalLanguageIntent, message: string) {
     const setting = await preferences(uid);
-    const title = text(intent.taskTitle, 160) || adaptiveTitleFromMessage(message);
+    // The model's title goes through the same cleaner as the fallback's, so a
+    // model that echoes the whole sentence back still cannot name an activity
+    // "ซื้อมังงะวันที่ 1 กันยาให้หน่อย".
+    const title = adaptiveTitleFromMessage(text(intent.taskTitle, 160)) || adaptiveTitleFromMessage(message);
     if (!title) return {message: "บอกกิจกรรมที่อยากเพิ่มได้เลย เช่น อ่านบทที่ 4 หรือทำรายงานกลุ่ม"};
 
     const now = Date.now();
@@ -766,6 +1109,7 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
       durationMinutes,
       endMs: placeholderStartMs + durationMinutes * MINUTE_MS,
       estimatedDurationMinutes: durationMinutes,
+      fixedLocalDate: intent.requestedLocalDate ?? null,
       googleEventId: "",
       id: "__adaptive_new_activity__",
       isFlexible: true,
@@ -779,22 +1123,48 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
       version: 0,
     };
     const requestedWindow = requestedWindowForIntent(intent, durationMinutes);
-    const {request} = await schedulingRequest(uid, activity, undefined, requestedWindow, intent.requestedLocalDate ?? undefined);
-    const slot = findAdaptiveTimeSlots(request, 1)[0];
-    if (!slot) {
-      return {message: "ยังไม่พบช่วงว่างที่พอดีกับกิจกรรมนี้ ลองลดระยะเวลา ขยายกำหนดเสร็จ หรือปรับเวลาที่พร้อมใช้งาน"};
+    const {request} = await schedulingRequest(
+      uid,
+      activity,
+      undefined,
+      requestedWindow,
+      intent.requestedLocalDate ?? undefined,
+      Boolean(requestedWindow),
+    );
+    const nearest = nearestAvailableSlot(request, intent);
+    if (!nearest.slot) {
+      // Every relaxation was tried and the fortnight really is full, so say so
+      // rather than inventing something outside what was asked for.
+      const requestedScope = intent.requestedLocalDate ?
+        ` ในวันที่ ${intent.requestedLocalDate}${requestedWindow ? ` ช่วง ${requestedWindow.startTime}-${requestedWindow.endTime}` : ""}` : "";
+      return {message: requestedScope ?
+        `ยังไม่พบช่วงว่างที่พอดีกับกิจกรรมนี้${requestedScope} ลองลดระยะเวลา เลือกวันอื่น หรือปรับเวลาที่พร้อมใช้งาน` :
+        "ยังไม่พบช่วงว่างที่พอดีกับกิจกรรมนี้ ลองลดระยะเวลา ขยายกำหนดเสร็จ หรือปรับเวลาที่พร้อมใช้งาน"};
     }
+    const {slot, unavailableRequest} = nearest;
     const defaultNote = durationWasDefaulted ? ` ใช้เวลาเริ่มต้น ${durationMinutes} นาทีเพราะยังไม่ได้ระบุระยะเวลา` : "";
+    const explanation = unavailableRequest
+      ? `${unavailableRequest} ไม่ว่างเพราะชนกับรายการในตาราง จึงเสนอช่วงว่างที่ใกล้ที่สุดที่ผ่านการตรวจแล้วแทน${defaultNote}`
+      : requestedWindow
+        ? `พบช่วงว่างที่ไม่ชนตารางและตรงกับช่วงเวลาที่คุณขอ${defaultNote}`
+        : `พบช่วงว่างที่ไม่ชนตารางและอยู่ในเวลาที่ตั้งไว้${defaultNote}`;
     return {
       proposedActivity: {
         activityCategory,
         deadline: deadlineMs === null ? null : new Date(deadlineMs).toISOString(),
         durationMinutes,
+        dateLocked: Boolean(intent.requestedLocalDate),
         endAt: new Date(slot.endMs).toISOString(),
-        explanation: `พบช่วงว่างที่ไม่ชนตารางและอยู่ในเวลาที่ตั้งไว้${defaultNote}`,
+        explanation,
         generatedForTimeZone: setting.timeZone,
         startAt: new Date(slot.startMs).toISOString(),
         title,
+        // A clock window written by the user is authoritative even when it is
+        // inside the default sleep window. Conflicts are still checked.
+        userSelectedTime: Boolean(requestedWindow),
+        // Present only when the exact time asked for was taken, so the card can
+        // say what it is offering instead of what was requested.
+        ...(unavailableRequest ? {unavailableRequest} : {}),
       },
     };
   }
@@ -810,36 +1180,27 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
 
   async function geminiExplanation(apiKey: string, facts: Record<string, unknown>, fallback: string) {
     if (!apiKey) return fallback;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), GEMINI_EXPLANATION_TIMEOUT_MS);
     try {
-      const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
-        body: JSON.stringify({
-          generation_config: {max_output_tokens: 280, thinking_level: "low"},
-          input: `VERIFIED_SCHEDULING_FACTS:\n${JSON.stringify(facts)}`,
-          model: process.env.GEMINI_ASSISTANT_MODEL ?? "gemini-3.6-flash",
-          response_format: {
-            mime_type: "application/json",
-            schema: {properties: {explanation: {maxLength: 600, type: "string"}}, required: ["explanation"], type: "object"},
-            type: "text",
-          },
-          store: false,
-          system_instruction: "Write one clear Thai scheduling explanation using only the verified facts. Never invent statistics, dates, conflicts, or user behavior. Do not claim that Gemini selected the time.",
-        }),
-        headers: {"Content-Type": "application/json", "x-goog-api-key": apiKey},
-        method: "POST",
-        signal: controller.signal,
-      });
-      if (!response.ok) return fallback;
-      const payload = await response.json() as GeminiInteractionResponse;
-      const output = interactionText(payload);
+      const result = await geminiInteraction(apiKey, {
+        // Wide enough that the thinking budget cannot truncate the explanation
+        // the way it silently truncated the parsed intent.
+        generation_config: {max_output_tokens: 900, thinking_level: "low"},
+        input: `VERIFIED_SCHEDULING_FACTS:\n${JSON.stringify(facts)}`,
+        response_format: {
+          mime_type: "application/json",
+          schema: {properties: {explanation: {maxLength: 600, type: "string"}}, required: ["explanation"], type: "object"},
+          type: "text",
+        },
+        store: false,
+        system_instruction: "Write one clear Thai scheduling explanation using only the verified facts. Never invent statistics, dates, conflicts, or user behavior. Do not claim that Gemini selected the time.",
+      }, GEMINI_EXPLANATION_TIMEOUT_MS, "adaptiveSchedulingExplanation");
+      if (!result.ok) return fallback;
+      const output = interactionText(result.payload);
       if (!output) return fallback;
       const parsed = JSON.parse(output) as {explanation?: unknown};
       return text(parsed.explanation, 600) || fallback;
     } catch {
       return fallback;
-    } finally {
-      clearTimeout(timeout);
     }
   }
 
@@ -861,7 +1222,14 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
     const recentSuggestions = await userRef(uid).collection("schedulingSuggestions").orderBy("createdAt", "desc").limit(50).get();
     const sameActivity = recentSuggestions.docs.filter((document) => text(document.data().scheduleItemId, 128) === activity.id);
     const nowMs = Date.now();
-    const {patterns, request, setting} = await schedulingRequest(uid, activity, requestedStartMs, requiredLocalTimeWindow, requiredLocalDate);
+    const {patterns, request, setting} = await schedulingRequest(
+      uid,
+      activity,
+      requestedStartMs,
+      requiredLocalTimeWindow,
+      requiredLocalDate,
+      Boolean(requiredLocalTimeWindow),
+    );
     if (!setting.allowAiSuggestions) throw new HttpsError("failed-precondition", "ปิดคำแนะนำ Adaptive Scheduling ไว้");
     const existing = sameActivity.find((document) => {
       const data = document.data();
@@ -1038,6 +1406,14 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
     const item = activityFromDocument({id: activity.id, data: () => activity.data() ?? {}});
     const actualStartMs = timestampMs(data.actualStart) ?? timestampMs(activity.data()?.actualStart);
     const updatedStartMs = timestampMs(data.updatedScheduledStart) ?? item.startMs;
+    // A postpone moves the activity first, so by the time this runs the document
+    // already holds the new start. The caller has to say what the slot was
+    // before it moved, or every postpone would record a move from the new time
+    // to itself and the engine would learn nothing from it.
+    const claimedOriginalMs = timestampMs(data.originalScheduledStart);
+    const originalStartMs = claimedOriginalMs !== null && Math.abs(claimedOriginalMs - Date.now()) <= 366 * DAY_MS
+      ? claimedOriginalMs
+      : item.startMs;
     const referenceMs = actualStartMs ?? updatedStartMs;
     const reference = userRef(uid).collection("schedulingBehaviorEvents").doc();
     await reference.set({
@@ -1050,7 +1426,7 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
       estimatedDurationMinutes: item.estimatedDurationMinutes,
       eventType,
       metadata: plainMetadata(data.metadata),
-      originalScheduledStart: Timestamp.fromMillis(item.startMs),
+      originalScheduledStart: Timestamp.fromMillis(originalStartMs),
       ownerId: uid,
       scheduleItemId,
       source: ["ai_suggestion", "automatic_scheduler"].includes(text(data.source, 30)) ? text(data.source, 30) : "user",
@@ -1101,6 +1477,116 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
     }, {merge: true});
     await batch.commit();
     return {patterns: patterns.length};
+  }
+
+  /**
+   * Records the two outcomes nobody presses a button for.
+   *
+   * `task_skipped` and `reminder_ignored` are the behaviour events that by
+   * definition have no user action behind them: the user let a scheduled slot
+   * pass, or let a suggestion lapse without answering it. They can only be
+   * observed by looking backwards, which is why they are swept here instead of
+   * being hooked to a screen the way `task_completed` and `task_postponed` are.
+   *
+   * Both writes use a document id derived from the thing being judged, so a
+   * re-run - a retry, an overlapping schedule, a manual invocation - restates
+   * the same event rather than inflating the user's postponement rate. The
+   * already-recorded ids are read back first so a repeat run does not push
+   * `createdAt` forward and keep the same skip alive in the 2-day window the
+   * pattern recalculation reads.
+   */
+  async function sweepUserOutcomes(uid: string, nowMs: number) {
+    const setting = await preferences(uid);
+    const fromMs = nowMs - OUTCOME_SWEEP_WINDOW_MS;
+    const toMs = nowMs - OUTCOME_SWEEP_GRACE_MS;
+    const [activitySnapshot, pendingSnapshot] = await Promise.all([
+      userRef(uid).collection("activities")
+        .where("endAt", ">=", Timestamp.fromMillis(fromMs))
+        .where("endAt", "<", Timestamp.fromMillis(toMs))
+        .limit(200).get(),
+      userRef(uid).collection("schedulingSuggestions").where("status", "==", "pending").limit(200).get(),
+    ]);
+
+    const skipped = activitySnapshot.docs
+      .map(activityFromDocument)
+      .filter((item) => !["cancelled", "completed"].includes(item.status));
+    const lapsed = pendingSnapshot.docs.filter((document) => {
+      const expiresAtMs = timestampMs(document.data().expiresAt) ?? timestampMs(document.data().validUntil);
+      return expiresAtMs !== null && expiresAtMs <= nowMs;
+    });
+
+    const events = userRef(uid).collection("schedulingBehaviorEvents");
+    const candidates = [
+      ...skipped.map((item) => events.doc(`skipped-${item.id}`)),
+      ...lapsed.map((document) => events.doc(`ignored-${document.id}`)),
+    ];
+    const recorded = candidates.length
+      ? new Set((await db.getAll(...candidates)).filter((document) => document.exists).map((document) => document.id))
+      : new Set<string>();
+
+    const batch = db.batch();
+    let written = 0;
+    skipped.forEach((item) => {
+      if (recorded.has(`skipped-${item.id}`)) return;
+      batch.set(events.doc(`skipped-${item.id}`), {
+        activityCategory: item.category,
+        actualDurationMinutes: null,
+        actualEnd: null,
+        actualStart: null,
+        createdAt: FieldValue.serverTimestamp(),
+        dayOfWeek: dayOfWeek(item.startMs, setting.timeZone),
+        estimatedDurationMinutes: item.estimatedDurationMinutes,
+        eventType: "task_skipped",
+        metadata: {detectedBy: "outcome_sweep", scheduledEndAt: new Date(item.endMs).toISOString()},
+        originalScheduledStart: Timestamp.fromMillis(item.startMs),
+        ownerId: uid,
+        scheduleItemId: item.id,
+        source: "automatic_scheduler",
+        timePeriod: adaptiveTimePeriod(localHour(item.startMs, setting.timeZone)),
+        updatedAt: FieldValue.serverTimestamp(),
+        updatedScheduledStart: Timestamp.fromMillis(item.startMs),
+      });
+      written += 1;
+    });
+    lapsed.forEach((document) => {
+      const data = document.data();
+      const suggestedStartMs = timestampMs(data.suggestedStartAt) ?? nowMs;
+      const expiresAtMs = timestampMs(data.expiresAt) ?? timestampMs(data.validUntil) ?? nowMs;
+      batch.update(document.ref, {
+        expiredAt: FieldValue.serverTimestamp(),
+        invalidatedReason: "time_elapsed",
+        status: "expired",
+        updatedAt: FieldValue.serverTimestamp(),
+        validUntil: Timestamp.fromMillis(expiresAtMs),
+      });
+      if (recorded.has(`ignored-${document.id}`)) return;
+      batch.set(events.doc(`ignored-${document.id}`), {
+        activityCategory: category(data.activityCategory),
+        actualDurationMinutes: null,
+        actualEnd: null,
+        actualStart: null,
+        createdAt: FieldValue.serverTimestamp(),
+        dayOfWeek: dayOfWeek(suggestedStartMs, setting.timeZone),
+        estimatedDurationMinutes: Math.max(15, Math.round(((timestampMs(data.suggestedEndAt) ?? suggestedStartMs) - suggestedStartMs) / MINUTE_MS)),
+        eventType: "reminder_ignored",
+        metadata: {detectedBy: "outcome_sweep", suggestionId: document.id},
+        originalScheduledStart: data.originalStartAt ?? Timestamp.fromMillis(suggestedStartMs),
+        ownerId: uid,
+        scheduleItemId: text(data.scheduleItemId, 128),
+        source: "ai_suggestion",
+        timePeriod: adaptiveTimePeriod(localHour(suggestedStartMs, setting.timeZone)),
+        updatedAt: FieldValue.serverTimestamp(),
+        updatedScheduledStart: data.suggestedStartAt ?? Timestamp.fromMillis(suggestedStartMs),
+      });
+      written += 1;
+    });
+    if (!written && !lapsed.length) return {expired: 0, recorded: 0};
+    await batch.commit();
+    // Nothing else would fold these into completionRate until the next nightly
+    // recalculation, and a skip that only counts tomorrow is a skip the user
+    // cannot see the effect of.
+    if (written) await calculateUserPatterns(uid).catch((error) => console.warn("Pattern recalculation after the outcome sweep failed.", {error, uid}));
+    return {expired: lapsed.length, recorded: written};
   }
 
   async function suggestionTransaction(uid: string, suggestionId: string, automatic: boolean) {
@@ -1273,7 +1759,7 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
     if (startMs < Date.now() + SUGGESTION_MINIMUM_LEAD_MS) {
       throw new HttpsError("failed-precondition", "กรุณาเลือกเวลาอย่างน้อย 10 นาทีจากเวลาปัจจุบัน");
     }
-    const {request} = await schedulingRequest(uid, activity, startMs);
+    const {request, setting} = await schedulingRequest(uid, activity, startMs);
     const endMs = startMs + activity.estimatedDurationMinutes * MINUTE_MS;
     const validation = validateCandidateSlot(request, startMs, endMs);
     if (!validation.ok) throw new HttpsError("failed-precondition", validation.message ?? "ช่วงเวลานี้ใช้ไม่ได้");
@@ -1310,6 +1796,27 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
         userModified: true,
         validUntil: Timestamp.fromMillis(validUntilMs),
       });
+      // Overriding the proposed time is neither accepting nor rejecting it, and
+      // it is not the user postponing their own work either - it only tells the
+      // engine the hour it picked was not the hour the user wanted.
+      transaction.set(userRef(uid).collection("schedulingBehaviorEvents").doc(`modified-${suggestionId}`), {
+        activityCategory: activity.category,
+        actualDurationMinutes: null,
+        actualEnd: null,
+        actualStart: null,
+        createdAt: FieldValue.serverTimestamp(),
+        dayOfWeek: dayOfWeek(startMs, setting.timeZone),
+        estimatedDurationMinutes: activity.estimatedDurationMinutes,
+        eventType: "suggestion_modified",
+        metadata: {suggestionId},
+        originalScheduledStart: Timestamp.fromMillis(timestampMs(freshSuggestionData.suggestedStartAt) ?? activity.startMs),
+        ownerId: uid,
+        scheduleItemId: activityId,
+        source: "user",
+        timePeriod: adaptiveTimePeriod(localHour(startMs, setting.timeZone)),
+        updatedAt: FieldValue.serverTimestamp(),
+        updatedScheduledStart: Timestamp.fromMillis(startMs),
+      });
     });
     return {endAt: new Date(endMs).toISOString(), startAt: new Date(startMs).toISOString()};
   }
@@ -1318,15 +1825,27 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
     apiKey: string,
     message: string,
     temporalContext: ReturnType<typeof verifiedTemporalContext>,
-  ): Promise<NaturalLanguageIntent> {
-    const fallback = () => fallbackAdaptiveNaturalLanguageIntent(message, temporalContext);
-    if (!apiKey) return fallback();
+  ): Promise<{intent: NaturalLanguageIntent; usedGemini: boolean}> {
+    // The reason is logged so a silent regression back to the regex parser is
+    // visible in the function logs instead of only in a wrong suggestion.
+    const fallback = (reason: string) => {
+      console.warn("processNaturalLanguageScheduleCommand: parsing fell back to the deterministic reader.", {
+        messageLength: message.length,
+        reason,
+      });
+      return {intent: fallbackAdaptiveNaturalLanguageIntent(message, temporalContext), usedGemini: false};
+    };
+    if (!apiKey) return fallback("missing-api-key");
     try {
-      const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
-        body: JSON.stringify({
-          generation_config: {max_output_tokens: 450, thinking_level: "medium"},
+      const result = await geminiInteraction(apiKey, {
+          // Thought tokens are spent out of max_output_tokens, so "medium" plus a
+        // 450-token ceiling returned JSON that stopped mid-object on every
+        // request; JSON.parse threw and the old code silently answered from the
+        // regex reader instead. "low" matches the assistant chat, which is the
+        // one Gemini configuration this project has seen work, and the wider
+        // ceiling keeps a longer answer from being cut off again.
+        generation_config: {max_output_tokens: 1_200, thinking_level: "low"},
           input: JSON.stringify({message, verifiedTemporalContext: temporalContext}),
-          model: process.env.GEMINI_ASSISTANT_MODEL ?? "gemini-3.6-flash",
           response_format: {
             mime_type: "application/json",
             schema: {
@@ -1350,20 +1869,24 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
             type: "text",
           },
           store: false,
-          system_instruction: "Convert the user's Thai or English adaptive scheduling request into the exact schema by meaning, not by requiring command keywords. The verifiedTemporalContext is authoritative server context. In this scheduling interface, a concrete standalone activity such as 'อ่านหนังสือทบทวนบทเรียน', 'finish the report', or 'ออกกำลังกาย' means create_activity even without command words. A broad topic alone such as 'การเรียน', 'การเงิน', 'เวลา', 'การนอน', or 'งาน' is unknown so the general assistant can answer it. Use find_time when the user clearly refers to placing or moving an existing task. Read-only questions about saved data are unknown. Use preferenceMode=avoid for negative preferences and prefer for positive preferences. Extract taskTitle only from the user's activity words; remove weekday, date, duration, and timing phrases. Preserve explicit clock semantics exactly: 'หลัง/after 7 PM' means earliestLocalStartTime='19:00' and earliestLocalStartExclusive=true, so 19:00 itself is invalid; 'ตั้งแต่/from 7 PM' means the same clock with earliestLocalStartExclusive=false; 'ก่อน/by 7 PM' means latestLocalStartTime='19:00'; an exact 'ตอน/at 7 PM' sets both clock fields to '19:00' and exclusive=false. Never reduce an explicit clock to only a broad preferredPeriod. Convert Thai and English durations faithfully: '1 ชั่วโมงครึ่ง' and '1 hour and a half' are 90 minutes. Treat เที่ยง/noon/midday as exactly 12:00 PM by default: set both local start-time fields to '12:00' and preferredPeriod='noon'. Treat เที่ยงคืน/midnight as exactly 00:00, never 12:00, and use preferredPeriod='night'. Resolve a named weekday to the next matching local calendar date from verifiedTemporalContext.localDate. The server deterministically recalculates named weekdays, noon, and midnight after model output, so do not guess dates. Never move a requested weekday to another day merely because another slot scores higher. preferredPeriod may also be present, but exact clock fields and requestedLocalDate take priority. Never invent a deadline, title, duration, preference, date, or time; missing values must be null because the app supplies transparent defaults. Never resolve a requested time into the past. All schedule changes require confirmation.",
-        }),
-        headers: {"Content-Type": "application/json", "x-goog-api-key": apiKey},
-        method: "POST",
-      });
-      if (!response.ok) return fallback();
-      const payload = await response.json() as GeminiInteractionResponse;
-      const output = interactionText(payload);
-      if (!output) return fallback();
-      const parsed = validateGeminiNaturalLanguageIntent(JSON.parse(output));
-      if (!parsed) throw new Error("Gemini returned an invalid scheduling intent");
-      return applyDeterministicTemporalSemantics(parsed, message, temporalContext);
-    } catch {
-      return fallback();
+          system_instruction: "Convert the user's Thai or English adaptive scheduling request into the exact schema by meaning, not by requiring command keywords. The verifiedTemporalContext is authoritative server context. In this scheduling interface, a concrete standalone activity such as 'อ่านหนังสือทบทวนบทเรียน', 'finish the report', or 'ออกกำลังกาย' means create_activity even without command words. A broad topic alone such as 'การเรียน', 'การเงิน', 'เวลา', 'การนอน', or 'งาน' is unknown so the general assistant can answer it. Use find_time when the user clearly refers to placing or moving an existing task. Read-only questions about saved data are unknown. Use preferenceMode=avoid for negative preferences and prefer for positive preferences. Extract taskTitle only from the user's activity words; remove weekday, date, duration, and timing phrases, and remove polite filler such as 'ให้หน่อย', 'หน่อยนะ', 'จัดให้ที', 'ช่วย', 'ที', 'ด้วย', 'ครับ' and 'ค่ะ'. taskTitle is the activity alone, for example 'ซื้อมังงะวันที่ 1 กันยาให้หน่อย' has taskTitle 'ซื้อมังงะ'; never echo the user's whole sentence back as the title. Preserve explicit clock semantics exactly: 'หลัง/after 7 PM' means earliestLocalStartTime='19:00' and earliestLocalStartExclusive=true, so 19:00 itself is invalid; 'ตั้งแต่/from 7 PM' means the same clock with earliestLocalStartExclusive=false; 'ก่อน/by 7 PM' means latestLocalStartTime='19:00'; an exact 'ตอน/at 7 PM' sets both clock fields to '19:00' and exclusive=false. Never reduce an explicit clock to only a broad preferredPeriod. Convert Thai and English durations faithfully: '1 ชั่วโมงครึ่ง' and '1 hour and a half' are 90 minutes. Treat เที่ยง/noon/midday as exactly 12:00 PM by default: set both local start-time fields to '12:00' and preferredPeriod='noon'. Treat เที่ยงคืน/midnight as exactly 00:00, never 12:00, and use preferredPeriod='night'. Resolve a named weekday to the next matching local calendar date from verifiedTemporalContext.localDate, and resolve relative day words the same way: วันนี้/today and any 'this morning/afternoon/evening/tonight' form such as เช้านี้, บ่ายนี้, เย็นนี้ or คืนนี้ are verifiedTemporalContext.localDate itself, พรุ่งนี้/tomorrow is the next day, and มะรืนนี้ is two days later. Resolve an explicit calendar date into requestedLocalDate as well: 'วันที่ 1 กันยายน', '1 ก.ย.', '1 กันยา', '1/9', 'Sep 1' and '2026-09-01' all mean the first of September, using the year from verifiedTemporalContext.localDate when none is written and rolling to the next year only if that date has already passed. Convert a Thai Buddhist year by subtracting 543, so 2569 is 2026. An explicit calendar date always outranks a weekday word, a relative day word, and any default. The server deterministically recalculates explicit calendar dates, named weekdays, relative day words, noon, and midnight after model output, so do not guess dates. Never move an explicit calendar date, requested weekday, or requested relative day to another day merely because another slot scores higher; birthdays and similar dated events must stay on their requested date and only their time may be optimized. preferredPeriod may also be present, but exact clock fields and requestedLocalDate take priority. Never invent a deadline, title, duration, preference, date, or time; missing values must be null because the app supplies transparent defaults. Never resolve a requested time into the past. All schedule changes require confirmation.",
+      }, GEMINI_PARSE_TIMEOUT_MS, "processNaturalLanguageScheduleCommand");
+      if (!result.ok) return fallback("request-failed");
+      const output = interactionText(result.payload);
+      if (!output) return fallback("empty-output");
+      // A truncated answer is still well-formed text, so it only shows up as a
+      // parse error. Name it, rather than reporting a bare SyntaxError.
+      let decoded: unknown;
+      try {
+        decoded = JSON.parse(output);
+      } catch {
+        return fallback(`unparseable-output:${output.length}-chars`);
+      }
+      const parsed = validateGeminiNaturalLanguageIntent(decoded);
+      if (!parsed) return fallback("invalid-intent");
+      return {intent: applyDeterministicTemporalSemantics(parsed, message, temporalContext), usedGemini: true};
+    } catch (error) {
+      return fallback(error instanceof Error ? `${error.name}` : "unknown-error");
     }
   }
 
@@ -1502,6 +2025,8 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
 
   const createAdaptiveActivity = onCall(callableOptions, async (request) => {
     const uid = requiredUid(request);
+    const allowOverlap = request.data?.allowOverlap === true;
+    const userSelectedTime = request.data?.userSelectedTime === true;
     const clientRequestId = text(request.data?.clientRequestId, 256);
     const requestKey = clientRequestId ? Buffer.from(clientRequestId).toString("base64url") : "";
     const activityCollection = userRef(uid).collection("activities");
@@ -1516,8 +2041,11 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
       }
       return {
         adjusted: false,
+        conflicts: [],
         endAt: new Date(existingEndMs).toISOString(),
         id: activityReference.id,
+        requiresConflictConfirmation: false,
+        saved: true,
         startAt: new Date(existingStartMs).toISOString(),
       };
     };
@@ -1531,6 +2059,7 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
     const requestedEndMs = timestampMs(request.data?.endAt);
     const deadlineMs = request.data?.deadline === null || request.data?.deadline === undefined ? null : timestampMs(request.data.deadline);
     const activityCategory = category(request.data?.activityCategory);
+    const dateLocked = request.data?.dateLocked === true;
     const durationMinutes = Math.round(boundedNumber(
       request.data?.durationMinutes,
       15,
@@ -1543,6 +2072,9 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
     if (deadlineMs !== null && deadlineMs <= Date.now()) {
       throw new HttpsError("failed-precondition", "กำหนดส่งของกิจกรรมนี้ผ่านไปแล้ว กรุณาเลือกวันใหม่");
     }
+    const requestedTimeZone = text(request.data?.generatedForTimeZone, 80);
+    const lockTimeZone = validTimeZone(requestedTimeZone) ? requestedTimeZone : (await preferences(uid)).timeZone;
+    const fixedLocalDate = dateLocked ? localDateKey(requestedStartMs, lockTimeZone) : null;
 
     const activity: ActivityRecord = {
       allowAiReschedule: true,
@@ -1551,6 +2083,7 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
       durationMinutes,
       endMs: requestedStartMs + durationMinutes * MINUTE_MS,
       estimatedDurationMinutes: durationMinutes,
+      fixedLocalDate,
       googleEventId: "",
       id: "__adaptive_confirmed_activity__",
       isFlexible: true,
@@ -1563,10 +2096,21 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
       title,
       version: 0,
     };
-    const {request: slotRequest} = await schedulingRequest(uid, activity, requestedStartMs);
+    const {request: slotRequest} = await schedulingRequest(uid, activity, requestedStartMs, undefined, fixedLocalDate ?? undefined);
     const requestedEndAtMs = requestedStartMs + durationMinutes * MINUTE_MS;
+    const conflictResult = (conflicts: ReturnType<typeof userFacingConflicts>) => ({
+      adjusted: false,
+      conflicts,
+      endAt: new Date(requestedEndAtMs).toISOString(),
+      id: "",
+      requiresConflictConfirmation: true,
+      saved: false,
+      startAt: new Date(requestedStartMs).toISOString(),
+    });
+    const preliminaryConflicts = userFacingConflicts(requestedStartMs, requestedEndAtMs, slotRequest.scheduleItems);
+    if (preliminaryConflicts.length && !allowOverlap) return conflictResult(preliminaryConflicts);
     const requestedInWindow = requestedStartMs >= Math.max(Date.now() + 5 * MINUTE_MS, slotRequest.earliestStartMs) && requestedEndAtMs <= slotRequest.latestEndMs;
-    const requestedValidation = validateCandidateSlot(slotRequest, requestedStartMs, requestedEndAtMs);
+    const requestedValidation = validateCandidateSlot(slotRequest, requestedStartMs, requestedEndAtMs, {allowConflicts: allowOverlap, userSelectedTime});
     const requestedIsValid = requestedInWindow && requestedValidation.ok;
     if (!requestedIsValid) {
       throw new HttpsError(
@@ -1583,12 +2127,11 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
       }
       const settingsSnapshot = await transaction.get(settingsRef(uid));
       const freshSetting = sanitizePreferences(settingsSnapshot.data() ?? {});
-      const validationStart = Timestamp.fromMillis(startMs - DAY_MS);
       const validationEnd = Timestamp.fromMillis(endMs + DAY_MS);
       const scheduleSnapshot = await transaction.get(userRef(uid).collection("schedules")
-        .where("startAt", ">=", validationStart).where("startAt", "<", validationEnd).limit(300));
+        .where("startAt", "<", validationEnd).orderBy("startAt", "desc").limit(500));
       const activitySnapshot = await transaction.get(userRef(uid).collection("activities")
-        .where("startAt", ">=", validationStart).where("startAt", "<", validationEnd).limit(300));
+        .where("startAt", "<", validationEnd).orderBy("startAt", "desc").limit(500));
       const suggestionSnapshot = await transaction.get(userRef(uid).collection("schedulingSuggestions")
         .where("status", "==", "pending").limit(100));
       const freshScheduleItems: EngineScheduleItem[] = [];
@@ -1598,7 +2141,8 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
         const itemEndMs = timestampMs(data.endAt);
         if (itemStartMs !== null && itemEndMs !== null) freshScheduleItems.push({
           category: category(data.courseCode || data.title), endMs: itemEndMs, id: document.id,
-          isDifficult: true, isFixed: true, startMs: itemStartMs,
+          isDifficult: true, isFixed: true, kind: "schedule", startMs: itemStartMs,
+          title: text(data.title, 120) || text(data.courseName, 120) || "ตารางเรียน",
         });
       });
       activitySnapshot.docs.forEach((document) => {
@@ -1607,7 +2151,7 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
         freshScheduleItems.push({
           category: item.category, endMs: item.endMs, id: item.id,
           isDifficult: ["high", "urgent"].includes(item.priority),
-          isFixed: !item.isFlexible || item.isLocked, startMs: item.startMs,
+          isFixed: !item.isFlexible || item.isLocked, kind: "activity", startMs: item.startMs, title: item.title,
         });
       });
       suggestionSnapshot.docs.forEach((document) => {
@@ -1618,9 +2162,12 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
         if (itemStartMs === null || itemEndMs === null || itemEndMs <= startMs || itemStartMs >= endMs || expiresAt <= Date.now()) return;
         freshScheduleItems.push({
           category: category(data.activityCategory), endMs: itemEndMs, id: `suggestion-${document.id}`,
-          isDifficult: false, isFixed: true, startMs: itemStartMs,
+          isDifficult: false, isFixed: true, kind: "suggestion", startMs: itemStartMs,
+          title: text(data.taskTitle, 120) || "คำแนะนำที่รอยืนยัน",
         });
       });
+      const freshConflicts = userFacingConflicts(startMs, endMs, freshScheduleItems);
+      if (freshConflicts.length && !allowOverlap) return conflictResult(freshConflicts);
       const freshValidation = validateCandidateSlot({
         category: activityCategory,
         deadlineMs,
@@ -1630,15 +2177,16 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
         patterns: [],
         preferences: freshSetting,
         priority: activity.priority,
+        requiredLocalDate: fixedLocalDate ?? undefined,
         scheduleItems: freshScheduleItems,
-      }, startMs, endMs);
+      }, startMs, endMs, {allowConflicts: allowOverlap, userSelectedTime});
       if (!freshValidation.ok || startMs < Date.now() + 5 * MINUTE_MS) {
         throw new HttpsError("failed-precondition", `${freshValidation.ok ? "เวลาที่เลือกใกล้หรือผ่านไปแล้ว" : freshValidation.message} กรุณาวิเคราะห์และยืนยันเวลาใหม่`);
       }
       transaction.create(activityReference, {
       aiReason: text(request.data?.explanation, 600) || "จัดเวลาจาก Adaptive AI และตรวจสอบตารางก่อนบันทึก",
       aiScheduled: true,
-      allowAiReschedule: true,
+      allowAiReschedule: !dateLocked,
       category: activityCategory,
       color: "#BB9293",
       ...(clientRequestId ? {clientRequestId} : {}),
@@ -1646,8 +2194,9 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
       ...(deadlineMs === null ? {} : {deadline: Timestamp.fromMillis(deadlineMs)}),
       endAt: Timestamp.fromMillis(endMs),
       estimatedDurationMinutes: durationMinutes,
+      ...(fixedLocalDate ? {fixedLocalDate} : {}),
       isFlexible: true,
-      isLocked: false,
+      isLocked: dateLocked,
       location: "",
       ownerId: uid,
       priority: activity.priority,
@@ -1658,6 +2207,7 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
       title,
       type: "task",
       updatedAt: FieldValue.serverTimestamp(),
+      userSelectedTime,
     });
       transaction.create(eventReference, {
       activityCategory,
@@ -1668,7 +2218,7 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
       dayOfWeek: dayOfWeek(startMs, freshSetting.timeZone),
       estimatedDurationMinutes: durationMinutes,
       eventType: "task_created",
-      metadata: {adjustedAfterValidation: false, ...(clientRequestId ? {clientRequestId} : {})},
+      metadata: {adjustedAfterValidation: false, allowOverlap, conflictingItemCount: freshConflicts.length, userSelectedTime, ...(clientRequestId ? {clientRequestId} : {})},
       originalScheduledStart: Timestamp.fromMillis(startMs),
       ownerId: uid,
       scheduleItemId: activityReference.id,
@@ -1679,8 +2229,11 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
     });
       return {
         adjusted: false,
+        conflicts: freshConflicts,
         endAt: new Date(endMs).toISOString(),
         id: activityReference.id,
+        requiresConflictConfirmation: false,
+        saved: true,
         startAt: new Date(startMs).toISOString(),
       };
     });
@@ -1695,10 +2248,25 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
 
   const recordSchedulingBehavior = onCall(callableOptions, async (request) => {
     const uid = requiredUid(request);
-    return {id: await recordEvent(uid, request.data ?? {})};
+    const id = await recordEvent(uid, request.data ?? {});
+    // The learned rates have to move on the action that caused them, not at
+    // 03:15 tomorrow. Recalculating here is what makes marking a task done or
+    // postponing it visibly change the next suggestion; the nightly job stays
+    // as the backstop for events nobody was present for.
+    const {patterns} = await calculateUserPatterns(uid)
+      .catch((error) => { console.warn("Pattern recalculation after a behaviour event failed.", {error, uid}); return {patterns: -1}; });
+    return {id, patterns};
   });
 
-  const calculateSchedulingPatterns = onCall(callableOptions, async (request) => calculateUserPatterns(requiredUid(request)));
+  // "Recalculate now" has to see the slots that quietly went by as well as the
+  // ones the user pressed a button on, otherwise the number it produces is only
+  // ever the optimistic half of the user's week.
+  const calculateSchedulingPatterns = onCall(callableOptions, async (request) => {
+    const uid = requiredUid(request);
+    const swept = await sweepUserOutcomes(uid, Date.now())
+      .catch((error) => { console.warn("Outcome sweep before an on-demand recalculation failed.", {error, uid}); return {expired: 0, recorded: 0}; });
+    return {...await calculateUserPatterns(uid), ...swept};
+  });
 
   const generateAdaptiveSuggestion = onCall({...callableOptions, secrets: [geminiApiKey]}, async (request) => {
     const uid = requiredUid(request);
@@ -1909,12 +2477,21 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
       preferences(uid),
       constraints(uid, nowMs, nowMs + 7 * DAY_MS),
     ]);
-    const intent = await parseNaturalLanguage(
+    const {intent, usedGemini} = await parseNaturalLanguage(
       geminiApiKey.value(),
       message,
       verifiedTemporalContext(setting, contextItems),
     );
     const response: Record<string, unknown> = {intent};
+    // Gemini is the reader for messy phrasing. When it could not answer and the
+    // regex fallback also failed to place a day or time the user plainly wrote,
+    // say so instead of quietly scheduling whatever the open search returns.
+    if (!usedGemini && ["create_activity", "find_time"].includes(intent.intent) && unresolvedTemporalMention(message, intent)) {
+      return {
+        ...response,
+        message: "ยังอ่านวันหรือเวลาที่ระบุไม่ออกแน่ชัด ช่วยพิมพ์ใหม่ให้ชัดขึ้นได้ไหม เช่น \"ซื้อมังงะ วันที่ 1 ก.ย. 10:00\"",
+      };
+    }
     if (intent.intent === "productivity") {
       response.dashboard = await dashboard(uid);
       return response;
@@ -1979,6 +2556,24 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
     return {suggestions: await createWeekRebalanceSuggestions(uid, targetMs)};
   });
 
+  /**
+   * Runs before the 03:15 recalculation so the skips and ignored suggestions it
+   * finds are already in the window that job reads.
+   */
+  const scheduledAdaptiveOutcomeSweep = onSchedule({region, schedule: "every day 02:45", timeZone: "Asia/Bangkok"}, async () => {
+    const nowMs = Date.now();
+    const settings = await db.collectionGroup("settings").limit(500).get();
+    for (const document of settings.docs.filter((item) => item.id === "adaptiveScheduling")) {
+      const uid = document.ref.parent.parent?.id;
+      if (!uid) continue;
+      try {
+        await sweepUserOutcomes(uid, nowMs);
+      } catch (error) {
+        console.error("Adaptive outcome sweep failed.", {error, uid});
+      }
+    }
+  });
+
   const scheduledAdaptivePatternRecalculation = onSchedule({region, schedule: "every day 03:15", timeZone: "Asia/Bangkok"}, async () => {
     const recent = await db.collectionGroup("schedulingBehaviorEvents")
       .where("createdAt", ">=", Timestamp.fromMillis(Date.now() - 2 * DAY_MS)).limit(1000).get();
@@ -2029,6 +2624,7 @@ export function createAdaptiveSchedulingFunctions({db, geminiApiKey, region}: Ad
     recordSchedulingBehavior,
     registerAdaptivePushToken,
     rejectSchedulingSuggestion,
+    scheduledAdaptiveOutcomeSweep,
     scheduledAdaptivePatternRecalculation,
     scheduledAutomaticAdaptiveScheduling,
     undoScheduleChange,

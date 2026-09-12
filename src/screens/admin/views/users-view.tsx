@@ -1,11 +1,12 @@
 import {useMemo, useState} from 'react';
-import {Alert, Pressable, StyleSheet, Text, TextInput, View} from 'react-native';
+import {Pressable, StyleSheet, Text, TextInput, View} from 'react-native';
 
 import {filterUsers, sortUsers, type AdminUserInput} from '@/admin/analytics';
 import {MaterialIcon} from '@/screens/native/user/user-ui';
 import {AdminCard, C, Empty, F, Row, SectionHead, SmallButton, date, items, styles as ui, text} from '../admin-ui';
 import {useAdminWorkspace} from '../admin-workspace';
 import type {AdminViewProps} from './view-props';
+import {showToast} from '@/components/app-toast';
 
 const PAGE_SIZE = 20;
 
@@ -90,7 +91,7 @@ export default function AdminUsersView({actionLoading, data, onAction, onNavigat
                 loading={actionLoading === `${uid}-reset`}
                 onPress={() => {
                   if (!user.email) {
-                    Alert.alert('ไม่มีอีเมล', 'บัญชีนี้ไม่มีอีเมลจึงส่งลิงก์รีเซ็ตรหัสผ่านไม่ได้');
+                    showToast('ไม่มีอีเมล', 'บัญชีนี้ไม่มีอีเมลจึงส่งลิงก์รีเซ็ตรหัสผ่านไม่ได้');
                     return;
                   }
                   onAction(`${uid}-reset`, 'reset-user-password', {email: user.email}, `ส่งลิงก์รีเซ็ตรหัสผ่านไปที่ ${user.email} แล้ว`);

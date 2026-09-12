@@ -51,6 +51,7 @@ async function main() {
       deadline: null,
       endAt: new Date('2026-08-05T15:00:00+07:00'),
       estimatedDurationMinutes: 60,
+      fixedLocalDate: '2031-10-10',
       googleSyncStatus: 'not_required',
       isFlexible: true,
       isLocked: false,
@@ -67,9 +68,11 @@ async function main() {
       title: 'อ่านหนังสือ',
       type: 'task',
       updatedAt: serverTimestamp(),
+      userSelectedTime: true,
     };
     const activityRef = doc(alice, 'users', 'alice', 'activities', 'activity-1');
     await assertSucceeds(setDoc(activityRef, validActivity));
+    await assertFails(setDoc(doc(alice, 'users', 'alice', 'activities', 'invalid-fixed-date'), {...validActivity, fixedLocalDate: '10/10/2031'}));
     await assertFails(setDoc(doc(bob, 'users', 'alice', 'activities', 'hijack'), {...validActivity, ownerId: 'alice'}));
     await assertFails(setDoc(doc(alice, 'users', 'alice', 'activities', 'forged-ai'), {...validActivity, aiConfidence: .99, aiReason: 'forged', aiScheduled: true}));
     await assertFails(setDoc(doc(alice, 'users', 'alice', 'activities', 'movable-appointment'), {...validActivity, type: 'appointment'}));

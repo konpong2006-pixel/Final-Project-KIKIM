@@ -136,15 +136,25 @@ function overlaps(startMs: number, endMs: number, item: EngineScheduleItem, buff
   return startMs < item.endMs + buffer && endMs > item.startMs - buffer;
 }
 
+export function overlappingScheduleItems(startMs: number, endMs: number, items: EngineScheduleItem[], bufferMinutes = 0) {
+  return items.filter((item) => overlaps(startMs, endMs, item, bufferMinutes));
+}
+
 function withinClockWindow(startMinute: number, endMinute: number, windowStart: number, windowEnd: number) {
   if (windowEnd >= windowStart) return startMinute >= windowStart && endMinute <= windowEnd;
   return startMinute >= windowStart || endMinute <= windowEnd;
 }
 
-function unavailable(startMs: number, endMs: number, preferences: AdaptiveSchedulingPreferences, category: AdaptiveActivityCategory) {
+function unavailable(
+  startMs: number,
+  endMs: number,
+  preferences: AdaptiveSchedulingPreferences,
+  category: AdaptiveActivityCategory,
+  options: {explicitDate?: boolean} = {},
+) {
   const start = zonedParts(startMs, preferences.timeZone);
   const end = zonedParts(endMs - 1, preferences.timeZone);
-  if (start.dateKey !== end.dateKey || !preferences.availableDays.includes(start.dayOfWeek)) return true;
+  if (start.dateKey !== end.dateKey || (!options.explicitDate && !preferences.availableDays.includes(start.dayOfWeek))) return true;
 
   const earliest = parseClockMinutes(preferences.earliestSchedulingTime) ?? 300;
   const latest = parseClockMinutes(preferences.latestSchedulingTime) ?? 1439;
@@ -218,7 +228,12 @@ function scoreSlot(request: AdaptiveSlotRequest, startMs: number, endMs: number)
   return {breakdown, endMs, expectedBenefit, startMs, totalScore: Number(totalScore.toFixed(3))};
 }
 
-export function validateCandidateSlot(request: AdaptiveSlotRequest, startMs: number, endMs: number) {
+export function validateCandidateSlot(
+  request: AdaptiveSlotRequest,
+  startMs: number,
+  endMs: number,
+  options: {allowConflicts?: boolean; allowOutsideAvailability?: boolean; userSelectedTime?: boolean} = {},
+) {
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs || request.durationMinutes <= 0) {
     return {code: "invalid_duration" as const, message: "ช่วงเวลาหรือระยะเวลาไม่ถูกต้อง", ok: false};
   }
@@ -235,7 +250,7 @@ export function validateCandidateSlot(request: AdaptiveSlotRequest, startMs: num
       return {code: "outside_requested_date" as const, message: "ช่วงเวลานี้ไม่ตรงกับวันที่ผู้ใช้ระบุ", ok: false};
     }
   }
-  if (unavailable(startMs, endMs, request.preferences, request.category)) {
+  if (!options.userSelectedTime && !options.allowOutsideAvailability && unavailable(startMs, endMs, request.preferences, request.category, {explicitDate: Boolean(request.requiredLocalDate)})) {
     return {code: "outside_availability" as const, message: "ช่วงเวลานี้อยู่นอกเวลาที่พร้อมใช้งานหรือเวลานอน", ok: false};
   }
   if (request.requiredLocalTimeWindow) {
@@ -250,12 +265,15 @@ export function validateCandidateSlot(request: AdaptiveSlotRequest, startMs: num
       return {code: "outside_requested_period" as const, message: "ช่วงเวลานี้ไม่ตรงกับช่วงเวลาที่ผู้ใช้ระบุ", ok: false};
     }
   }
+  const scheduleItems = options.userSelectedTime
+    ? request.scheduleItems.filter((item) => !item.id.startsWith("suggestion-"))
+    : request.scheduleItems;
   const requiredBreak = Math.max(request.preferences.transitionMinutes, request.preferences.minimumBreakMinutes);
-  if (request.scheduleItems.some((item) => overlaps(startMs, endMs, item, requiredBreak))) {
+  if (!options.allowConflicts && overlappingScheduleItems(startMs, endMs, scheduleItems, requiredBreak).length) {
     return {code: "conflict" as const, message: "ช่วงเวลานี้ชนกับรายการในตาราง", ok: false};
   }
-  const workload = dayWorkloadMinutes(startMs, request.scheduleItems, request.preferences.timeZone) + request.durationMinutes;
-  if (workload > request.preferences.maximumDailyWorkMinutes) {
+  const workload = dayWorkloadMinutes(startMs, scheduleItems, request.preferences.timeZone) + request.durationMinutes;
+  if (!options.userSelectedTime && workload > request.preferences.maximumDailyWorkMinutes) {
     return {code: "overload" as const, message: "ช่วงเวลานี้ทำให้ภาระงานต่อวันเกินค่าที่ตั้งไว้", ok: false};
   }
   return {ok: true};
@@ -270,7 +288,7 @@ export function findAdaptiveTimeSlots(request: AdaptiveSlotRequest, maximumResul
   const alignedStart = Math.ceil(request.earliestStartMs / step) * step;
   for (let startMs = alignedStart; startMs + duration <= hardEnd; startMs += step) {
     const endMs = startMs + duration;
-    if (!validateCandidateSlot(request, startMs, endMs).ok) continue;
+    if (!validateCandidateSlot(request, startMs, endMs, {allowOutsideAvailability: request.allowOutsideAvailability}).ok) continue;
     results.push(scoreSlot(request, startMs, endMs));
   }
   return results.sort((left, right) => right.totalScore - left.totalScore || left.startMs - right.startMs).slice(0, maximumResults);

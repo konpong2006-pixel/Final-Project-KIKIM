@@ -6,7 +6,7 @@
 // asserted twice -- once raising the alert, once with the cause resolved.
 import assert from 'node:assert/strict';
 
-import {buildNotificationFeed, unreadCount} from '../src/services/notification-feed.ts';
+import {buildNotificationFeed, isCalendarUrgent, isRankable, unreadCount} from '../src/services/notification-feed.ts';
 
 const now = new Date('2026-08-19T05:00:00Z'); // Wed 19 Aug, 12:00 Bangkok
 const tx = (amount, occurredAt, type = 'expense') => ({amount, occurredAt: new Date(occurredAt), type});
@@ -183,5 +183,42 @@ assert.deepEqual(
 
 // --- Nothing anywhere is an empty feed, not a row saying so.
 assert.deepEqual(buildNotificationFeed({now}), []);
+
+// --- Sleep logs are records, not to-dos ------------------------------------
+// A logged night used to be ranked as an overdue task with a "เสร็จ" button on
+// it. The exclusion reuses the burnout model's own predicate, so these cases
+// also pin that the two surfaces agree about what counts as sleep.
+{
+  const openNight = {
+    category: 'sleep', id: 'sleep-1', note: 'บันทึกด้วยปุ่มเข้านอน/ตื่นนอน',
+    startAt: '2026-08-19T10:29:00Z', status: 'in-progress', title: 'นอน', type: 'activity',
+  };
+  assert.equal(isRankable(openNight), false, 'an open sleep log must not be rankable');
+  assert.equal(isCalendarUrgent(openNight, now), false, 'a sleep log must never be flagged urgent');
+
+  const finishedNight = {...openNight, id: 'sleep-2', status: 'completed'};
+  assert.equal(isRankable(finishedNight), false, 'a finished night is still not a to-do');
+
+  // It must be gone from the derived feed entirely, not merely ranked lower.
+  const feed = buildNotificationFeed({activities: [openNight], now});
+  assert.equal(feed.filter((item) => item.id.startsWith('calendar:')).length, 0,
+    'no calendar alert may be raised for a sleep log');
+
+  // A genuine overdue task at the same time still raises its alert, so the
+  // filter is not simply suppressing everything.
+  const realTask = {
+    id: 'task-1', startAt: '2026-08-19T10:29:00Z', status: 'planned',
+    title: 'ส่งรายงาน', type: 'task',
+  };
+  assert.ok(isRankable(realTask));
+  assert.ok(isCalendarUrgent(realTask, now));
+  assert.equal(buildNotificationFeed({activities: [realTask], now})
+    .filter((item) => item.id.startsWith('calendar:')).length, 1);
+
+  // A task whose wording merely mentions sleep is work, and must stay visible.
+  const taskAboutSleep = {...realTask, id: 'task-2', title: 'อ่านหนังสือก่อนนอน'};
+  assert.ok(isRankable(taskAboutSleep), 'a task mentioning sleep is still a task');
+  assert.ok(isCalendarUrgent(taskAboutSleep, now));
+}
 
 console.log('SmartLife notification feed tests passed');

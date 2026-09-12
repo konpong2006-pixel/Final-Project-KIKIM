@@ -89,6 +89,19 @@ const assistantTelemetry = httpsCallable<
   {ok: true}
 >(assistantFunctions, 'assistantTelemetry');
 
+function withAssistantTimeout<T>(promise: Promise<T>, timeoutMs = 15_000): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(Object.assign(
+      new Error('SmartLife AI response timed out.'),
+      {code: 'functions/deadline-exceeded'},
+    )), timeoutMs);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
+
 export type AssistantReply = {
   content: string;
   errorKind?: AssistantErrorKind;
@@ -2167,8 +2180,13 @@ export async function buildAssistantReply(
   }
   const responseMode = chooseAssistantResponseMode(understoodMessage);
   const executionRoute = chooseAssistantExecutionRoute({hasMutation: false, isDemoMode});
+  let assistantStatePromise: ReturnType<typeof loadAssistantState> | null = null;
+  const loadState = () => {
+    assistantStatePromise ??= loadAssistantState(uid);
+    return assistantStatePromise;
+  };
   const loadFallback = async () => {
-    const [context, preferences] = await loadAssistantState(uid);
+    const [context, preferences] = await loadState();
     const studyReschedule = contextualStudyReschedule(understoodMessage, conversation);
     let answer = '';
     if (studyReschedule) {
@@ -2182,13 +2200,23 @@ export async function buildAssistantReply(
     }
     return {answer, context, preferences};
   };
-  // Read-only questions and advice are Gemini-first so follow-ups can revise,
-  // compare, plan, and answer every part naturally. The client only reads
-  // Firestore if a deterministic fallback is actually needed.
+  // Questions whose answer is already computable from SmartLife data should
+  // return immediately. Gemini remains responsible for explanations, plans,
+  // comparisons and coaching where natural-language synthesis adds value.
   if (executionRoute === 'gemini') {
     try {
+      const [context, preferences] = await loadState();
+      if (responseMode === 'direct' || responseMode === 'summarize') {
+        const instantAnswer = contextAnswer(understoodMessage, context, preferences) || contextualOfflineAnswer(
+          intent,
+          understoodMessage,
+          conversation,
+          context,
+          preferences,
+        );
+        if (instantAnswer) return reply(instantAnswer, 'deterministic');
+      }
       await ensureAppCheckReady();
-      const [context] = await loadAssistantState(uid);
       const history = conversation
         .filter((turn): turn is AssistantConversationTurn & {role: 'assistant' | 'user'} =>
           turn.role === 'assistant' || turn.role === 'user',
@@ -2209,13 +2237,15 @@ export async function buildAssistantReply(
         message: understoodMessage,
         responseMode,
       };
-      const result = await withAssistantAuthRetry(
-        () => smartLifeAssistantReply(assistantRequest),
-        {
-          expectedUid: uid,
-          getCurrentUid: () => auth.currentUser?.uid,
-          refreshToken: () => auth.currentUser?.getIdToken(true) ?? Promise.reject(new Error('No authenticated user.')),
-        },
+      const result = await withAssistantTimeout(
+        withAssistantAuthRetry(
+          () => smartLifeAssistantReply(assistantRequest),
+          {
+            expectedUid: uid,
+            getCurrentUid: () => auth.currentUser?.uid,
+            refreshToken: () => auth.currentUser?.getIdToken(true) ?? Promise.reject(new Error('No authenticated user.')),
+          },
+        ),
       );
       const content = result.data.content.trim();
       const suggestions = Array.isArray(result.data.suggestions)

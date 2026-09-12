@@ -44,6 +44,8 @@ import {
   calendarBlockLayout,
   cellGridLayout,
   extractSchedule,
+  gridCellsCarryFields,
+  sidewaysCalendarLayout,
   type ScheduleExtraction,
   type ScheduleStrategy,
 } from "./schedule-parsers/schedule-strategy";
@@ -909,9 +911,18 @@ type ScheduleContext = {
  * the image by the model, whose values are accepted only as far as the OCR
  * text bears them out.
  */
-async function readCellGridSchedule({annotation, apiKey, fusedText, imageDataUrl}: ScheduleContext): Promise<ScheduleExtraction | null> {
+async function readCellGridSchedule({annotation, apiKey, fusedText, imageDataUrl, layout}: ScheduleContext): Promise<ScheduleExtraction | null> {
   const grid = parseScheduleGrid(annotation);
   if (!grid.found) return null;
+  // Where the classes are drawn as coloured blocks, this reader answers only
+  // if the cells carried what it reads cells for -- a section, a room or a
+  // printed time range. A university timetable's coloured cells do; a
+  // calendar view on its side does not, and there the block reader (which
+  // measures each block's edges) is the better answer.
+  if (layout.kind === "calendar-block" && !gridCellsCarryFields(grid.entries)) {
+    console.info("[Schedule OCR] Grid cells carry no fields; leaving this to the block reader.", {entries: grid.entries.length});
+    return null;
+  }
 
   const courseTableLookup = buildCourseTableLookup(fusedText, annotation);
   const examTable = parseOptionalExamTable(fusedText, annotation);
@@ -1067,6 +1078,11 @@ async function readCalendarBlockSchedule({apiKey, fusedText, imageDataUrl, layou
 const SCHEDULE_STRATEGIES: ScheduleStrategy<ScheduleContext>[] = [
   {extract: readCalendarBlockSchedule, matches: calendarBlockLayout, name: "calendar-block"},
   {extract: readCellGridSchedule, matches: cellGridLayout, name: "cell-grid"},
+  // A calendar view on its side, only once the ruled-grid reader has found
+  // nothing: on a university timetable whose cells are merely coloured, the
+  // grid reader is the better of the two -- it takes the section, room and
+  // printed time range from the cell.
+  {extract: readCalendarBlockSchedule, matches: sidewaysCalendarLayout, name: "sideways-calendar"},
   {extract: readTextSchedule, matches: () => true, name: "text"},
 ];
 

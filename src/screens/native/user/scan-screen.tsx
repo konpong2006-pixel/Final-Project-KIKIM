@@ -2163,6 +2163,16 @@ export default function ScanScreen({
                               value={textValue(entry.endTime, "")}
                             />
                           </View>
+                          {/* Times block saving as much as a missing code or
+                              day does, so they say so where they are, not
+                              only in the toast the save button raises. */}
+                          {entryProblems.get(index)?.startTime || entryProblems.get(index)?.endTime ? (
+                            <Text style={localStyles.entryError}>
+                              {[entryProblems.get(index)?.startTime, entryProblems.get(index)?.endTime]
+                                .filter(Boolean)
+                                .join(" · ")}
+                            </Text>
+                          ) : null}
                           {textValue(entry.midtermExam, "").trim() ||
                           textValue(entry.finalExam, "").trim() ? (
                             <>

@@ -14,7 +14,8 @@ import fs from 'node:fs';
 import {decodeScanImage} from '../functions/src/schedule-parsers/image-pixels.ts';
 import {detectScheduleLayout} from '../functions/src/schedule-parsers/schedule-layout.ts';
 import {crossCheckCalendarBlocks, parseCalendarBlocks} from '../functions/src/schedule-parsers/calendar-block-schedule.ts';
-import {calendarBlockLayout, cellGridLayout} from '../functions/src/schedule-parsers/schedule-strategy.ts';
+import {calendarBlockLayout, cellGridLayout, gridCellsCarryFields, sidewaysCalendarLayout} from '../functions/src/schedule-parsers/schedule-strategy.ts';
+import {parseScheduleGrid} from '../functions/src/schedule-parsers/vision-schedule-grid.ts';
 
 let failures = 0;
 const check = (label, ok, detail = '') => {
@@ -63,7 +64,9 @@ function compareGeometry(name, entries, truth) {
 const cases = [
   ['cal-portal', 'days-as-columns', PORTAL],
   ['cal-narrow', 'days-as-columns', NARROW],
-  ['cal-rows', 'days-as-rows', PORTAL],
+  // Days down the side: the grid reader is offered this first and stands
+  // aside (its blocks carry no cell fields), so the block reader gets it.
+  ['cal-rows', 'days-as-rows', PORTAL, 'sideways'],
   // A phone screenshot: status bar with a "14:40" clock, screen header,
   // semester dropdown and week/day tabs above the grid; narrow columns where
   // Vision misreads a day header and wraps a code. The first real scan of
@@ -71,13 +74,14 @@ const cases = [
   ['cal-phone', 'days-as-columns', PORTAL],
 ];
 const read = {};
-for (const [name, orientation, truth] of cases) {
+for (const [name, orientation, truth, route] of cases) {
   const annotation = fixture(`vision-${name}.json`);
   const pixels = pixelsOf(name, annotation);
   const layout = detectScheduleLayout(annotation, pixels);
   check(`${name}: detected as ${orientation}`, layout.orientation === orientation, layout.orientation);
   check(`${name}: detected as coloured blocks`, layout.kind === 'calendar-block', `${layout.kind}, ${layout.codesInBlocks}/${layout.codes} codes in ${layout.blocks.length} blocks`);
-  check(`${name}: routed to the calendar reader`, calendarBlockLayout(layout));
+  check(`${name}: routed to the ${route === 'sideways' ? 'block reader as the fallback' : 'calendar reader'}`,
+    route === 'sideways' ? sidewaysCalendarLayout(layout) && !calendarBlockLayout(layout) : calendarBlockLayout(layout));
   const geometry = parseCalendarBlocks(layout, pixels);
   check(`${name}: times measured against the ruled lines`, geometry.timeScale === 'gridlines', geometry.timeScale);
   compareGeometry(name, geometry.entries, truth);
@@ -142,6 +146,43 @@ for (const name of ['vision-timetable.json', 'vision-grid-noheading.json', 'visi
   const hidden = byCodeOf(navBar.entries, '1101913');
   check('real scan: the model\'s 19:00 for the block under the nav bar does not replace the measured 18:00, and is flagged',
     hidden.endTime === '18:00' && hidden.reviewFields.includes('endTime') && hidden.reviewNotes.some((n) => n.includes('19:00')), JSON.stringify(hidden.reviewNotes));
+}
+
+// --- a REAL university timetable whose cells are coloured -------------------
+// Days down the side, times across the top, every course in a pastel cell with
+// its code, "Sec : 01", room and printed range. Cut from the user's phone
+// screenshot. Those coloured cells read as blocks, which sent this scan to the
+// calendar reader: it returned invented codes ("SEC101" from "Sec" + a room
+// number), empty section/room/name and wrong end times. A ruled grid belongs
+// to the grid reader whatever colour its cells are.
+{
+  const CODES = ['ACC315-68', 'RSU243-67', 'DMR209-64', 'DMR404-64', 'DMR303-64', 'ENL128-67', 'DMR202-64'];
+  const annotation = fixture('vision-grid-colour-cells.json');
+  const layout = detectScheduleLayout(annotation, pixelsOf('grid-colour-cells', annotation));
+  check('coloured-cell timetable: days down the side, cells read as blocks',
+    layout.orientation === 'days-as-rows' && layout.kind === 'calendar-block', `${layout.orientation} ${layout.kind}, ${layout.blocks.length} blocks`);
+  check('coloured-cell timetable: NOT routed to the calendar reader',
+    !calendarBlockLayout(layout) && cellGridLayout(layout));
+  const grid = parseScheduleGrid(annotation);
+  check('coloured-cell timetable: the grid reader reads exactly the seven real courses',
+    grid.entries.length === 7 && CODES.every((code) => grid.entries.some((entry) => entry.courseCode === code)),
+    grid.entries.map((entry) => entry.courseCode).join(' '));
+  check('coloured-cell timetable: no invented course code',
+    grid.entries.every((entry) => CODES.includes(entry.courseCode)), grid.entries.map((entry) => entry.courseCode).join(' '));
+  check('coloured-cell timetable: every course keeps its section and room from its cell',
+    grid.entries.every((entry) => entry.section && entry.room),
+    grid.entries.map((entry) => `${entry.courseCode} sec=${entry.section ?? '-'} room=${entry.room ?? '-'}`).join('; '));
+  check('coloured-cell timetable: its cells carry fields, so the grid reader answers',
+    gridCellsCarryFields(grid.entries));
+  // The sideways calendar is the other side of that rule: its blocks carry no
+  // section, room or printed range, so the grid reader stands aside for the
+  // block reader, which measures each block's edges.
+  const sideways = fixture('vision-cal-rows.json');
+  const sidewaysLayout = detectScheduleLayout(sideways, pixelsOf('cal-rows', sideways));
+  check('sideways calendar: still offered to the block reader as a fallback', sidewaysCalendarLayout(sidewaysLayout));
+  check('sideways calendar: its blocks carry no cell fields, so the grid reader stands aside',
+    !gridCellsCarryFields(parseScheduleGrid(sideways).entries),
+    parseScheduleGrid(sideways).entries.map((entry) => `${entry.courseCode} sec=${entry.section ?? '-'} room=${entry.room ?? '-'} end=${entry.endTime ?? '-'}`).join('; '));
 }
 
 // --- a time scale that cannot be trusted is refused, not used ---------------

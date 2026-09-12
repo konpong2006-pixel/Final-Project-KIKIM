@@ -16,15 +16,43 @@ export type ScheduleStrategy<Context extends {layout: ScheduleLayout}> = {
 };
 
 /**
- * Days across the top is a calendar view whatever its cells look like; days
- * down the side is one only when its classes are drawn as coloured blocks.
+ * Days across the top: a calendar view, whatever its cells look like. Days
+ * down the side is NOT decided by colour -- a real university timetable rules
+ * a fixed grid and fills each course's cell with a pastel colour, which reads
+ * as "blocks" and sent it to the calendar reader, losing the section, room
+ * and printed time range the ruled-grid reader takes from the cell. Days down
+ * the side goes to the ruled-grid reader first and falls back to the calendar
+ * reader (below) only when that finds nothing.
  */
-export const calendarBlockLayout = (layout: ScheduleLayout) =>
-  layout.orientation === "days-as-columns" ||
-  (layout.orientation === "days-as-rows" && layout.kind === "calendar-block");
+export const calendarBlockLayout = (layout: ScheduleLayout) => layout.orientation === "days-as-columns";
 
 /** The ruled-grid reader expects days down the side; it also gets the unsure cases, as before. */
 export const cellGridLayout = (layout: ScheduleLayout) => layout.orientation !== "days-as-columns";
+
+/**
+ * Days down the side drawn as free-floating coloured blocks -- a calendar
+ * view on its side. Only reached when the ruled-grid reader read no course,
+ * since on a ruled grid it is the weaker of the two.
+ */
+export const sidewaysCalendarLayout = (layout: ScheduleLayout) =>
+  layout.orientation === "days-as-rows" && layout.kind === "calendar-block";
+
+/**
+ * Whether the ruled-grid reader's answer should stand on a layout whose
+ * classes are drawn as coloured blocks.
+ *
+ * A university timetable rules a fixed grid and colours each course's cell:
+ * the cell carries a section, a room and a printed time range, which is
+ * exactly what this reader takes from it. A calendar view on its side colours
+ * free-floating blocks that carry none of those, and there the block reader --
+ * which measures each block's edges -- is the better answer.
+ */
+export function gridCellsCarryFields(
+  entries: {endTime?: string | null; room?: string | null; section?: string | null}[],
+) {
+  const carried = entries.filter((entry) => entry.section || entry.room || entry.endTime).length;
+  return carried >= entries.length / 2;
+}
 
 /**
  * Tries each matching strategy in order and keeps the first that reads any

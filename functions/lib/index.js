@@ -770,10 +770,19 @@ function flagUnverifiedModelFields(entries, ocrText) {
  * the image by the model, whose values are accepted only as far as the OCR
  * text bears them out.
  */
-async function readCellGridSchedule({ annotation, apiKey, fusedText, imageDataUrl }) {
+async function readCellGridSchedule({ annotation, apiKey, fusedText, imageDataUrl, layout }) {
     const grid = (0, vision_schedule_grid_1.parseScheduleGrid)(annotation);
     if (!grid.found)
         return null;
+    // Where the classes are drawn as coloured blocks, this reader answers only
+    // if the cells carried what it reads cells for -- a section, a room or a
+    // printed time range. A university timetable's coloured cells do; a
+    // calendar view on its side does not, and there the block reader (which
+    // measures each block's edges) is the better answer.
+    if (layout.kind === "calendar-block" && !(0, schedule_strategy_1.gridCellsCarryFields)(grid.entries)) {
+        console.info("[Schedule OCR] Grid cells carry no fields; leaving this to the block reader.", { entries: grid.entries.length });
+        return null;
+    }
     const courseTableLookup = (0, vision_course_table_1.buildCourseTableLookup)(fusedText, annotation);
     const examTable = (0, vision_exam_table_1.parseOptionalExamTable)(fusedText, annotation);
     const gridDays = grid.rows.map((row) => row.day);
@@ -922,6 +931,11 @@ async function readCalendarBlockSchedule({ apiKey, fusedText, imageDataUrl, layo
 const SCHEDULE_STRATEGIES = [
     { extract: readCalendarBlockSchedule, matches: schedule_strategy_1.calendarBlockLayout, name: "calendar-block" },
     { extract: readCellGridSchedule, matches: schedule_strategy_1.cellGridLayout, name: "cell-grid" },
+    // A calendar view on its side, only once the ruled-grid reader has found
+    // nothing: on a university timetable whose cells are merely coloured, the
+    // grid reader is the better of the two -- it takes the section, room and
+    // printed time range from the cell.
+    { extract: readCalendarBlockSchedule, matches: schedule_strategy_1.sidewaysCalendarLayout, name: "sideways-calendar" },
     { extract: readTextSchedule, matches: () => true, name: "text" },
 ];
 /**

@@ -1,7 +1,10 @@
-import * as Notifications from 'expo-notifications';
 import {doc, getDoc} from 'firebase/firestore';
 import {getFunctions, httpsCallable} from 'firebase/functions';
 import {Platform} from 'react-native';
+
+// Avoid evaluating Expo's native push-token auto-registration side effect on web.
+const Notifications: typeof import('expo-notifications') = Platform.OS === 'web' ? {} as typeof import('expo-notifications') : require('expo-notifications');
+
 
 import {db, firebaseApp} from '@/lib/firebase';
 import {pendingReviews} from '@/services/firestore';
@@ -325,24 +328,24 @@ async function ensureBackendAutoConsent(consent: LineConsentProfile) {
 }
 
 async function notifyPendingReviews(count: number) {
-  if (count <= 0) return;
+  if (Platform.OS === 'web' || count <= 0) return;
   await Notifications.scheduleNotificationAsync({
     content: {
       body: 'แตะเพื่อตรวจสอบและยืนยันก่อนบันทึกลงการเงินจริง',
       data: {url: '/user/smartlife_line_pending'},
-      title: `พร้อมตรวจสอบรายการจาก LINE ${count} รายการ`,
+      title: `พร้อมตรวจสอบรายการจากแจ้งเตือน ${count} รายการ`,
     },
     trigger: null,
   });
 }
 
 async function notifyAutoSavedTransactions(count: number) {
-  if (count <= 0) return;
+  if (Platform.OS === 'web' || count <= 0) return;
   await Notifications.scheduleNotificationAsync({
     content: {
-      body: 'ระบบเพิ่มรายการจาก LINE ธนาคารลงการเงินแล้ว แตะเพื่อดูและเพิ่มโน้ตได้',
+      body: 'ระบบเพิ่มรายการจากแจ้งเตือนการเงินแล้ว แตะเพื่อดูและเพิ่มโน้ตได้',
       data: {url: '/user/smartlife_finance_day'},
-      title: `บันทึกการเงินจาก LINE แล้ว ${count} รายการ`,
+      title: `บันทึกการเงินจากแจ้งเตือนแล้ว ${count} รายการ`,
     },
     trigger: null,
   });

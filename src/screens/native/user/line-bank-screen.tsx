@@ -62,8 +62,8 @@ export default function LineBankScreen({onNavigate, uid}: Props) {
           </Pressable>
           <View style={{flex: 1}}>
             <Text style={styles.headerEyebrow}>SmartLife Finance</Text>
-            <Text style={styles.headerTitle}>รับเงินจาก LINE</Text>
-            <Text style={styles.headerSubtitle}>ให้ระบบรับแจ้งเตือนธนาคารจาก LINE แล้วคุณแค่ตรวจยืนยัน</Text>
+            <Text style={styles.headerTitle}>อ่านแจ้งเตือนการเงิน</Text>
+            <Text style={styles.headerSubtitle}>อ่านรายรับ–รายจ่ายจาก LINE และแอปธนาคารที่รองรับบน Android</Text>
           </View>
         </View>
 
@@ -75,7 +75,7 @@ export default function LineBankScreen({onNavigate, uid}: Props) {
             </View>
             <View style={{flex: 1}}>
               <Text style={styles.heroTitle}>ผู้ใช้ไม่ต้องสอนระบบเอง</Text>
-              <Text style={styles.heroText}>เปิดการเชื่อมต่อครั้งเดียว ระบบจะรับแจ้งเตือน LINE ธนาคารที่มีจำนวนเงิน แล้วสร้างรายการรอให้ตรวจ ไม่บันทึกเงินจริงจนกว่าคุณยืนยัน</Text>
+              <Text style={styles.heroText}>เปิดสิทธิ์อ่านแจ้งเตือนบน Android รายการที่ข้อมูลครบ มั่นใจสูง และผ่านการตรวจจะบันทึกอัตโนมัติ ส่วนรายการไม่ชัดหรืออาจซ้ำจะรอให้ตรวจ</Text>
             </View>
           </View>
 
@@ -85,8 +85,8 @@ export default function LineBankScreen({onNavigate, uid}: Props) {
                 <MaterialIcon name="notifications_active" size={22} color={C.sage} />
               </View>
               <View style={{flex: 1}}>
-                <Text style={styles.statusTitle}>ระบบพร้อมรับจาก LINE แล้ว</Text>
-                <Text style={styles.statusText}>มีคิวในเครื่อง {pendingItems.length} รายการ รายการที่มั่นใจสูงจะบันทึกเข้าการเงินอัตโนมัติ ส่วนที่ไม่ชัดจะส่งให้ตรวจ</Text>
+                <Text style={styles.statusTitle}>พร้อมอ่านแจ้งเตือนการเงินแล้ว</Text>
+                <Text style={styles.statusText}>มีคิวในเครื่อง {pendingItems.length} รายการ รายการที่ข้อมูลครบและผ่านการตรวจจะบันทึกอัตโนมัติ ส่วนที่ไม่ชัดหรืออาจซ้ำจะรอให้ตรวจ</Text>
               </View>
             </View>
             <Pressable style={styles.statusButton}>
@@ -136,19 +136,19 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   headerBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingTop: 20, paddingBottom: 10, gap: 15 },
   backButton: { backgroundColor: '#fff', width: 44, height: 44, borderRadius: 16, alignItems: 'center', justifyContent: 'center', ...shadow },
-  headerEyebrow: { color: C.sage, fontFamily: F.b, fontSize: 10 },
+  headerEyebrow: { color: C.sage, fontFamily: F.b, fontSize: 12 },
   headerTitle: { color: C.ink, fontFamily: F.x, fontSize: 22, marginTop: 0 },
-  headerSubtitle: { color: C.muted, fontFamily: F.r, fontSize: 9, marginTop: 2 },
+  headerSubtitle: { color: C.muted, fontFamily: F.r, fontSize: 12, marginTop: 2 },
   scrollContent: { padding: 20 },
   heroCard: { backgroundColor: '#f4f8f4', borderRadius: 20, padding: 16, flexDirection: 'row', gap: 12, marginBottom: 16, borderWidth: 1, borderColor: '#eaf1ea' },
   heroIconBox: { width: 42, height: 42, borderRadius: 21, borderWidth: 1, borderColor: '#d3e2d3', alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff' },
   heroTitle: { color: C.ink, fontFamily: F.b, fontSize: 13 },
-  heroText: { color: '#6a786a', fontFamily: F.r, fontSize: 10, marginTop: 4, lineHeight: 15 },
+  heroText: { color: '#6a786a', fontFamily: F.r, fontSize: 12, marginTop: 4, lineHeight: 18 },
   statusCard: { backgroundColor: '#fdfdfd', borderRadius: 20, padding: 16, marginBottom: 24, ...shadow },
   statusRow: { flexDirection: 'row', gap: 12, marginBottom: 16 },
   statusIconBox: { width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff', ...shadow },
   statusTitle: { color: C.ink, fontFamily: F.b, fontSize: 13 },
-  statusText: { color: C.muted, fontFamily: F.r, fontSize: 10, marginTop: 4, lineHeight: 15 },
+  statusText: { color: C.muted, fontFamily: F.r, fontSize: 12, marginTop: 4, lineHeight: 18 },
   statusButton: { backgroundColor: '#62865c', borderRadius: 14, height: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
   statusButtonText: { color: '#fff', fontFamily: F.b, fontSize: 12 },
   fallbackLabel: { color: C.ink, fontFamily: F.b, fontSize: 12, marginBottom: 10, marginLeft: 4 },
@@ -158,6 +158,6 @@ const styles = StyleSheet.create({
   analyzeButtonText: { color: '#fff', fontFamily: F.b, fontSize: 13 },
   bottomTabs: { flexDirection: 'row', gap: 10 },
   tabItem: { flex: 1, backgroundColor: '#f3f5fc', borderRadius: 16, height: 50, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
-  tabText: { color: '#57679a', fontFamily: F.b, fontSize: 11 },
+  tabText: { color: '#57679a', fontFamily: F.b, fontSize: 12 },
   bottomSpacer: { height: 40 },
 });

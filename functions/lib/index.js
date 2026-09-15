@@ -4,6 +4,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.processLineBankNotification = exports.fanOutAnnouncement = exports.adminRefreshSystemStatus = exports.adminCreatePasswordResetLink = exports.adminSetUserDisabled = exports.adminRecommendationAudit = exports.adminMonitoringData = exports.analyzeAssistantFile = exports.transcribeAssistantAudio = exports.enhanceSmartLifeRecommendations = exports.smartLifeAssistantReply = exports.assistantTelemetry = exports.adminSeedDemoData = exports.adminDashboardCounts = exports.adminListUsers = exports.saveReviewedReceipt = exports.analyzeScan = exports.updateAdaptiveSchedulingPreferences = exports.undoScheduleChange = exports.scheduledAutomaticAdaptiveScheduling = exports.scheduledAdaptivePatternRecalculation = exports.scheduledAdaptiveOutcomeSweep = exports.rejectSchedulingSuggestion = exports.registerAdaptivePushToken = exports.recordSchedulingBehavior = exports.rebalanceUserWeek = exports.rebalanceUserDay = exports.processNaturalLanguageScheduleCommand = exports.lockAdaptiveScheduleItem = exports.getAdaptiveSchedulingDashboard = exports.generateAdaptiveSuggestion = exports.deleteSchedulingPattern = exports.deleteSchedulingBehaviorHistory = exports.createAdaptiveActivity = exports.chooseAlternativeSchedulingTime = exports.calculateSchedulingPatterns = exports.activateAdaptiveScheduling = exports.acceptSchedulingSuggestion = exports.updateLineConsent = exports.reportLineListenerStatus = exports.rejectLinePendingReview = exports.enqueueLinePendingReview = exports.confirmLineTransaction = exports.cleanupExpiredLinePendingReviews = void 0;
 exports.addReceiptReview = addReceiptReview;
 const vision_1 = require("@google-cloud/vision");
+const node_crypto_1 = require("node:crypto");
+const receipt_dedupe_1 = require("./receipt-parsers/receipt-dedupe");
 const app_1 = require("firebase-admin/app");
 const auth_1 = require("firebase-admin/auth");
 const firestore_1 = require("firebase-admin/firestore");
@@ -1282,7 +1284,10 @@ exports.analyzeScan = (0, https_1.onCall)({
         };
         const ensureVisionText = async () => (await ensureVisionResult()).fullTextAnnotation?.text?.trim() ?? "";
         const ensureScanFile = async () => {
-            scanFile ??= await storageScanFile(storagePath);
+            if (!scanFile) {
+                scanFile = await storageScanFile(storagePath);
+                await logRef.update({ sourceImageHash: (0, node_crypto_1.createHash)("sha256").update(scanFile.bytes).digest("hex") });
+            }
             return scanFile;
         };
         const ensureImageDataUrl = async () => {
@@ -1660,6 +1665,7 @@ exports.saveReviewedReceipt = (0, https_1.onCall)({
     }
     const confidence = reviewedReceiptNumber(request.data?.confidence, "confidence", 1);
     const items = reviewedReceiptItems(request.data?.items ?? []);
+    const reference = assistantString(request.data?.reference, 180);
     const occurredAtDate = new Date(requireString(request.data?.occurredAt, "occurredAt"));
     const earliest = Date.UTC(2000, 0, 1);
     const latest = Date.UTC(2100, 0, 1);
@@ -1679,7 +1685,37 @@ exports.saveReviewedReceipt = (0, https_1.onCall)({
             throw new https_1.HttpsError("permission-denied", "This OCR scan cannot be saved by the current user.");
         }
         if (typeof scan.correctedTransactionId === "string" && scan.correctedTransactionId) {
-            return scan.correctedTransactionId;
+            const existing = await write.get(db.collection("users").doc(uid).collection("transactions").doc(scan.correctedTransactionId));
+            if (existing.exists)
+                return { duplicate: true, transactionId: scan.correctedTransactionId };
+        }
+        const sourceImageHash = assistantString(scan.sourceImageHash, 64).toLowerCase();
+        const dedupeKeys = (0, receipt_dedupe_1.receiptDedupeKeys)({
+            scanId,
+            merchant,
+            occurredAt: occurredAtDate,
+            reference,
+            sourceImageHash: /^[a-f0-9]{64}$/.test(sourceImageHash) ? sourceImageHash : "",
+        });
+        const dedupeCollection = db.collection("users").doc(uid).collection("receiptDedupe");
+        for (const key of dedupeKeys) {
+            const marker = await write.get(dedupeCollection.doc(key));
+            const existingTransactionId = marker.exists ? marker.get("transactionId") : undefined;
+            if (typeof existingTransactionId === "string" && existingTransactionId) {
+                const existingTransaction = await write.get(db.collection("users").doc(uid).collection("transactions").doc(existingTransactionId));
+                if (!existingTransaction.exists)
+                    continue;
+                const now = firestore_1.FieldValue.serverTimestamp();
+                write.update(scanRef, {
+                    correctedAt: now,
+                    correctedByUser: true,
+                    correctedTransactionId: existingTransactionId,
+                    needsReview: false,
+                    verificationStatus: "verified",
+                    updatedAt: now,
+                });
+                return { duplicate: true, transactionId: existingTransactionId };
+            }
         }
         const now = firestore_1.FieldValue.serverTimestamp();
         write.set(transactionRef, {
@@ -1687,6 +1723,8 @@ exports.saveReviewedReceipt = (0, https_1.onCall)({
             category,
             confidence,
             createdAt: now,
+            dedupeKeys,
+            fingerprint: dedupeKeys[0],
             items,
             merchant,
             note: "นำเข้าจาก Smart Scan OCR",
@@ -1695,6 +1733,7 @@ exports.saveReviewedReceipt = (0, https_1.onCall)({
             receiptPath: storagePath,
             reviewedByUser: true,
             scanId,
+            source: "receipt_scan",
             status: "verified",
             type: "expense",
             updatedAt: now,
@@ -1715,9 +1754,14 @@ exports.saveReviewedReceipt = (0, https_1.onCall)({
             verificationStatus: "verified",
             updatedAt: now,
         });
-        return transactionRef.id;
+        dedupeKeys.forEach((key) => write.set(dedupeCollection.doc(key), {
+            createdAt: now,
+            ownerId: uid,
+            transactionId: transactionRef.id,
+        }));
+        return { duplicate: false, transactionId: transactionRef.id };
     });
-    return { transactionId };
+    return transactionId;
 });
 exports.adminListUsers = (0, https_1.onCall)({ region }, async (request) => {
     requireAdmin(request);

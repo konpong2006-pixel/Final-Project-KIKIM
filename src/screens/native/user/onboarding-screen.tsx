@@ -68,7 +68,7 @@ const localStyles = StyleSheet.create({
   iconSelected: {backgroundColor: '#668d65'},
   option: {alignItems: 'center', backgroundColor: 'rgba(255,255,255,.78)', borderColor: 'transparent', borderRadius: 17, borderWidth: 2, flexDirection: 'row', gap: 11, padding: 12},
   optionCopy: {flex: 1},
-  optionDescription: {color: '#758171', fontFamily: 'Prompt_400Regular', fontSize: 10, lineHeight: 15, marginTop: 2},
+  optionDescription: {color: '#758171', fontFamily: 'Prompt_400Regular', fontSize: 12, lineHeight: 18, marginTop: 2},
   optionList: {gap: 10, marginTop: 20},
   optionSelected: {backgroundColor: '#fff', borderColor: '#668d65'},
   optionTitle: {color: '#29351f', fontFamily: 'Prompt_700Bold', fontSize: 14},

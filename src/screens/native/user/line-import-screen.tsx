@@ -145,7 +145,7 @@ function thaiTime(value: string) {
 }
 
 function confidenceCopy(confidence: number) {
-  if (confidence >= 0.85) return {label: 'มั่นใจสูง', tone: C.sage};
+  if (confidence >= 0.85) return {label: 'อ่านข้อมูลมั่นใจสูง', tone: C.sage};
   if (confidence >= 0.65) return {label: 'ควรตรวจอีกครั้ง', tone: C.warning};
   return {label: 'ต้องตรวจละเอียด', tone: C.danger};
 }
@@ -182,11 +182,13 @@ function Header({
 function EditableDraftCard({
   actionLabel,
   draft: initialDraft,
+  source,
   disabled = false,
   onConfirm,
   onReject,
 }: {
   actionLabel: string;
+  source?: string;
   disabled?: boolean;
   draft: ParsedLineImportDraft;
   onConfirm: (draft: ParsedLineImportDraft) => Promise<void>;
@@ -226,6 +228,7 @@ function EditableDraftCard({
       </View>
       <View style={{flex: 1}}>
         <Text style={styles.draftTitle}>{draft.merchant || 'ยังไม่พบชื่อรายการ'}</Text>
+        {source ? <Text style={styles.infoText}>ที่มา: {source === 'bank_auto_listener' ? 'แอปธนาคาร' : source === 'line_auto_listener' ? 'LINE' : 'ข้อความที่นำเข้า'}</Text> : null}
         <Text style={[styles.confidence, {color: confidence.tone}]}>{confidence.label} · {draft.parserMode === 'llm' ? 'AI ช่วยอ่าน' : 'กฎธนาคาร'}</Text>
       </View>
       <Text style={[styles.amountPreview, {color: draft.type === 'income' ? C.sage : C.danger}]}>
@@ -233,6 +236,7 @@ function EditableDraftCard({
       </Text>
     </View>
 
+    <Text style={styles.infoText}>รอตรวจสอบก่อนบันทึก: {draft.warnings[0] || (draft.needsReview ? 'ข้อมูลยังต้องยืนยัน' : 'ตรวจข้อมูลและรายการซ้ำก่อนยืนยัน')}</Text>
     <Text style={styles.label}>เงินเข้า หรือ เงินออก</Text>
     <View style={styles.segmented}>
       {(['income', 'expense'] as const).map((type) => <Pressable key={type} onPress={() => update('type', type)} style={[styles.segment, draft.type === type && styles.segmentActive]}>
@@ -386,9 +390,9 @@ function ManualImport({onNavigate, uid}: {onNavigate: UserNavigate; uid: string}
   };
 
   return <UserShell active="smartlife_finance_day" onNavigate={onNavigate}>
-    <Header onBack={() => onNavigate('smartlife_finance_day')} subtitle="ให้ระบบรับแจ้งเตือนธนาคารจาก LINE แล้วคุณแค่ตรวจยืนยัน" title="รับเงินจาก LINE" />
+    <Header onBack={() => onNavigate('smartlife_finance_day')} subtitle="อ่านรายรับ–รายจ่ายจาก LINE และแอปธนาคารที่รองรับบน Android" title="อ่านแจ้งเตือนการเงิน" />
     <Card colors={['#f8fbf5', '#edf4e9']} style={styles.privacyCard}>
-      <View style={styles.infoRow}><MaterialIcon color={C.sage} name="privacy_tip" size={22} /><View style={{flex: 1}}><Text style={styles.infoTitle}>ผู้ใช้ไม่ต้องสอนระบบเอง</Text><Text style={styles.infoText}>เปิดการเชื่อมต่อครั้งเดียว ระบบจะรับแจ้งเตือน LINE ธนาคารที่มีจำนวนเงิน แล้วสร้างรายการรอให้ตรวจ ไม่บันทึกเงินจริงจนกว่าคุณยืนยัน</Text></View></View>
+      <View style={styles.infoRow}><MaterialIcon color={C.sage} name="privacy_tip" size={22} /><View style={{flex: 1}}><Text style={styles.infoTitle}>ผู้ใช้ไม่ต้องสอนระบบเอง</Text><Text style={styles.infoText}>เปิดสิทธิ์อ่านแจ้งเตือนบน Android รายการที่ข้อมูลครบ มั่นใจสูง และผ่านการตรวจจะบันทึกอัตโนมัติ ส่วนรายการไม่ชัดหรืออาจซ้ำจะรอให้ตรวจ</Text></View></View>
     </Card>
 
     <Card colors={autoReady ? ['#edf6e9', '#f7fbf4'] : ['#eef1fa', '#f8f9ff']} style={styles.autoImportCard}>
@@ -397,13 +401,13 @@ function ManualImport({onNavigate, uid}: {onNavigate: UserNavigate; uid: string}
           <MaterialIcon color={autoReady ? C.sage : C.violet} name={autoReady ? 'notifications_active' : 'notification_add'} size={25} />
         </View>
         <View style={{flex: 1}}>
-          <Text style={styles.infoTitle}>{autoReady ? 'ระบบพร้อมรับจาก LINE แล้ว' : 'เปิดรับจาก LINE แบบอัตโนมัติ'}</Text>
-          <Text style={styles.infoText}>{autoReady ? `มีคิวในเครื่อง ${nativeState.queueCount} รายการ รายการที่มั่นใจสูงจะบันทึกเข้าการเงินอัตโนมัติ ส่วนที่ไม่ชัดจะส่งให้ตรวจ` : 'Android ต้องให้สิทธิ์ Notification Access หนึ่งครั้ง หลังจากนั้นผู้ใช้ไม่ต้องคัดลอกข้อความเอง'}</Text>
+          <Text style={styles.infoTitle}>{autoReady ? 'พร้อมอ่านแจ้งเตือนการเงินแล้ว' : 'เปิดอ่านแจ้งเตือนการเงิน'}</Text>
+          <Text style={styles.infoText}>{autoReady ? `มีคิวในเครื่อง ${nativeState.queueCount} รายการ รายการที่ข้อมูลครบและผ่านการตรวจจะบันทึกอัตโนมัติ ส่วนที่ไม่ชัดหรืออาจซ้ำจะรอให้ตรวจ` : 'Android ต้องให้สิทธิ์ Notification Access หนึ่งครั้ง หลังจากนั้นผู้ใช้ไม่ต้องคัดลอกข้อความเอง'}</Text>
         </View>
       </View>
       <Pressable onPress={() => onNavigate(autoReady ? 'smartlife_line_pending' : 'smartlife_line_settings')} style={styles.autoButton}>
         <MaterialIcon color="#fff" name={autoReady ? 'fact_check' : 'settings'} size={18} />
-        <Text style={styles.analyzeText}>{autoReady ? 'ดูรายการที่ระบบรับมา' : 'ตั้งค่าการรับจาก LINE'}</Text>
+        <Text style={styles.analyzeText}>{autoReady ? 'ดูรายการที่ระบบรับมา' : 'ตั้งค่าอ่านแจ้งเตือนการเงิน'}</Text>
       </Pressable>
     </Card>
 
@@ -511,7 +515,7 @@ function PendingReview({onNavigate, uid}: {onNavigate: UserNavigate; uid: string
         draft.merchant.trim().length > 0;
       if (!canAutoSave) continue;
       autoSaving.current.add(item.id);
-      confirmLineTransaction(draft, 'line_auto_listener', {draftId: item.id})
+      confirmLineTransaction(draft, item.source, {draftId: item.id})
         .catch((error) => {
           autoSaving.current.delete(item.id);
           console.warn('[LINE Import] Auto-confirm pending item failed', error);
@@ -526,7 +530,7 @@ function PendingReview({onNavigate, uid}: {onNavigate: UserNavigate; uid: string
   ) => {
     setSaving(item.id);
     try {
-      const result = await confirmLineTransaction(draft, 'line_auto_listener', {
+      const result = await confirmLineTransaction(draft, item.source, {
         draftId: item.id,
         duplicateAction,
       });
@@ -559,7 +563,7 @@ function PendingReview({onNavigate, uid}: {onNavigate: UserNavigate; uid: string
       title="ลบรายการรอตรวจ?"
       visible={Boolean(rejecting)}
     />
-    <Header onBack={() => onNavigate('smartlife_line_import')} subtitle="เฉพาะรายการที่ระบบยังไม่มั่นใจเท่านั้น รายการมั่นใจสูงจะลงการเงินจริงอัตโนมัติ" title="รายการที่ต้องตรวจ" />
+    <Header onBack={() => onNavigate('smartlife_line_import')} subtitle="รายการที่ข้อมูลไม่ครบ มีข้อควรตรวจ หรืออาจซ้ำ แม้คะแนนอ่านสูงก็อาจต้องยืนยัน" title="รายการที่ต้องตรวจ" />
     <Card colors={['#eef1fa', '#f7f8fd']} style={styles.privacyCard}>
       <View style={styles.infoRow}><MaterialIcon color={C.violet} name="verified_user" size={22} /><View style={{flex: 1}}><Text style={styles.infoTitle}>เก็บชั่วคราวไม่เกิน 7 วัน</Text><Text style={styles.infoText}>ยืนยันแล้วข้อความดิบจะถูกลบทันที หากไม่ทำอะไรระบบจะลบอัตโนมัติเมื่อครบกำหนด</Text></View></View>
     </Card>
@@ -573,7 +577,7 @@ function PendingReview({onNavigate, uid}: {onNavigate: UserNavigate; uid: string
         <Text style={styles.retryText}>ลองโหลดใหม่</Text>
       </Pressable>
     </Card> : null}
-    {!loading && !loadError && !items.length ? <Card style={styles.emptyCard}><MaterialIcon color={C.sage} name="task_alt" size={34} /><Text style={styles.emptyTitle}>ไม่มีรายการที่ต้องตรวจ</Text><Text style={styles.infoText}>ถ้าระบบมั่นใจสูง รายการจาก LINE จะถูกบันทึกเข้าหน้าการเงินทันที</Text></Card> : null}
+    {!loading && !loadError && !items.length ? <Card style={styles.emptyCard}><MaterialIcon color={C.sage} name="task_alt" size={34} /><Text style={styles.emptyTitle}>ไม่มีรายการที่ต้องตรวจ</Text><Text style={styles.infoText}>รายการจากแจ้งเตือนที่ข้อมูลครบและผ่านการตรวจจะบันทึกอัตโนมัติ ดูได้ที่หน้าการเงิน</Text></Card> : null}
     <ConfirmDialog
       confirmLabel="ข้ามรายการ"
       extraAction={{icon: 'edit_note', label: 'อัปเดตโน้ต', onPress: () => { const prompt = duplicate; setDuplicate(null); void prompt?.rerun('update_note').catch(() => undefined); }}}
@@ -590,6 +594,7 @@ function PendingReview({onNavigate, uid}: {onNavigate: UserNavigate; uid: string
       actionLabel="ยืนยันลงการเงิน"
       disabled={saving === item.id}
       draft={fromPending(item)}
+      source={item.source}
       key={item.id}
       onConfirm={(draft) => confirm(item, draft)}
       onReject={() => reject(item)}
@@ -644,11 +649,11 @@ function ListenerSettings({onNavigate, uid}: {onNavigate: UserNavigate; uid: str
     if (Platform.OS !== 'android') return {label: 'โหมดอัตโนมัติรองรับ Android เท่านั้น', tone: C.muted};
     if (!isAuto) return {label: 'ใช้โหมดวาง/แชร์ข้อความ', tone: C.muted};
     if (!nativeState.permissionGranted) return {label: 'รออนุญาตสิทธิ์แจ้งเตือน', tone: C.warning};
-    return {label: 'เชื่อมต่อและรอตรวจ LINE', tone: C.sage};
+    return {label: 'เชื่อมต่อและรอแจ้งเตือนการเงิน', tone: C.sage};
   }, [isAuto, nativeState.permissionGranted]);
 
   return <UserShell active="smartlife_profile" onNavigate={onNavigate}>
-    <Header onBack={() => onNavigate('smartlife_profile')} subtitle="คุณควบคุมสิทธิ์และการเก็บข้อมูลได้ตลอดเวลา" title="LINE การเงิน" />
+    <Header onBack={() => onNavigate('smartlife_profile')} subtitle="คุณควบคุมสิทธิ์และการเก็บข้อมูลได้ตลอดเวลา" title="อ่านแจ้งเตือนการเงิน" />
     {loading ? <View style={styles.loading}><ActivityIndicator color={C.sage} /></View> : <>
       <Card colors={['#f7fbf4', '#edf4e9']} style={styles.statusCard}>
         <View style={styles.statusHead}><View style={styles.statusIcon}><MaterialIcon color={status.tone} name={isAuto ? 'notifications_active' : 'content_paste'} size={25} /></View><View style={{flex: 1}}><Text style={styles.infoTitle}>สถานะปัจจุบัน</Text><Text style={[styles.statusText, {color: status.tone}]}>{status.label}</Text></View></View>
@@ -660,12 +665,12 @@ function ListenerSettings({onNavigate, uid}: {onNavigate: UserNavigate; uid: str
         <View style={styles.tierIcon}><MaterialIcon color={C.sage} name="content_paste" size={22} /></View><View style={{flex: 1}}><Text style={styles.tierTitle}>วางหรือแชร์เอง</Text><Text style={styles.tierText}>ปลอดภัยที่สุดและเป็นค่าเริ่มต้น ใช้ได้ทั้ง Android และ iOS</Text></View>{!isAuto ? <MaterialIcon color={C.sage} name="check_circle" size={22} /> : null}
       </Pressable>
       {Platform.OS === 'android' ? <Pressable onPress={isAuto ? undefined : enableAuto} style={[styles.tierCard, isAuto && styles.tierActive]}>
-        <View style={[styles.tierIcon, {backgroundColor: C.violetSoft}]}><MaterialIcon color={C.violet} name="notification_add" size={22} /></View><View style={{flex: 1}}><Text style={styles.tierTitle}>ตรวจแจ้งเตือน LINE อัตโนมัติ</Text><Text style={styles.tierText}>สร้างร่างรอตรวจจากแจ้งเตือนใหม่ โดยยังไม่บันทึกเงิน</Text></View>{isAuto ? <MaterialIcon color={C.sage} name="check_circle" size={22} /> : null}
+        <View style={[styles.tierIcon, {backgroundColor: C.violetSoft}]}><MaterialIcon color={C.violet} name="notification_add" size={22} /></View><View style={{flex: 1}}><Text style={styles.tierTitle}>อ่านแจ้งเตือนการเงินอัตโนมัติ</Text><Text style={styles.tierText}>บันทึกอัตโนมัติเมื่อข้อมูลครบและผ่านการตรวจ รายการไม่ชัดหรืออาจซ้ำจะรอให้ตรวจ</Text></View>{isAuto ? <MaterialIcon color={C.sage} name="check_circle" size={22} /> : null}
       </Pressable> : null}
 
       {Platform.OS === 'android' && isAuto ? <Card style={styles.permissionCard}>
         <Text style={styles.infoTitle}>ขั้นตอนที่ Android ต้องให้คุณกดเอง</Text>
-        <Text style={styles.infoText}>1. เปิดสิทธิ์ “การเข้าถึงการแจ้งเตือน” ให้ SmartLife{'\n'}2. ให้ LINE แสดงข้อความตัวอย่างในการแจ้งเตือน{'\n'}3. รายการที่มั่นใจสูงจะถูกบันทึกอัตโนมัติ ส่วนที่ไม่ชัดจะอยู่ในรายการที่ต้องตรวจ{'\n'}4. ปิดการจำกัดแบตเตอรี่ หากเครื่องหยุดแอปเบื้องหลัง</Text>
+        <Text style={styles.infoText}>1. เปิดสิทธิ์ “การเข้าถึงการแจ้งเตือน” ให้ SmartLife{'\n'}2. ให้ LINE และแอปธนาคารที่รองรับแสดงรายละเอียดในการแจ้งเตือน{'\n'}3. รายการที่ข้อมูลครบและผ่านการตรวจจะบันทึกอัตโนมัติ ส่วนที่ไม่ชัดหรืออาจซ้ำจะรอให้ตรวจ{'\n'}4. ปิดการจำกัดแบตเตอรี่ หากเครื่องหยุดแอปเบื้องหลัง</Text>
         <Pressable disabled={working} onPress={() => openLineNotificationAccessSettings().catch(() => undefined)} style={styles.secondaryButton}><Text style={styles.secondaryText}>เปิดหน้าสิทธิ์ Android</Text></Pressable>
         <View style={styles.smallActionRow}>
           <Pressable onPress={() => requestLineListenerReconnect().then(refresh)} style={styles.smallButton}><Text style={styles.smallButtonText}>เชื่อมต่อใหม่</Text></Pressable>
@@ -675,7 +680,7 @@ function ListenerSettings({onNavigate, uid}: {onNavigate: UserNavigate; uid: str
 
       <Card colors={['#fffaf4', '#f8f2e8']} style={styles.privacyCard}>
         <Text style={styles.infoTitle}>ความเป็นส่วนตัวและข้อจำกัด</Text>
-        <Text style={styles.infoText}>• กรอง package ให้เหลือเฉพาะ LINE ก่อนอ่านชื่อและข้อความ{'\n'}• ไม่อ่านประวัติแชต รูป หรือแอปธนาคารโดยตรง{'\n'}• ถ้า LINE ซ่อนข้อความ ตัวระบบจะอ่านจำนวนเงินไม่ได้{'\n'}• รูปแบบข้อความธนาคารอาจเปลี่ยน จึงต้องตรวจทุกครั้ง{'\n'}• AI fallback รับเฉพาะข้อความที่ปิดเลขบัญชีแล้ว</Text>
+        <Text style={styles.infoText}>• รับเฉพาะแจ้งเตือน LINE และแอปธนาคารที่รองรับ{'\n'}• ไม่เปิดอ่านแชตย้อนหลัง รูปในแชต หรือข้อมูลภายในบัญชีธนาคาร{'\n'}• หากแจ้งเตือนซ่อนจำนวนเงิน จะไม่สามารถบันทึกยอดอัตโนมัติได้{'\n'}• ข้อมูลไม่ครบหรือมีข้อควรตรวจจะรอให้คุณยืนยัน{'\n'}• AI fallback รับเฉพาะข้อความที่ปิดเลขบัญชีแล้ว</Text>
       </Card>
       <Pressable onPress={() => onNavigate('smartlife_line_import')} style={styles.analyzeButton}><MaterialIcon color="#fff" name="add_card" size={20} /><Text style={styles.analyzeText}>ไปหน้านำเข้ารายการ</Text></Pressable>
     </>}
@@ -683,10 +688,10 @@ function ListenerSettings({onNavigate, uid}: {onNavigate: UserNavigate; uid: str
       cancelLabel="ยังไม่เปิด"
       confirmLabel="ยินยอมและไปตั้งค่า"
       icon="notifications_active"
-      message="SmartLife จะตรวจเฉพาะแจ้งเตือนจากแอป LINE ที่มีจำนวนเงิน ไม่อ่านแชตย้อนหลัง ไม่อ่านข้อความจากแอปอื่น และไม่บันทึกเป็นธุรกรรมจนกว่าคุณจะยืนยัน"
+      message="SmartLife ใช้สิทธิ์เข้าถึงการแจ้งเตือนของ Android เพื่อคัดกรองข้อความการเงินจาก LINE และแอปธนาคารที่รองรับ ไม่เปิดอ่านแชตย้อนหลังหรือข้อมูลภายในบัญชี รายการที่ข้อมูลครบและผ่านการตรวจจะบันทึกอัตโนมัติ ส่วนรายการไม่ชัดหรืออาจซ้ำจะรอให้คุณยืนยัน คุณปิดสิทธิ์ได้ทุกเมื่อ"
       onCancel={() => setTierPrompt(null)}
       onConfirm={() => { setTierPrompt(null); void changeTier('line_auto_sync').then(() => openLineNotificationAccessSettings()); }}
-      title="อนุญาตให้อ่านแจ้งเตือน LINE?"
+      title="อนุญาตให้อ่านแจ้งเตือนการเงิน?"
       tone="neutral"
       visible={tierPrompt === 'enable'}
     />
@@ -722,62 +727,62 @@ const styles = StyleSheet.create({
   autoButton: {alignItems: 'center', backgroundColor: C.sage, borderRadius: 12, flexDirection: 'row', gap: 7, justifyContent: 'center', marginTop: 12, minHeight: 46},
   autoImportCard: {marginTop: 10, padding: 14},
   back: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 15, height: 46, justifyContent: 'center', width: 46},
-  confidence: {fontFamily: F.s, fontSize: 9, marginTop: 2},
+  confidence: {fontFamily: F.s, fontSize: 12, marginTop: 2},
   confirmButton: {alignItems: 'center', backgroundColor: C.sage, borderRadius: 12, flex: 1, flexDirection: 'row', gap: 6, justifyContent: 'center', minHeight: 46},
-  confirmHint: {color: C.muted, fontFamily: F.r, fontSize: 8, marginTop: 8, textAlign: 'center'},
-  confirmText: {color: '#fff', fontFamily: F.b, fontSize: 11},
+  confirmHint: {color: C.muted, fontFamily: F.r, fontSize: 12, marginTop: 8, textAlign: 'center'},
+  confirmText: {color: '#fff', fontFamily: F.b, fontSize: 12},
   dateButton: {alignItems: 'center', backgroundColor: '#f6f8f4', borderColor: C.line, borderRadius: 12, borderWidth: 1, flex: 1, flexDirection: 'row', gap: 7, minHeight: 48, paddingHorizontal: 11},
   dateRow: {flexDirection: 'row', gap: 8},
-  dateText: {color: C.ink, fontFamily: F.s, fontSize: 10},
+  dateText: {color: C.ink, fontFamily: F.s, fontSize: 12},
   disabled: {opacity: 0.55},
   draftCard: {padding: 14},
   draftHead: {alignItems: 'center', flexDirection: 'row', gap: 9},
   draftTitle: {color: C.ink, fontFamily: F.b, fontSize: 13},
   emptyCard: {alignItems: 'center', gap: 4, paddingVertical: 30},
   emptyTitle: {color: C.ink, fontFamily: F.b, fontSize: 14},
-  eyebrow: {color: C.sage, fontFamily: F.b, fontSize: 9},
+  eyebrow: {color: C.sage, fontFamily: F.b, fontSize: 12},
   header: {alignItems: 'center', flexDirection: 'row', gap: 12, marginBottom: 5},
   iconBox: {alignItems: 'center', borderRadius: 13, height: 42, justifyContent: 'center', width: 42},
   infoRow: {alignItems: 'center', flexDirection: 'row', gap: 10},
-  infoText: {color: C.muted, fontFamily: F.r, fontSize: 10, lineHeight: 17, marginTop: 2},
+  infoText: {color: C.muted, fontFamily: F.r, fontSize: 12, lineHeight: 18, marginTop: 2},
   infoTitle: {color: C.ink, fontFamily: F.b, fontSize: 12},
-  input: {backgroundColor: '#f8faf6', borderColor: C.line, borderRadius: 12, borderWidth: 1, color: C.ink, fontFamily: F.r, fontSize: 11, minHeight: 48, paddingHorizontal: 12},
-  label: {color: '#53604f', fontFamily: F.s, fontSize: 10, marginBottom: 6, marginTop: 12},
+  input: {backgroundColor: '#f8faf6', borderColor: C.line, borderRadius: 12, borderWidth: 1, color: C.ink, fontFamily: F.r, fontSize: 12, minHeight: 48, paddingHorizontal: 12},
+  label: {color: '#53604f', fontFamily: F.s, fontSize: 12, marginBottom: 6, marginTop: 12},
   loading: {alignItems: 'center', gap: 8, paddingVertical: 30},
-  meta: {color: C.muted, fontFamily: F.m, fontSize: 9, marginTop: 10},
+  meta: {color: C.muted, fontFamily: F.m, fontSize: 12, marginTop: 10},
   noteInput: {minHeight: 76, paddingTop: 10},
   permissionCard: {padding: 14},
   privacyCard: {padding: 14},
   quickLink: {alignItems: 'center', backgroundColor: C.violetSoft, borderRadius: 12, flex: 1, flexDirection: 'row', gap: 6, justifyContent: 'center', minHeight: 44},
-  quickLinkText: {color: C.violet, fontFamily: F.b, fontSize: 9},
+  quickLinkText: {color: C.violet, fontFamily: F.b, fontSize: 12},
   quickLinks: {flexDirection: 'row', gap: 8, marginTop: 9},
   rawInput: {minHeight: 150, paddingTop: 12},
   rejectButton: {alignItems: 'center', backgroundColor: '#faece8', borderRadius: 12, justifyContent: 'center', minHeight: 46, paddingHorizontal: 12},
-  rejectText: {color: C.danger, fontFamily: F.b, fontSize: 9},
+  rejectText: {color: C.danger, fontFamily: F.b, fontSize: 12},
   retryButton: {alignItems: 'center', backgroundColor: C.sage, borderRadius: 12, flexDirection: 'row', gap: 6, justifyContent: 'center', marginTop: 12, minHeight: 42, paddingHorizontal: 16},
-  retryText: {color: '#fff', fontFamily: F.b, fontSize: 10},
+  retryText: {color: '#fff', fontFamily: F.b, fontSize: 12},
   secondaryButton: {alignItems: 'center', backgroundColor: C.violet, borderRadius: 12, justifyContent: 'center', marginTop: 12, minHeight: 44},
-  secondaryText: {color: '#fff', fontFamily: F.b, fontSize: 10},
+  secondaryText: {color: '#fff', fontFamily: F.b, fontSize: 12},
   sectionTitle: {color: C.ink, fontFamily: F.x, fontSize: 16, marginTop: 18},
   segment: {alignItems: 'center', borderRadius: 9, flex: 1, paddingVertical: 8},
   segmentActive: {backgroundColor: C.sage},
   segmented: {backgroundColor: C.sageSoft, borderRadius: 12, flexDirection: 'row', padding: 4},
-  segmentText: {color: C.sage, fontFamily: F.b, fontSize: 10},
+  segmentText: {color: C.sage, fontFamily: F.b, fontSize: 12},
   segmentTextActive: {color: '#fff'},
   smallActionRow: {flexDirection: 'row', gap: 8, marginTop: 8},
   smallButton: {alignItems: 'center', backgroundColor: C.violetSoft, borderRadius: 10, flex: 1, justifyContent: 'center', minHeight: 40},
-  smallButtonText: {color: C.violet, fontFamily: F.b, fontSize: 9},
+  smallButtonText: {color: C.violet, fontFamily: F.b, fontSize: 12},
   statusCard: {padding: 14},
   statusHead: {alignItems: 'center', flexDirection: 'row', gap: 10},
   statusIcon: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 15, height: 46, justifyContent: 'center', width: 46},
-  statusText: {fontFamily: F.b, fontSize: 11, marginTop: 2},
-  subtitle: {color: C.muted, fontFamily: F.r, fontSize: 9, marginTop: 1},
+  statusText: {fontFamily: F.b, fontSize: 12, marginTop: 2},
+  subtitle: {color: C.muted, fontFamily: F.r, fontSize: 12, marginTop: 1},
   tierActive: {borderColor: C.sage, borderWidth: 1.5},
   tierCard: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderColor: C.line, borderRadius: 15, borderWidth: 1, flexDirection: 'row', gap: 10, marginTop: 9, padding: 12},
   tierIcon: {alignItems: 'center', backgroundColor: C.sageSoft, borderRadius: 13, height: 42, justifyContent: 'center', width: 42},
-  tierText: {color: C.muted, fontFamily: F.r, fontSize: 9, lineHeight: 14, marginTop: 1},
-  tierTitle: {color: C.ink, fontFamily: F.b, fontSize: 11},
+  tierText: {color: C.muted, fontFamily: F.r, fontSize: 12, lineHeight: 18, marginTop: 1},
+  tierTitle: {color: C.ink, fontFamily: F.b, fontSize: 12},
   title: {color: C.ink, fontFamily: F.x, fontSize: 21},
   warningBox: {backgroundColor: C.warningSoft, borderRadius: 11, flexDirection: 'row', gap: 7, marginTop: 10, padding: 9},
-  warningText: {color: '#76622f', fontFamily: F.r, fontSize: 8, lineHeight: 13},
+  warningText: {color: '#76622f', fontFamily: F.r, fontSize: 12, lineHeight: 18},
 });

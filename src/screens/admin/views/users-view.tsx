@@ -123,7 +123,7 @@ export default function AdminUsersView({actionLoading, data, onAction, onNavigat
 }
 
 const local = StyleSheet.create({
-  footnote: {color: C.muted, fontFamily: F.r, fontSize: 8, marginTop: 12, textAlign: 'center'},
-  searchInput: {color: C.pine, flex: 1, fontFamily: F.m, fontSize: 11, minHeight: 40},
+  footnote: {color: C.muted, fontFamily: F.r, fontSize: 12, marginTop: 12, textAlign: 'center'},
+  searchInput: {color: C.pine, flex: 1, fontFamily: F.m, fontSize: 12, minHeight: 40},
   searchRow: {alignItems: 'center', backgroundColor: '#f6f8f3', borderColor: '#e1e6dd', borderRadius: 13, borderWidth: 1, flexDirection: 'row', gap: 8, marginTop: 11, paddingHorizontal: 12},
 });

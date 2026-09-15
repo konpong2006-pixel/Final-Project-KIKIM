@@ -1,10 +1,11 @@
 import {Timestamp} from 'firebase/firestore';
 
-import {noteFolders, notes, schedules, transactions} from '@/services/firestore';
+import {noteFolders, notes, schedules} from '@/services/firestore';
 import {documentNoteText} from '@/services/document-note-text';
-import type {OcrResult} from '@/services/ocr';
+import {saveReviewedReceipt, type OcrResult} from '@/services/ocr';
 import {ensureUserProfile} from '@/services/auth';
 import {normalizeExpenseCategory} from '@/config/expense-categories';
+import {timetableHoursProblem} from '@/lib/timetable-hours';
 
 type ScheduleEntry = {
   buildingName?: string;
@@ -23,6 +24,7 @@ type ScheduleEntry = {
 export type SavedScan = {
   destination: 'smartlife_calendar_month' | 'smartlife_finance_month' | 'smartlife_planner_notes';
   documentIds: string[];
+  duplicate?: boolean;
 };
 
 const THAI_WEEKDAYS: [number, string[]][] = [
@@ -148,6 +150,11 @@ function parseRequiredTime(value: unknown, label: string) {
   };
 }
 
+/** A parsed time back as `HH:MM`, the form the shared timetable rule reads. */
+function clockText(value: {hour: number; minute: number}) {
+  return `${String(value.hour).padStart(2, '0')}:${String(value.minute).padStart(2, '0')}`;
+}
+
 function parseTime(value: unknown, fallbackHour: number) {
   const match = text(value).match(/(\d{1,2})\s*[:.]\s*(\d{2})/);
   return match ? {
@@ -263,6 +270,11 @@ function weeklyScheduleTimes(entry: ScheduleEntry, index: number, semesterStart:
   if (targetWeekday < 0) throw new Error(`\u0e23\u0e32\u0e22\u0e27\u0e34\u0e0a\u0e32\u0e17\u0e35\u0e48 ${index + 1} \u0e22\u0e31\u0e07\u0e44\u0e21\u0e48\u0e23\u0e30\u0e1a\u0e38\u0e27\u0e31\u0e19\u0e40\u0e23\u0e35\u0e22\u0e19`);
   const startTime = parseRequiredTime(entry.startTime, `เวลาเริ่มของรายวิชาที่ ${index + 1}`);
   const endTime = parseRequiredTime(entry.endTime, `เวลาสิ้นสุดของรายวิชาที่ ${index + 1}`);
+  // Said out loud rather than corrected. Below, a backwards pair used to become
+  // "start plus one hour" for every week of the term, so a misread timetable
+  // filled the calendar with a duration nobody chose and nothing said so.
+  const hoursProblem = timetableHoursProblem(clockText(startTime), clockText(endTime));
+  if (hoursProblem) throw new Error(`รายวิชาที่ ${index + 1}: ${hoursProblem}`);
   const dayOffset = (targetWeekday - firstSemesterDay.getUTCDay() + 7) % 7;
   let cursor = bangkokDate(semesterStart.year, semesterStart.month, semesterStart.day + dayOffset, 12, 0);
   const occurrences: {endAt: Date; startAt: Date}[] = [];
@@ -272,8 +284,7 @@ function weeklyScheduleTimes(entry: ScheduleEntry, index: number, semesterStart:
     const month = cursor.getUTCMonth() + 1;
     const day = cursor.getUTCDate();
     const startAt = bangkokDate(year, month, day, startTime.hour, startTime.minute);
-    let endAt = bangkokDate(year, month, day, endTime.hour, endTime.minute);
-    if (endAt.getTime() <= startAt.getTime()) endAt = new Date(startAt.getTime() + 60 * 60 * 1000);
+    const endAt = bangkokDate(year, month, day, endTime.hour, endTime.minute);
     occurrences.push({endAt, startAt});
     cursor = new Date(cursor.getTime() + 7 * 24 * 60 * 60 * 1000);
   }
@@ -365,7 +376,7 @@ export async function saveOcrResult({
       ? Number(Math.min(1, Math.max(0, rawConfidence)).toFixed(2))
       : 0;
 
-    const id = await transactions.create(uid, {
+    const saved = await saveReviewedReceipt({
       amount,
       // Normalised so a scanned row lands in the same bucket as a manual one;
       // the parser emits English ("Food", "Others") and the app speaks Thai.
@@ -373,15 +384,16 @@ export async function saveOcrResult({
       confidence,
       items: receiptItemsForStorage(draft.items),
       merchant: text(draft.merchant) || text(draft.merchantName) || text(draft.store) || text(draft.vendor) || '\u0e44\u0e21\u0e48\u0e23\u0e30\u0e1a\u0e38\u0e23\u0e49\u0e32\u0e19\u0e04\u0e49\u0e32',
-      note: '\u0e19\u0e33\u0e40\u0e02\u0e49\u0e32\u0e08\u0e32\u0e01 Smart Scan OCR',
-      occurredAt: Timestamp.fromDate(receiptOccurredAt(draft.date, draft.time)),
-      receiptPath: text(result.storagePath),
-      reviewedByUser: Boolean(result.parsed.needsReview),
+      occurredAt: receiptOccurredAt(draft.date, draft.time).toISOString(),
+      reference: text(draft.reference),
       scanId: result.logId,
-      status: 'verified',
-      type: 'expense',
+      storagePath: text(result.storagePath),
     });
-    return {destination: 'smartlife_finance_month', documentIds: [id]};
+    return {
+      destination: 'smartlife_finance_month',
+      documentIds: [saved.transactionId],
+      duplicate: saved.duplicate,
+    };
   }
 
   const entries = scheduleEntries(draft);

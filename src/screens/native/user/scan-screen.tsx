@@ -26,6 +26,7 @@ import LoadingAndSuccessModal, {
   type FeedbackPhase,
 } from "@/components/loading-success-modal";
 import { defaultTermDates, suggestedSchoolTerm } from "@/lib/term-dates";
+import { clockMinutes, timetableHoursProblem } from "@/lib/timetable-hours";
 import {
   buildReceiptHtml,
   normalizeReceiptItems,
@@ -33,7 +34,7 @@ import {
 } from "@/lib/receipt-html";
 import { decodeUnicodeEscapes } from "@/lib/unicode-text";
 import { useInstitution } from "@/providers/institution-provider";
-import { uploadAndAnalyzeScan, type OcrResult } from "@/services/ocr";
+import { uploadAndAnalyzeScan, type OcrResult, type ScanStage } from "@/services/ocr";
 import { saveOcrResult } from "@/services/scan-save";
 import type { InstitutionType, SchoolTerm } from "@/types/institution";
 import {
@@ -379,6 +380,10 @@ function ReceiptScanDashboard({
   imageUri,
   onDraftChange,
   onNavigate,
+  pendingCount,
+  retryScan,
+  skipScan,
+  skipCurrentScan,
   pick,
   result,
   saving,
@@ -389,6 +394,11 @@ function ReceiptScanDashboard({
   imageUri: string;
   onDraftChange: (key: string, value: string) => void;
   onNavigate: UserNavigate;
+  pendingCount: number;
+  retryScan?: () => void;
+  skipScan?: () => void;
+  /** Leaves the slip under review unsaved and opens the next one in the queue. */
+  skipCurrentScan?: () => void;
   pick: (source: "camera" | "library") => Promise<void>;
   result: OcrResult | null;
   saving: boolean;
@@ -463,6 +473,15 @@ function ReceiptScanDashboard({
             />
           </Pressable>
         </View>
+        {retryScan ? <View style={receiptStyles.batchNotice}>
+          <Text style={receiptStyles.batchNoticeText}>
+            {pendingCount > 0
+              ? `รูปนี้อ่านไม่สำเร็จ อีก ${pendingCount} รูปยังอยู่ในคิว`
+              : "รูปนี้อ่านไม่สำเร็จ และเป็นรูปสุดท้ายแล้ว"}
+          </Text>
+          <Pressable accessibilityRole="button" onPress={retryScan} style={receiptStyles.batchAction}><Text style={receiptStyles.batchActionText}>ลองอีกครั้ง</Text></Pressable>
+          {skipScan ? <Pressable accessibilityRole="button" onPress={skipScan} style={receiptStyles.batchAction}><Text style={receiptStyles.batchActionText}>{pendingCount > 0 ? "ข้าม" : "เลิกสแกน"}</Text></Pressable> : null}
+        </View> : null}
         {!ready ? (
           <>
             <LinearGradient
@@ -477,7 +496,7 @@ function ReceiptScanDashboard({
               <Text style={receiptStyles.heroTitle}>ให้ AI อ่านใบเสร็จ</Text>
               <Text style={receiptStyles.heroText}>
                 ถ่ายหรืออัปโหลดใบเสร็จ แล้วระบบจะแยกรายจ่าย วันที่
-                และหมวดหมู่ให้
+                และหมวดหมู่ให้ เลือกได้ครั้งละไม่เกิน 10 รูป
               </Text>
             </LinearGradient>
             <Pressable
@@ -516,6 +535,28 @@ function ReceiptScanDashboard({
           </>
         ) : (
           <>
+            {pendingCount > 0 ? (
+              <View style={receiptStyles.batchNotice}>
+                <MaterialIcon color="#6573ad" name="photo_library" size={19} />
+                <Text style={receiptStyles.batchNoticeText}>
+                  มีใบเสร็จรอประมวลผลอีก {pendingCount} รูป
+                </Text>
+                {/* Changing your mind about one slip should cost you that slip,
+                    not the nine behind it. "ล้างข้อมูล" empties the whole queue,
+                    so mid-queue skipping needs its own way out. */}
+                {skipCurrentScan ? (
+                  <Pressable
+                    accessibilityHint="ไม่บันทึกใบนี้ แล้วอ่านใบถัดไปในคิว"
+                    accessibilityRole="button"
+                    disabled={saving}
+                    onPress={skipCurrentScan}
+                    style={[receiptStyles.batchAction, saving && receiptStyles.disabled]}
+                  >
+                    <Text style={receiptStyles.batchActionText}>ข้ามใบนี้</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            ) : null}
             {/* The source photo is deliberately not rendered once the receipt
                 has been read: the extracted fields are what the user works
                 with, and the image only pushed them down the page. The
@@ -759,7 +800,11 @@ function ReceiptScanDashboard({
               >
                 <MaterialIcon color="#fff" name="check" size={19} />
                 <Text style={receiptStyles.saveText}>
-                  {saving ? "กำลังบันทึก..." : "บันทึกรายจ่ายนี้"}
+                  {saving
+                    ? "กำลังบันทึก..."
+                    : pendingCount > 0
+                      ? `บันทึกและไปใบถัดไป (เหลือ ${pendingCount})`
+                      : "บันทึกรายจ่ายนี้"}
                 </Text>
               </LinearGradient>
             </Pressable>
@@ -789,6 +834,26 @@ function ReceiptDetail({ label, value }: { label: string; value: string }) {
 }
 
 const receiptStyles = StyleSheet.create({
+  batchNotice: {
+    alignItems: "center",
+    backgroundColor: "#eef0fb",
+    borderRadius: 14,
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 13,
+    paddingHorizontal: 13,
+    paddingVertical: 11,
+  },
+  batchAction: {
+    backgroundColor: "#fff",
+    borderColor: "#ccd3ee",
+    borderRadius: 11,
+    borderWidth: 1,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+  },
+  batchActionText: { color: "#59669d", fontFamily: F.b, fontSize: 12 },
+  batchNoticeText: { color: "#59669d", flex: 1, fontFamily: F.s, fontSize: 12 },
   analysis: {
     backgroundColor: "#fff",
     borderRadius: 20,
@@ -803,7 +868,7 @@ const receiptStyles = StyleSheet.create({
     padding: 14,
   },
   editorTitle: { color: C.pine, fontFamily: F.x, fontSize: 13, marginBottom: 6 },
-  analysisHead: { color: C.pine, fontFamily: F.b, fontSize: 11 },
+  analysisHead: { color: C.pine, fontFamily: F.b, fontSize: 12 },
   analysisIcon: {
     alignItems: "center",
     backgroundColor: "#e4efdf",
@@ -823,7 +888,7 @@ const receiptStyles = StyleSheet.create({
     marginTop: 9,
     padding: 8,
   },
-  analysisSub: { color: C.muted, fontFamily: F.r, fontSize: 8, marginTop: 1 },
+  analysisSub: { color: C.muted, fontFamily: F.r, fontSize: 12, marginTop: 1 },
   analysisTitle: { color: C.pine, fontFamily: F.x, fontSize: 13 },
   back: {
     alignItems: "center",
@@ -849,14 +914,14 @@ const receiptStyles = StyleSheet.create({
     height: 7,
     width: 7,
   },
-  categoryText: { color: C.sage, flex: 1, fontFamily: F.b, fontSize: 9 },
+  categoryText: { color: C.sage, flex: 1, fontFamily: F.b, fontSize: 12 },
   confidence: {
     backgroundColor: "#eef0fb",
     borderRadius: 99,
     paddingHorizontal: 9,
     paddingVertical: 5,
   },
-  confidenceText: { color: "#7885ba", fontFamily: F.b, fontSize: 8 },
+  confidenceText: { color: "#7885ba", fontFamily: F.b, fontSize: 12 },
   detailCard: {
     backgroundColor: "#fff",
     borderRadius: 20,
@@ -864,7 +929,7 @@ const receiptStyles = StyleSheet.create({
     marginTop: 13,
     padding: 14,
   },
-  detailLabel: { color: C.muted, fontFamily: F.s, fontSize: 9 },
+  detailLabel: { color: C.muted, fontFamily: F.s, fontSize: 12 },
   detailRow: {
     borderBottomColor: "#edf0ea",
     borderBottomWidth: 1,
@@ -873,12 +938,12 @@ const receiptStyles = StyleSheet.create({
     paddingVertical: 8,
   },
   detailTitle: { color: C.pine, fontFamily: F.x, fontSize: 13 },
-  detailValue: { color: C.pine, fontFamily: F.b, fontSize: 9 },
+  detailValue: { color: C.pine, fontFamily: F.b, fontSize: 12 },
   disabled: { opacity: 0.55 },
   dropText: {
     color: "#89928c",
     fontFamily: F.s,
-    fontSize: 11,
+    fontSize: 12,
     lineHeight: 16,
     textAlign: "center",
   },
@@ -895,7 +960,7 @@ const receiptStyles = StyleSheet.create({
     minHeight: 238,
     padding: 18,
   },
-  edit: { color: "#7885ba", fontFamily: F.b, fontSize: 8 },
+  edit: { color: "#7885ba", fontFamily: F.b, fontSize: 12 },
   header: { alignItems: "center", flexDirection: "row", gap: 10 },
   hero: { borderRadius: 20, marginTop: 14, padding: 17 },
   heroIcon: {
@@ -909,7 +974,7 @@ const receiptStyles = StyleSheet.create({
   heroText: {
     color: "rgba(255,255,255,.88)",
     fontFamily: F.r,
-    fontSize: 10,
+    fontSize: 12,
     lineHeight: 16,
     marginTop: 7,
   },
@@ -934,7 +999,7 @@ const receiptStyles = StyleSheet.create({
     marginTop: 14,
     minHeight: 49,
   },
-  htmlButtonText: { color: C.sage, fontFamily: F.b, fontSize: 11 },
+  htmlButtonText: { color: C.sage, fontFamily: F.b, fontSize: 12 },
   merchant: { color: C.pine, fontFamily: F.x, fontSize: 14 },
   merchantIcon: {
     alignItems: "center",
@@ -945,12 +1010,12 @@ const receiptStyles = StyleSheet.create({
     width: 43,
   },
   merchantRow: { alignItems: "center", flexDirection: "row", gap: 10 },
-  merchantSub: { color: C.muted, fontFamily: F.r, fontSize: 8, marginTop: 2 },
+  merchantSub: { color: C.muted, fontFamily: F.r, fontSize: 12, marginTop: 2 },
   page: { paddingBottom: 6 },
   sourceImage: { backgroundColor: "#f5f7f2", borderRadius: 14, height: 300, width: "100%" },
   sourceImageCard: { backgroundColor: "#fff", borderRadius: 20, marginTop: 13, padding: 12 },
   sourceImageHeader: { alignItems: "center", flexDirection: "row", marginBottom: 9 },
-  sourceImageSubtitle: { color: C.muted, fontFamily: F.r, fontSize: 9, marginTop: 2 },
+  sourceImageSubtitle: { color: C.muted, fontFamily: F.r, fontSize: 12, marginTop: 2 },
   sourceImageTitle: { color: C.pine, fontFamily: F.x, fontSize: 13 },
   pickButton: {
     alignItems: "center",
@@ -962,7 +1027,7 @@ const receiptStyles = StyleSheet.create({
     justifyContent: "center",
   },
   pickRow: { flexDirection: "row", gap: 10, marginTop: 14 },
-  pickText: { color: C.pine, fontFamily: F.b, fontSize: 10 },
+  pickText: { color: C.pine, fontFamily: F.b, fontSize: 12 },
   productHeader: {
     alignItems: "center",
     flexDirection: "row",
@@ -977,17 +1042,17 @@ const receiptStyles = StyleSheet.create({
     justifyContent: "center",
     width: 22,
   },
-  productIndexText: { color: C.sage, fontFamily: F.b, fontSize: 8 },
+  productIndexText: { color: C.sage, fontFamily: F.b, fontSize: 12 },
   productList: {
     borderTopColor: "#edf0ea",
     borderTopWidth: 1,
     marginTop: 12,
     paddingTop: 11,
   },
-  productMeta: { color: C.muted, fontFamily: F.r, fontSize: 8, marginTop: 2 },
-  productDiscount: { color: C.sage, fontFamily: F.b, fontSize: 8, marginTop: 2 },
-  productName: { color: C.pine, fontFamily: F.b, fontSize: 9 },
-  productPrice: { color: C.pine, fontFamily: F.b, fontSize: 10 },
+  productMeta: { color: C.muted, fontFamily: F.r, fontSize: 12, marginTop: 2 },
+  productDiscount: { color: C.sage, fontFamily: F.b, fontSize: 12, marginTop: 2 },
+  productName: { color: C.pine, fontFamily: F.b, fontSize: 12 },
+  productPrice: { color: C.pine, fontFamily: F.b, fontSize: 12 },
   productRow: {
     alignItems: "center",
     borderBottomColor: "#edf0ea",
@@ -996,7 +1061,7 @@ const receiptStyles = StyleSheet.create({
     gap: 8,
     paddingVertical: 9,
   },
-  productTitle: { color: C.pine, fontFamily: F.b, fontSize: 10 },
+  productTitle: { color: C.pine, fontFamily: F.b, fontSize: 12 },
   receiptCard: {
     backgroundColor: "#fff",
     borderRadius: 20,
@@ -1018,11 +1083,11 @@ const receiptStyles = StyleSheet.create({
   reviewWarningText: {
     color: "#79572f",
     fontFamily: F.r,
-    fontSize: 9,
+    fontSize: 12,
     lineHeight: 14,
     marginTop: 2,
   },
-  reviewWarningTitle: { color: "#7f541f", fontFamily: F.b, fontSize: 11 },
+  reviewWarningTitle: { color: "#7f541f", fontFamily: F.b, fontSize: 12 },
   save: {
     alignItems: "center",
     flexDirection: "row",
@@ -1044,7 +1109,7 @@ const receiptStyles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
   },
-  totalLabel: { color: C.muted, fontFamily: F.b, fontSize: 10 },
+  totalLabel: { color: C.muted, fontFamily: F.b, fontSize: 12 },
 });
 
 export default function ScanScreen({
@@ -1077,6 +1142,11 @@ export default function ScanScreen({
   );
   const [draft, setDraft] = useState<Record<string, unknown>>({});
   const [imageUri, setImageUri] = useState("");
+  const [pendingAssets, setPendingAssets] = useState<ImagePicker.ImagePickerAsset[]>([]);
+  const [failedAsset, setFailedAsset] = useState<ImagePicker.ImagePickerAsset | null>(null);
+  /** True while a multi-slip pick is being worked through, so the run can end where it began. */
+  const batchRun = useRef(false);
+  const saveInFlight = useRef(false);
   const [imageAspectRatio, setImageAspectRatio] = useState(1);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -1106,6 +1176,7 @@ export default function ScanScreen({
 
   useEffect(
     () => () => {
+      scanGeneration.current += 1;
       if (feedbackTimer.current) clearTimeout(feedbackTimer.current);
     },
     [],
@@ -1119,7 +1190,7 @@ export default function ScanScreen({
       feedbackTimer.current = setTimeout(() => setFeedback(null), hideAfter);
   };
 
-  const handleClearData = () => {
+  const resetCurrentScan = (clearPendingAssets: boolean) => {
     if (feedbackTimer.current) clearTimeout(feedbackTimer.current);
     feedbackTimer.current = null;
     scanGeneration.current += 1;
@@ -1136,14 +1207,138 @@ export default function ScanScreen({
     setImageCardFrame({ height: 0, top: 0 });
     setIsImagePinned(false);
     setResult(null);
+    setTypeOverride(null);
+    setFailedAsset(null);
     setSaveComplete(false);
     setSaving(false);
     setFeedback(null);
+    if (clearPendingAssets) setPendingAssets([]);
+  };
+
+  const handleClearData = () => {
+    batchRun.current = false;
+    resetCurrentScan(true);
+  };
+
+  /**
+   * A way out of the reading spinner. The upload and the OCR call cannot be
+   * recalled once sent, so this abandons the answer rather than the work: the
+   * generation moves on, the reply that eventually lands is discarded, and the
+   * screen is usable again. Only offered while reading -- once the save is in
+   * flight the record may already exist, and a cancel button would be lying.
+   */
+  const cancelScan = saving || feedback?.phase !== "loading" ? undefined : () => {
+    handleClearData();
+    showToast("ยกเลิกการสแกนแล้ว", "เลือกรูปใหม่ได้เลย", "info");
+  };
+
+  /**
+   * Drops the slip on screen and starts the next one, keeping the rest of the
+   * queue. The only way out of a slip used to be "ล้างข้อมูล", which threw away
+   * the other nine with it; skipping one is not abandoning the batch.
+   *
+   * `resetCurrentScan` bumps the generation, so the next read has to be handed
+   * the value from after that call, never the one captured before it.
+   */
+  const advanceToNextAsset = () => {
+    const next = pendingAssets[0];
+    if (!next) return;
+    setPendingAssets((current) => current.slice(1));
+    resetCurrentScan(false);
+    void analyzeAsset(next, scanGeneration.current);
+  };
+
+  const analyzeAsset = async (
+    asset: ImagePicker.ImagePickerAsset,
+    generation: number,
+  ) => {
+    setFailedAsset(null);
+    try {
+      const contentType = contentTypeForAsset(asset);
+      console.log("[SmartScan] Image selected", {
+        contentType,
+        fileName: asset.fileName,
+        fileSize: asset.fileSize,
+        height: asset.height,
+        uriScheme: asset.uri.split(":")[0],
+        width: asset.width,
+      });
+      setImageUri(asset.uri);
+      setImageAspectRatio(
+        asset.width && asset.height ? asset.width / asset.height : 1,
+      );
+      setResult(null);
+      setSaveComplete(false);
+      // One frozen line for the whole wait reads as a hang the moment the
+      // upload is slow, and the wait is two very different jobs: pushing the
+      // photo up, then the model reading it. Each says which one is running,
+      // and the modal counts the seconds underneath.
+      const readingStage = (stage: ScanStage) => showFeedback({
+        phase: "loading",
+        subtitle: stage === "uploading"
+          ? "กำลังส่งรูปขึ้นระบบ ขั้นนี้ขึ้นกับความเร็วเน็ตของคุณ"
+          : page === "smartlife_scan_finance"
+            ? "iApp กำลังอ่านร้านค้า รายการสินค้า และยอดชำระ"
+            : "กำลังตรวจชนิดเอกสารและแยกข้อความ",
+        title: stage === "uploading" ? "กำลังอัปโหลดรูป" : "กำลังอ่านเอกสาร",
+      });
+      readingStage("uploading");
+
+      const response = await uploadAndAnalyzeScan({
+        uid,
+        onStage: (stage) => {
+          if (generation === scanGeneration.current) readingStage(stage);
+        },
+        scanType: page === "smartlife_scan_finance" ? "receipt" : "auto",
+        uri: asset.uri,
+        contentType,
+      });
+      if (generation !== scanGeneration.current) return false;
+      setResult(response);
+      setTypeOverride(null);
+      setRawOcrText(response.rawText ?? "");
+      setDraft(
+        response.scanType === "document"
+          ? {}
+          : response.scanType === "schedule"
+            ? scheduleDraft(response.parsed, institutionType, schoolTerm)
+            : {
+              ...response.parsed,
+              items: normalizeReceiptItems(response.parsed.items),
+              total: firstPresentValue(
+                response.parsed.total,
+                response.parsed.amount,
+                response.parsed.totalAmount,
+              ) ?? "",
+            },
+      );
+      showFeedback(
+        {
+          phase: "success",
+          subtitle:
+            response.scanType === "document"
+              ? "ไม่ใช่ใบเสร็จหรือตารางเรียน จึงดึงเฉพาะข้อความ"
+              : response.scanType === "receipt"
+                ? "ตรวจพบสลิปหรือใบเสร็จ"
+                : `ตรวจพบตารางเรียน${institutionType === "high-school" ? "มัธยมศึกษา" : "มหาวิทยาลัย"}`,
+          title: "อ่านเอกสารสำเร็จ",
+        },
+        950,
+      );
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (generation !== scanGeneration.current) return false;
+      setFailedAsset(asset);
+      console.error("[SmartScan] Read, upload, or OCR failed", {error, message});
+      showFeedback(null);
+      showToast("สแกนไม่สำเร็จ", message || "กรุณาถ่ายภาพใหม่ให้ชัดขึ้น");
+      return false;
+    }
   };
 
   const pick = async (source: "camera" | "library") => {
-    handleClearData();
-    const generation = scanGeneration.current;
+    if (saving || feedback?.phase === 'loading') return;
     try {
       console.log("[SmartScan] Opening image source", { source });
       const permission =
@@ -1171,78 +1366,35 @@ export default function ScanScreen({
             })
           : await ImagePicker.launchImageLibraryAsync({
               allowsEditing: false,
+              allowsMultipleSelection: page === "smartlife_scan_finance",
               mediaTypes: ["images"],
               quality: 0.9,
+              selectionLimit: page === "smartlife_scan_finance" ? 10 : 1,
             });
       if (picked.canceled || !picked.assets?.[0]) {
         console.log("[SmartScan] Image selection canceled", { source });
         return;
       }
 
-      const asset = picked.assets[0];
-      const contentType = contentTypeForAsset(asset);
-      console.log("[SmartScan] Image selected", {
-        contentType,
-        fileName: asset.fileName,
-        fileSize: asset.fileSize,
-        height: asset.height,
-        uriScheme: asset.uri.split(":")[0],
-        width: asset.width,
-      });
-      setImageUri(asset.uri);
-      setImageAspectRatio(
-        asset.width && asset.height ? asset.width / asset.height : 1,
-      );
-      setResult(null);
-      setSaveComplete(false);
-      showFeedback({
-        phase: "loading",
-        subtitle:
-          page === "smartlife_scan_finance"
-            ? "iApp กำลังอ่านร้านค้า รายการสินค้า และยอดชำระ"
-            : "กำลังตรวจชนิดเอกสารและแยกข้อความ",
-        title: "กำลังอ่านเอกสาร",
-      });
-
-      const response = await uploadAndAnalyzeScan({
-        uid,
-        // Finance is a dedicated receipt flow. Planner scans remain automatic.
-        scanType: page === "smartlife_scan_finance" ? "receipt" : "auto",
-        uri: asset.uri,
-        contentType,
-      });
-      if (generation !== scanGeneration.current) return;
-      setResult(response);
-      setTypeOverride(null);
-      setRawOcrText(response.rawText ?? "");
-      setDraft(
-        response.scanType === "document"
-          ? {}
-          : response.scanType === "schedule"
-          ? scheduleDraft(response.parsed, institutionType, schoolTerm)
-          : {
-              ...response.parsed,
-              items: normalizeReceiptItems(response.parsed.items),
-              total: firstPresentValue(
-                response.parsed.total,
-                response.parsed.amount,
-                response.parsed.totalAmount,
-              ) ?? "",
-            },
-      );
-      showFeedback(
-        {
-          phase: "success",
-          subtitle:
-            response.scanType === "document"
-              ? "ไม่ใช่ใบเสร็จหรือตารางเรียน จึงดึงเฉพาะข้อความ"
-              : response.scanType === "receipt"
-              ? "ตรวจพบสลิปหรือใบเสร็จ"
-              : `ตรวจพบตารางเรียน${institutionType === "high-school" ? "มัธยมศึกษา" : "มหาวิทยาลัย"}`,
-          title: "อ่านเอกสารสำเร็จ",
-        },
-        950,
-      );
+      handleClearData();
+      const generation = scanGeneration.current;
+      // `selectionLimit` is honoured on Android and iOS only -- on the web the
+      // picker is a plain `<input multiple>` with no ceiling at all. Silently
+      // slicing there threw away everything past the tenth photo without a
+      // word, so the count is checked here and said out loud.
+      const limit = page === "smartlife_scan_finance" ? 10 : 1;
+      const chosen = source === "library" ? picked.assets : [picked.assets[0]];
+      const assets = chosen.slice(0, limit);
+      if (chosen.length > limit) {
+        showToast(
+          `เลือกได้ครั้งละ ${limit} รูป`,
+          `คุณเลือกมา ${chosen.length} รูป ระบบจะอ่าน ${limit} รูปแรกให้ก่อน ที่เหลือเลือกใหม่ได้อีกรอบ`,
+          "info",
+        );
+      }
+      batchRun.current = assets.length > 1;
+      setPendingAssets(assets.slice(1));
+      await analyzeAsset(assets[0], generation);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error("[SmartScan] Pick, read, upload, or OCR failed", {
@@ -1367,8 +1519,18 @@ export default function ScanScreen({
         missing.courseCode = "ต้องมีรหัสวิชาหรือชื่อวิชา";
       }
       if (!matchScanWeekday(textValue(entry.day, ""))) missing.day = "เลือกวันเรียน";
-      if (!/^\d{1,2}:\d{2}$/.test(textValue(entry.startTime, "").trim())) missing.startTime = "ต้องระบุเวลาเริ่ม";
-      if (!/^\d{1,2}:\d{2}$/.test(textValue(entry.endTime, "").trim())) missing.endTime = "ต้องระบุเวลาสิ้นสุด";
+      const start = textValue(entry.startTime, "").trim();
+      const end = textValue(entry.endTime, "").trim();
+      // `clockMinutes` rather than a shape check: the old pattern waved "25:00"
+      // through, and the save then clamped it to 23:00 behind the user's back.
+      if (clockMinutes(start) === null) missing.startTime = "ต้องระบุเวลาเริ่ม";
+      if (clockMinutes(end) === null) missing.endTime = "ต้องระบุเวลาสิ้นสุด";
+      // Nothing checked the order, and the save then quietly rewrote a
+      // backwards pair to "start plus one hour" -- a time nobody chose, with no
+      // sign anything had happened. The rule lives with the save path so both
+      // point at the same thing.
+      const hoursProblem = timetableHoursProblem(start, end);
+      if (hoursProblem) missing.endTime = hoursProblem;
       if (Object.keys(missing).length) problems.set(index, missing);
     });
     return problems;
@@ -1445,7 +1607,9 @@ export default function ScanScreen({
   const pinnedPreviewHeight = result?.scanType === "receipt" ? 220 : previewHeight;
 
   const persistOcrResult = async () => {
-    if (!result || saving) return;
+    if (!result || saving || saveInFlight.current) return;
+    const generation = scanGeneration.current;
+    const nextAsset = pendingAssets[0];
     if (result.scanType === "schedule" && entryProblems.size) {
       // Named rather than counted: with the list scrolled, "2 รายการ" alone
       // leaves the user hunting for which cards are marked.
@@ -1456,6 +1620,7 @@ export default function ScanScreen({
       );
       return;
     }
+    saveInFlight.current = true;
     setSaving(true);
     showFeedback({
       phase: "loading",
@@ -1464,6 +1629,7 @@ export default function ScanScreen({
     });
     try {
       const saved = await saveOcrResult({ draft, result, uid });
+      if (generation !== scanGeneration.current) return;
       console.log("[SmartScan] Structured data saved", {
         documentIds: saved.documentIds,
         scanType: result.scanType,
@@ -1475,17 +1641,37 @@ export default function ScanScreen({
           result.scanType === "document"
             ? "บันทึกข้อความเป็นโน้ตแล้ว"
             : result.scanType === "receipt"
-              ? "เพิ่มรายการไปยังหน้าการเงินแล้ว"
-              : "เพิ่มรายวิชาไปยังปฏิทินแล้ว",
-        title: "บันทึกสำเร็จ",
+            ? saved.duplicate
+              ? "ตรวจพบรายการเดิม จึงไม่เพิ่มยอดซ้ำ"
+              : "เพิ่มรายการไปยังหน้าการเงินแล้ว"
+            : "เพิ่มรายวิชาไปยังปฏิทินแล้ว",
+        title: saved.duplicate ? "ข้ามรายการซ้ำแล้ว" : "บันทึกสำเร็จ",
       });
       setTimeout(() => {
+        if (generation !== scanGeneration.current) return;
+        if (result.scanType === "receipt" && nextAsset) {
+          setPendingAssets((current) => current.slice(1));
+          resetCurrentScan(false);
+          void analyzeAsset(nextAsset, scanGeneration.current);
+          return;
+        }
+        // A scan run ends where it began: back on the scan screen, ready for
+        // the next slip. Jumping to the finance page stranded the user a tab
+        // away from the flow they were still in, and doing it only for single
+        // slips made the screen behave two different ways for the same button.
+        // The header's back arrow is the way to the totals.
+        if (result.scanType === "receipt") {
+          const wasBatch = batchRun.current;
+          handleClearData();
+          showToast(
+            wasBatch ? "บันทึกครบทุกใบแล้ว" : "บันทึกรายจ่ายแล้ว",
+            "สแกนใบถัดไปได้เลย หรือกดย้อนกลับเพื่อดูยอดรวมในหน้าการเงิน",
+            "success",
+          );
+          return;
+        }
         handleClearData();
-        onNavigate(
-          result.scanType === "receipt"
-            ? "smartlife_scan_schedule"
-            : saved.destination,
-        );
+        onNavigate(saved.destination);
       }, 1050);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1498,6 +1684,8 @@ export default function ScanScreen({
       showFeedback(null);
       showToast("\u0e1a\u0e31\u0e19\u0e17\u0e36\u0e01\u0e44\u0e21\u0e48\u0e2a\u0e33\u0e40\u0e23\u0e47\u0e08", message ||
           "\u0e01\u0e23\u0e38\u0e13\u0e32\u0e25\u0e2d\u0e07\u0e43\u0e2b\u0e21\u0e48\u0e2d\u0e35\u0e01\u0e04\u0e23\u0e31\u0e49\u0e07");
+    } finally {
+      saveInFlight.current = false;
     }
   };
 
@@ -1574,6 +1762,15 @@ export default function ScanScreen({
           imageUri={imageUri}
           onDraftChange={updateDraft}
           onNavigate={onNavigate}
+          pendingCount={pendingAssets.length}
+          retryScan={failedAsset ? () => { void analyzeAsset(failedAsset, scanGeneration.current); } : undefined}
+          // Offered for the last failed slip too, where it ends the run rather
+          // than moving on: before, that slip could only be retried forever.
+          skipScan={failedAsset ? () => {
+            if (pendingAssets.length) advanceToNextAsset();
+            else handleClearData();
+          } : undefined}
+          skipCurrentScan={pendingAssets.length ? advanceToNextAsset : undefined}
           pick={pick}
           result={result}
           saving={saving}
@@ -1581,6 +1778,7 @@ export default function ScanScreen({
         />
         {reviewDialog}
         {deleteEntryDialog}
+        <LoadingAndSuccessModal onCancel={cancelScan} phase={feedback?.phase ?? 'loading'} showElapsed subtitle={feedback?.subtitle ?? ''} title={feedback?.title ?? ''} visible={Boolean(feedback)} />
       </>
     );
   }
@@ -2428,7 +2626,9 @@ export default function ScanScreen({
             </Pressable>
           </Modal>
           <LoadingAndSuccessModal
+            onCancel={cancelScan}
             phase={feedback?.phase ?? "loading"}
+            showElapsed
             subtitle={feedback?.subtitle ?? ""}
             title={feedback?.title ?? ""}
             visible={Boolean(feedback)}
@@ -3061,26 +3261,26 @@ function CategoryPickerRow({
 
 const localStyles = StyleSheet.create({
   reviewBanner: { alignItems: "flex-start", backgroundColor: "#fdf4e3", borderColor: "#ecd3a3", borderRadius: 12, borderWidth: 1, flexDirection: "row", gap: 7, marginTop: 8, padding: 9 },
-  reviewNote: { color: "#7a5a24", fontFamily: "Prompt_400Regular", fontSize: 10, lineHeight: 16, marginTop: 1 },
-  reviewTitle: { color: "#7a5a24", fontFamily: "Prompt_700Bold", fontSize: 10 },
+  reviewNote: { color: "#7a5a24", fontFamily: "Prompt_400Regular", fontSize: 12, lineHeight: 18, marginTop: 1 },
+  reviewTitle: { color: "#7a5a24", fontFamily: "Prompt_700Bold", fontSize: 12 },
   courseDelete: { alignItems: "center", backgroundColor: "#fbeeed", borderRadius: 14, height: 28, justifyContent: "center", marginLeft: 6, width: 28 },
   courseNumberProblem: { backgroundColor: "#e3a19a" },
   dayChip: { backgroundColor: "#eef1eb", borderRadius: 99, paddingHorizontal: 10, paddingVertical: 7 },
   dayChipActive: { backgroundColor: "#5f875f" },
   dayChipError: { backgroundColor: "#fbeeed" },
-  dayChipText: { color: "#6d786c", fontFamily: "Prompt_700Bold", fontSize: 10 },
+  dayChipText: { color: "#6d786c", fontFamily: "Prompt_700Bold", fontSize: 12 },
   dayChipTextActive: { color: "#fff" },
   dayPicker: { marginTop: 8 },
-  dayPickerLabel: { color: "#8b948a", fontFamily: "Prompt_600SemiBold", fontSize: 9, marginBottom: 6 },
+  dayPickerLabel: { color: "#8b948a", fontFamily: "Prompt_600SemiBold", fontSize: 12, marginBottom: 6 },
   dayPickerLabelError: { color: "#c1766f" },
   dayRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
-  entryError: { color: "#c1766f", fontFamily: "Prompt_600SemiBold", fontSize: 9, marginTop: 4 },
+  entryError: { color: "#c1766f", fontFamily: "Prompt_600SemiBold", fontSize: 12, marginTop: 4 },
   categoryHeader: { alignItems: "center", flexDirection: "row", gap: 10, minHeight: 52 },
   categoryIcon: { alignItems: "center", backgroundColor: "#eef3ea", borderRadius: 12, height: 36, justifyContent: "center", width: 36 },
-  categoryLabel: { color: "#8b948a", fontFamily: "Prompt_600SemiBold", fontSize: 9 },
+  categoryLabel: { color: "#8b948a", fontFamily: "Prompt_600SemiBold", fontSize: 12 },
   categoryOption: { alignItems: "center", backgroundColor: "#f1f3ef", borderRadius: 99, flexDirection: "row", gap: 5, paddingHorizontal: 10, paddingVertical: 7 },
   categoryOptionActive: { backgroundColor: "#5f875f" },
-  categoryOptionText: { color: "#6d786c", fontFamily: "Prompt_700Bold", fontSize: 10 },
+  categoryOptionText: { color: "#6d786c", fontFamily: "Prompt_700Bold", fontSize: 12 },
   categoryOptionTextActive: { color: "#fff" },
   categoryOptions: { flexDirection: "row", flexWrap: "wrap", gap: 6, paddingBottom: 10 },
   categoryRow: { borderBottomColor: "rgba(44,52,27,.07)", borderBottomWidth: 1 },
@@ -3091,14 +3291,14 @@ const localStyles = StyleSheet.create({
   ocrHeader: { alignItems: "center", flexDirection: "row", gap: 10, marginBottom: 10 },
   ocrOverlay: { alignItems: "center", backgroundColor: "rgba(32, 40, 31, .58)", flex: 1, justifyContent: "center", padding: 16 },
   ocrScroll: { backgroundColor: "#f5f7f2", borderColor: "#e1e7dd", borderRadius: 14, borderWidth: 1, maxHeight: 420, padding: 12 },
-  ocrSubtitle: { color: "#8b948a", fontFamily: "Prompt_400Regular", fontSize: 10, marginTop: 2 },
+  ocrSubtitle: { color: "#8b948a", fontFamily: "Prompt_400Regular", fontSize: 12, marginTop: 2 },
   ocrTitle: { color: "#2f3d2c", fontFamily: "Prompt_800ExtraBold", fontSize: 16 },
   typeChip: { alignItems: "center", backgroundColor: "#eef1eb", borderRadius: 99, flexDirection: "row", gap: 5, paddingHorizontal: 11, paddingVertical: 8 },
   typeChipActive: { backgroundColor: "#5f875f" },
-  typeChipText: { color: "#6d786c", fontFamily: "Prompt_700Bold", fontSize: 10 },
+  typeChipText: { color: "#6d786c", fontFamily: "Prompt_700Bold", fontSize: 12 },
   typeChipTextActive: { color: "#fff" },
   typePicker: { borderTopColor: "#e6ebe2", borderTopWidth: 1, marginTop: 12, paddingTop: 12 },
-  typePickerLabel: { color: "#7c857b", fontFamily: "Prompt_700Bold", fontSize: 10, marginBottom: 8 },
+  typePickerLabel: { color: "#7c857b", fontFamily: "Prompt_700Bold", fontSize: 12, marginBottom: 8 },
   typeRow: { flexDirection: "row", flexWrap: "wrap", gap: 7 },
   documentText: {
     color: "#41513f",
@@ -3107,9 +3307,9 @@ const localStyles = StyleSheet.create({
     lineHeight: 19,
   },
   documentAction: { alignItems: "center", flexDirection: "row", gap: 3, paddingHorizontal: 6, paddingVertical: 4 },
-  documentActionText: { color: "#5f875f", fontFamily: "Prompt_700Bold", fontSize: 10 },
+  documentActionText: { color: "#5f875f", fontFamily: "Prompt_700Bold", fontSize: 12 },
   documentHeader: { alignItems: "center", flexDirection: "row", gap: 4, marginBottom: 6 },
-  documentHeaderText: { color: "#7b8a78", flex: 1, fontFamily: "Prompt_700Bold", fontSize: 10 },
+  documentHeaderText: { color: "#7b8a78", flex: 1, fontFamily: "Prompt_700Bold", fontSize: 12 },
   documentInput: {
     backgroundColor: "#ffffff",
     borderColor: "#cfdccb",
@@ -3142,9 +3342,9 @@ const localStyles = StyleSheet.create({
   documentToggleText: {
     color: "#5f875f",
     fontFamily: "Prompt_700Bold",
-    fontSize: 10,
+    fontSize: 12,
   },
-  academicLabel: { color: C.muted, fontFamily: F.r, fontSize: 10 },
+  academicLabel: { color: C.muted, fontFamily: F.r, fontSize: 12 },
   academicRow: {
     alignItems: "center",
     backgroundColor: "#f2f5ef",
@@ -3154,9 +3354,9 @@ const localStyles = StyleSheet.create({
     marginBottom: 10,
     padding: 12,
   },
-  academicValue: { color: C.pine, fontFamily: F.b, fontSize: 11 },
+  academicValue: { color: C.pine, fontFamily: F.b, fontSize: 12 },
   cancel: { alignItems: "center", marginTop: 12, padding: 12 },
-  cancelText: { color: C.muted, fontFamily: F.s, fontSize: 11 },
+  cancelText: { color: C.muted, fontFamily: F.s, fontSize: 12 },
   changeButton: {
     alignItems: "center",
     backgroundColor: C.soft,
@@ -3177,7 +3377,7 @@ const localStyles = StyleSheet.create({
     justifyContent: "center",
     minHeight: 43,
   },
-  clearText: { color: "#a95758", fontFamily: F.s, fontSize: 9 },
+  clearText: { color: "#a95758", fontFamily: F.s, fontSize: 12 },
   confidence: {
     alignItems: "center",
     backgroundColor: C.soft,
@@ -3185,7 +3385,7 @@ const localStyles = StyleSheet.create({
     paddingHorizontal: 9,
     paddingVertical: 5,
   },
-  confidenceText: { color: C.sage, fontFamily: F.b, fontSize: 10 },
+  confidenceText: { color: C.sage, fontFamily: F.b, fontSize: 12 },
   courseCard: {
     backgroundColor: "#f6f8f4",
     borderColor: "#e4e9e1",
@@ -3213,7 +3413,7 @@ const localStyles = StyleSheet.create({
     justifyContent: "center",
     width: 23,
   },
-  courseNumberText: { color: "#fff", fontFamily: F.b, fontSize: 9 },
+  courseNumberText: { color: "#fff", fontFamily: F.b, fontSize: 12 },
   courseTop: { alignItems: "center", flexDirection: "row", gap: 8 },
   dataGroup: { gap: 7 },
   dataIcon: {
@@ -3227,12 +3427,12 @@ const localStyles = StyleSheet.create({
   dataInput: {
     color: C.pine,
     fontFamily: F.s,
-    fontSize: 11,
+    fontSize: 12,
     marginTop: 1,
     minHeight: 28,
     padding: 0,
   },
-  dataLabel: { color: C.muted, fontFamily: F.r, fontSize: 8 },
+  dataLabel: { color: C.muted, fontFamily: F.r, fontSize: 12 },
   dataRow: {
     alignItems: "center",
     backgroundColor: "#f6f8f4",
@@ -3241,12 +3441,12 @@ const localStyles = StyleSheet.create({
     gap: 10,
     padding: 10,
   },
-  dataValue: { color: C.pine, fontFamily: F.s, fontSize: 11, marginTop: 1 },
+  dataValue: { color: C.pine, fontFamily: F.s, fontSize: 12, marginTop: 1 },
   empty: { alignItems: "center", gap: 8, padding: 22 },
   emptyText: {
     color: C.muted,
     fontFamily: F.r,
-    fontSize: 9,
+    fontSize: 12,
     textAlign: "center",
   },
   fab: {
@@ -3263,7 +3463,7 @@ const localStyles = StyleSheet.create({
     justifyContent: "center",
     width: 64,
   },
-  fabLabel: { color: C.sage, fontFamily: F.s, fontSize: 9, marginTop: 8 },
+  fabLabel: { color: C.sage, fontFamily: F.s, fontSize: 12, marginTop: 8 },
   handle: {
     alignSelf: "center",
     backgroundColor: "#d1d6cd",
@@ -3285,8 +3485,8 @@ const localStyles = StyleSheet.create({
   heroText: {
     color: C.muted,
     fontFamily: F.r,
-    fontSize: 9,
-    lineHeight: 15,
+    fontSize: 12,
+    lineHeight: 18,
     marginTop: 5,
     maxWidth: 280,
     textAlign: "center",
@@ -3311,11 +3511,11 @@ const localStyles = StyleSheet.create({
     paddingHorizontal: 18,
     paddingVertical: 13,
   },
-  htmlModalSubtitle: { color: C.muted, fontFamily: F.r, fontSize: 9, marginTop: 2 },
+  htmlModalSubtitle: { color: C.muted, fontFamily: F.r, fontSize: 12, marginTop: 2 },
   htmlModalTitle: { color: C.pine, fontFamily: F.b, fontSize: 16 },
   htmlWebView: { backgroundColor: "#f1f4ed", flex: 1 },
   meta: { alignItems: "center", flexDirection: "row", gap: 5 },
-  metaText: { color: C.muted, fontFamily: F.r, fontSize: 8 },
+  metaText: { color: C.muted, fontFamily: F.r, fontSize: 12 },
   overlay: {
     backgroundColor: "rgba(31,42,25,.42)",
     flex: 1,
@@ -3339,7 +3539,7 @@ const localStyles = StyleSheet.create({
     marginTop: 13,
     minHeight: 44,
   },
-  rawButtonText: { color: C.pine, fontFamily: F.s, fontSize: 10 },
+  rawButtonText: { color: C.pine, fontFamily: F.s, fontSize: 12 },
   receiptHtmlButton: {
     alignItems: "center",
     backgroundColor: "#eef3eb",
@@ -3351,7 +3551,7 @@ const localStyles = StyleSheet.create({
     justifyContent: "center",
     minHeight: 47,
   },
-  receiptHtmlButtonText: { color: C.sage, fontFamily: F.s, fontSize: 10 },
+  receiptHtmlButtonText: { color: C.sage, fontFamily: F.s, fontSize: 12 },
   receiptItemEditor: {
     backgroundColor: "#fff",
     borderColor: "#e4e9e1",
@@ -3363,11 +3563,11 @@ const localStyles = StyleSheet.create({
   receiptItemInput: {
     color: C.pine,
     fontFamily: F.s,
-    fontSize: 9,
+    fontSize: 12,
     minHeight: 25,
     padding: 0,
   },
-  receiptItemInputLabel: { color: C.muted, fontFamily: F.r, fontSize: 7 },
+  receiptItemInputLabel: { color: C.muted, fontFamily: F.r, fontSize: 12 },
   receiptItemInputWrap: {
     backgroundColor: "#f6f8f4",
     borderRadius: 9,
@@ -3386,13 +3586,13 @@ const localStyles = StyleSheet.create({
     color: C.sage,
     flex: 1,
     fontFamily: F.s,
-    fontSize: 8,
+    fontSize: 12,
   },
   receiptItemNameInput: {
     color: C.pine,
     flex: 1,
     fontFamily: F.s,
-    fontSize: 10,
+    fontSize: 12,
     minHeight: 30,
     padding: 0,
   },
@@ -3405,7 +3605,7 @@ const localStyles = StyleSheet.create({
     width: 22,
   },
   receiptItemNumbers: { flexDirection: "row", gap: 6, marginTop: 7 },
-  receiptItemNumberText: { color: "#fff", fontFamily: F.b, fontSize: 8 },
+  receiptItemNumberText: { color: "#fff", fontFamily: F.b, fontSize: 12 },
   receiptItemsCard: {
     backgroundColor: "#f6f8f4",
     borderColor: "#e4e9e1",
@@ -3414,8 +3614,8 @@ const localStyles = StyleSheet.create({
     padding: 10,
   },
   receiptItemsHeader: { alignItems: "center", flexDirection: "row", gap: 8 },
-  receiptItemsSubtitle: { color: C.muted, fontFamily: F.r, fontSize: 8, marginTop: 1 },
-  receiptItemsTitle: { color: C.pine, fontFamily: F.b, fontSize: 11 },
+  receiptItemsSubtitle: { color: C.muted, fontFamily: F.r, fontSize: 12, marginTop: 1 },
+  receiptItemsTitle: { color: C.pine, fontFamily: F.b, fontSize: 12 },
   receiptItemTop: { alignItems: "center", flexDirection: "row", gap: 8 },
   rescanButton: {
     alignItems: "center",
@@ -3429,8 +3629,8 @@ const localStyles = StyleSheet.create({
     justifyContent: "center",
     minHeight: 43,
   },
-  rescanText: { color: C.sage, fontFamily: F.s, fontSize: 9 },
-  resultEyebrow: { color: C.sage, fontFamily: F.s, fontSize: 8 },
+  rescanText: { color: C.sage, fontFamily: F.s, fontSize: 12 },
+  resultEyebrow: { color: C.sage, fontFamily: F.s, fontSize: 12 },
   resultHead: {
     alignItems: "center",
     flexDirection: "row",
@@ -3451,7 +3651,7 @@ const localStyles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
   },
-  sectionSub: { color: C.muted, fontFamily: F.r, fontSize: 8, marginTop: 2 },
+  sectionSub: { color: C.muted, fontFamily: F.r, fontSize: 12, marginTop: 2 },
   sectionTitle: { color: C.pine, fontFamily: F.b, fontSize: 13 },
   sheet: {
     ...shadow,
@@ -3461,16 +3661,16 @@ const localStyles = StyleSheet.create({
     padding: 20,
     paddingBottom: 26,
   },
-  sheetText: { color: C.muted, fontFamily: F.r, fontSize: 9, marginTop: 3 },
+  sheetText: { color: C.muted, fontFamily: F.r, fontSize: 12, marginTop: 3 },
   sheetTitle: { color: C.pine, fontFamily: F.b, fontSize: 17 },
   smallInput: {
     color: C.pine,
     fontFamily: F.s,
-    fontSize: 9,
+    fontSize: 12,
     minHeight: 26,
     padding: 0,
   },
-  smallInputLabel: { color: C.muted, fontFamily: F.r, fontSize: 7 },
+  smallInputLabel: { color: C.muted, fontFamily: F.r, fontSize: 12 },
   smallInputWrap: {
     backgroundColor: "#fff",
     borderRadius: 10,
@@ -3494,7 +3694,7 @@ const localStyles = StyleSheet.create({
     justifyContent: "center",
     width: 52,
   },
-  sourceLabel: { color: C.pine, fontFamily: F.s, fontSize: 11, marginTop: 8 },
+  sourceLabel: { color: C.pine, fontFamily: F.s, fontSize: 12, marginTop: 8 },
   sourceRow: { flexDirection: "row", gap: 10, marginTop: 17 },
   timeInputs: { flexDirection: "row", gap: 7 },
   historyButton: {
@@ -3520,7 +3720,7 @@ const localStyles = StyleSheet.create({
     paddingHorizontal: 11,
     paddingVertical: 9,
   },
-  editNoticeText: { color: "#587156", flex: 1, fontFamily: F.s, fontSize: 9 },
+  editNoticeText: { color: "#587156", flex: 1, fontFamily: F.s, fontSize: 12 },
   reviewWarning: {
     alignItems: "flex-start",
     backgroundColor: "#fff5e7",
@@ -3537,8 +3737,8 @@ const localStyles = StyleSheet.create({
     color: "#79572f",
     flex: 1,
     fontFamily: F.s,
-    fontSize: 9,
-    lineHeight: 14,
+    fontSize: 12,
+    lineHeight: 18,
   },
   extractedRange: {
     alignItems: "center",
@@ -3550,7 +3750,7 @@ const localStyles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 6,
   },
-  extractedRangeText: { color: "#60705d", fontFamily: F.m, fontSize: 8 },
+  extractedRangeText: { color: "#60705d", fontFamily: F.m, fontSize: 12 },
   smallInputHead: {
     alignItems: "center",
     flexDirection: "row",
@@ -3574,8 +3774,8 @@ const localStyles = StyleSheet.create({
     paddingHorizontal: 9,
     paddingVertical: 7,
   },
-  semesterDateLabel: { color: C.muted, fontFamily: F.r, fontSize: 7 },
-  semesterDateText: { color: C.pine, fontFamily: F.s, fontSize: 9 },
+  semesterDateLabel: { color: C.muted, fontFamily: F.r, fontSize: 12 },
+  semesterDateText: { color: C.pine, fontFamily: F.s, fontSize: 12 },
   semesterDateValue: {
     alignItems: "center",
     flexDirection: "row",
@@ -3587,8 +3787,8 @@ const localStyles = StyleSheet.create({
   semesterHint: {
     color: C.muted,
     fontFamily: F.r,
-    fontSize: 8,
-    lineHeight: 13,
+    fontSize: 12,
+    lineHeight: 18,
     marginTop: 8,
   },
   semesterIcon: {
@@ -3599,12 +3799,12 @@ const localStyles = StyleSheet.create({
     justifyContent: "center",
     width: 39,
   },
-  semesterSub: { color: C.muted, fontFamily: F.r, fontSize: 8, marginTop: 1 },
+  semesterSub: { color: C.muted, fontFamily: F.r, fontSize: 12, marginTop: 1 },
   semesterTitle: { color: C.pine, fontFamily: F.b, fontSize: 12 },
   examSectionHeader: {alignItems: 'center', backgroundColor: '#f2f6ef', borderRadius: 12, flexDirection: 'row', gap: 8, marginTop: 7, padding: 9},
   examSectionIcon: {alignItems: 'center', backgroundColor: '#ffffff', borderRadius: 10, height: 31, justifyContent: 'center', width: 31},
-  examSectionSub: {color: C.muted, fontFamily: F.r, fontSize: 7, marginTop: 1},
-  examSectionTitle: {color: C.pine, fontFamily: F.b, fontSize: 10},
+  examSectionSub: {color: C.muted, fontFamily: F.r, fontSize: 12, marginTop: 1},
+  examSectionTitle: {color: C.pine, fontFamily: F.b, fontSize: 12},
   termOption: {
     alignItems: "center",
     borderRadius: 10,
@@ -3619,7 +3819,7 @@ const localStyles = StyleSheet.create({
     shadowOpacity: 0.08,
     shadowRadius: 7,
   },
-  termOptionText: { color: C.muted, fontFamily: F.s, fontSize: 9 },
+  termOptionText: { color: C.muted, fontFamily: F.s, fontSize: 12 },
   termOptionTextActive: { color: C.sage },
   termSelector: {
     backgroundColor: "#dde8d9",
@@ -3646,11 +3846,11 @@ const localStyles = StyleSheet.create({
   saveHint: {
     color: C.muted,
     fontFamily: F.r,
-    fontSize: 8,
+    fontSize: 12,
     marginTop: 7,
     textAlign: "center",
   },
-  saveText: { color: "#fff", fontFamily: F.b, fontSize: 11 },
+  saveText: { color: "#fff", fontFamily: F.b, fontSize: 12 },
   timePickerButton: {
     backgroundColor: "#fff",
     borderColor: "#dfe7da",
@@ -3661,8 +3861,8 @@ const localStyles = StyleSheet.create({
     paddingHorizontal: 9,
     paddingVertical: 7,
   },
-  timePickerLabel: { color: C.muted, fontFamily: F.r, fontSize: 7 },
-  timePickerText: { color: C.pine, flex: 1, fontFamily: F.b, fontSize: 11 },
+  timePickerLabel: { color: C.muted, fontFamily: F.r, fontSize: 12 },
+  timePickerText: { color: C.pine, flex: 1, fontFamily: F.b, fontSize: 12 },
   timePickerValue: {
     alignItems: "center",
     flexDirection: "row",

@@ -90,7 +90,7 @@ const styles = StyleSheet.create({
   overlay: {alignItems: 'center', backgroundColor: 'rgba(32, 40, 31, .58)', flex: 1, justifyContent: 'center', padding: 16},
   pressed: {opacity: .7},
   row: {alignItems: 'center', backgroundColor: '#f4f7f1', borderRadius: 14, flexDirection: 'row', gap: 10, marginTop: 8, minHeight: 56, paddingHorizontal: 12},
-  rowSub: {color: '#8b948a', fontFamily: 'Prompt_400Regular', fontSize: 10, marginTop: 1},
+  rowSub: {color: '#8b948a', fontFamily: 'Prompt_400Regular', fontSize: 12, marginTop: 1},
   rowTitle: {color: '#344131', fontFamily: 'Prompt_700Bold', fontSize: 12},
   search: {color: '#344131', flex: 1, fontFamily: 'Prompt_500Medium', fontSize: 13, minHeight: 46},
   searchRow: {alignItems: 'center', backgroundColor: '#f4f7f1', borderColor: '#dfe6dc', borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: 8, marginTop: 12, paddingHorizontal: 12},

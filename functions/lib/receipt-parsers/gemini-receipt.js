@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.RECEIPT_EXTRACTION_SYSTEM_PROMPT = void 0;
+exports.normalizeResult = normalizeResult;
 exports.extractReceiptWithGemini = extractReceiptWithGemini;
 // Schemas here carry no minimum/maximum/maxItems/minItems: /v1/interactions
 // rejects them alongside nullable types ("Request contains an invalid
@@ -178,7 +179,7 @@ function normalizeResult(value, fallbackDate) {
     const category = /(?:7[\s-]?ELEVEN|BIG\s*C|LOTUS|MAKRO|TOPS|FOODLAND|CJ\s*EXPRESS|SUPERMARKET|ซูเปอร์|ตลาด)/i.test(categoryText) ? "Groceries" :
         /(?:RESTAURANT|CAFE|COFFEE|MCDONALD|KFC|STARBUCKS|ร้านอาหาร|กาแฟ|ข้าว|อาหาร)/i.test(categoryText) ? "Food" :
             /(?:FUEL|PTT|BANGCHAK|SHELL|TAXI|GRAB|BTS|MRT|น้ำมัน|เดินทาง|รถ)/i.test(categoryText) ? "Transport" :
-                /(?:PEA|MEA|ELECTRIC|WATER\s*BILL|INTERNET|AIS|TRUE|DTAC|ค่าไฟ|ค่าน้ำ|อินเทอร์เน็ต|โทรศัพท์)/i.test(categoryText) ? "Utilities" :
+                /(?:\b(?:PEA|MEA|ELECTRIC|WATER\s*BILL|INTERNET|AIS|TRUE|DTAC)\b|ค่าไฟ|ค่าน้ำ|อินเทอร์เน็ต|โทรศัพท์)/i.test(categoryText) ? "Utilities" :
                     /(?:NETFLIX|SPOTIFY|STEAM|CINEMA|MAJOR\s*CINEPLEX|GAME|ภาพยนตร์|บันเทิง|เกม)/i.test(categoryText) ? "Entertainment" :
                         /(?:MR\.?\s*D\.?\s*I\.?\s*Y|SHOPEE|LAZADA|UNIQLO|ADVICE|ELECTRONIC|DEPARTMENT\s*STORE|ช้อป|ร้านค้า)/i.test(categoryText) ? "Shopping" :
                             /(?:TRANSFER|BANK|FEE|ค่าธรรมเนียม|โอนเงิน|ธนาคาร)/i.test(categoryText) ? "Fees" :

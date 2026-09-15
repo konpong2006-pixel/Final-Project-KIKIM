@@ -1,11 +1,13 @@
 /* eslint-disable react-hooks/set-state-in-effect */
-import {useCallback, useEffect, useMemo, useState} from 'react';
+import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {ActivityIndicator, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {router, useLocalSearchParams} from 'expo-router';
+import {financeDate} from '@/lib/ux-time';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 import {SpendingCharts} from '@/components/spending-charts';
 import ConfirmDialog from '@/components/confirm-dialog';
 
-import {thailandRange} from '@/lib/thailand-time';
+import {thailandRange, thailandDateKey, thailandCalendarParts} from '@/lib/thailand-time';
 import {calculateDailyAllowance, calculateFinanceBudgetInsight} from '@/services/dynamic-insights';
 import {loadLegacyPageData} from '@/services/legacy-data';
 import {currentMonthKey, loadMonthlyBudget} from '@/services/monthly-budget';
@@ -23,11 +25,11 @@ const F = {r: 'Prompt_400Regular', m: 'Prompt_500Medium', s: 'Prompt_600SemiBold
 const periods: {label: string; page: 'smartlife_finance_day' | 'smartlife_finance_week' | 'smartlife_finance_month'}[] = [{label: 'วัน', page: 'smartlife_finance_day'}, {label: 'สัปดาห์', page: 'smartlife_finance_week'}, {label: 'เดือน', page: 'smartlife_finance_month'}];
 // Keep every finance receipt shortcut on the shared Smart Scan landing page.
 // The scanner classifies the selected document after the user uploads it.
-const SMART_SCAN_PAGE = 'smartlife_scan_schedule';
+const SMART_SCAN_PAGE = 'smartlife_scan_finance';
 
 function list(value: unknown) { return Array.isArray(value) ? value.filter((item): item is Item => Boolean(item) && typeof item === 'object') : []; }
 function str(item: Item, key: string, fallback = '-') { const value = item[key]; return typeof value === 'string' && value.trim() ? value : fallback; }
-function money(value: number) { return `฿${Math.max(0, value).toLocaleString('th-TH')}`; }
+function money(value: number) { return `${value < 0 ? '-' : ''}฿${Math.abs(value).toLocaleString('th-TH')}`; }
 function date(value: unknown) { const result = new Date(String(value ?? '')); return Number.isNaN(result.getTime()) ? '-' : new Intl.DateTimeFormat('th-TH', {day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Bangkok'}).format(result); }
 function periodText(page: Page) { return page === 'smartlife_finance_week' ? 'สัปดาห์นี้' : page === 'smartlife_finance_month' ? 'เดือนนี้' : 'วันนี้'; }
 function periodForPage(page: string): 'day' | 'week' | 'month' {
@@ -35,10 +37,9 @@ function periodForPage(page: string): 'day' | 'week' | 'month' {
 }
 
 function shiftPeriod(value: Date, period: 'day' | 'week' | 'month', direction: -1 | 1) {
-  const next = new Date(value);
-  if (period === 'month') next.setMonth(next.getMonth() + direction);
-  else next.setDate(next.getDate() + direction * (period === 'week' ? 7 : 1));
-  return next;
+  const {year, month} = thailandCalendarParts(value);
+  if (period === 'month') return new Date(Date.UTC(year, month + direction, 1, 5));
+  return new Date(value.getTime() + direction * (period === 'week' ? 7 : 1) * 86400000);
 }
 
 function selectedRangeLabel(page: string, referenceDate: Date) {
@@ -62,32 +63,46 @@ const categoryIcon = expenseCategoryIcon;
 
 export default function FinanceScreen({onNavigate, page, uid}: Props) {
   const [data, setData] = useState<Item | null>(null);
+  const [loadError, setLoadError] = useState(false);
+  const loadVersion = useRef(0);
   const [monthlyBudget, setMonthlyBudget] = useState<{amount: number; rolledOver: boolean} | null>(null);
   const [monthData, setMonthData] = useState<Item | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [referenceDate, setReferenceDate] = useState(() => new Date());
-  const [period, setPeriod] = useState<Period>(() => periodForPage(page));
+  const params = useLocalSearchParams<{period?: string; date?: string; filter?: string}>();
+  const period: Period = params.period === 'week' || params.period === 'month' || params.period === 'day' ? params.period : periodForPage(page);
+  const referenceDate = useMemo(() => financeDate(params.date), [params.date, page]);
+  const filter: Filter = params.filter === 'income' || params.filter === 'expense' || params.filter === 'all' ? params.filter : page === 'smartlife_finance_income' ? 'income' : page === 'smartlife_finance_expense' ? 'expense' : 'all';
+  const selectRange = (nextPeriod = period, nextDate = referenceDate, nextFilter = filter) => {
+    router.push({pathname: '/[section]/[page]', params: {section: 'user', page: 'smartlife_finance_day', period: nextPeriod, date: thailandDateKey(nextDate), filter: nextFilter}});
+  };
   const [deleting, setDeleting] = useState<Item | null>(null);
   const [deleteError, setDeleteError] = useState(false);
   const [recategorizing, setRecategorizing] = useState<Item | null>(null);
   const [categoryError, setCategoryError] = useState(false);
-  const [filter, setFilter] = useState<Filter>(() => page === 'smartlife_finance_income' ? 'income' : page === 'smartlife_finance_expense' ? 'expense' : 'all');
   const periodPage = `smartlife_finance_${period}` as 'smartlife_finance_day' | 'smartlife_finance_week' | 'smartlife_finance_month';
   const load = useCallback(async () => {
+    const version = ++loadVersion.current;
+    setLoadError(false);
+    setData(null);
+    try {
     const [pageData, savedBudget, monthPage] = await Promise.all([
       loadLegacyPageData(uid, `user/${periodPage}`, referenceDate) as Promise<Item>,
       loadMonthlyBudget(uid, currentMonthKey()),
       // The weekly and monthly windows are month-scoped whatever tab is open,
       // so the month's spending is fetched unless this tab already is it.
       period === 'month' ? Promise.resolve(null)
-        : (loadLegacyPageData(uid, 'user/smartlife_finance_month') as Promise<Item>)
-          .catch((error) => { console.error('[Finance] Month transactions load failed', error); return null; }),
+        : (loadLegacyPageData(uid, 'user/smartlife_finance_month') as Promise<Item>),
     ]);
+    if (version !== loadVersion.current) return;
     setData(pageData);
     setMonthData(monthPage);
     setMonthlyBudget(savedBudget ? {amount: savedBudget.amount, rolledOver: Boolean(savedBudget.rolledOverFrom)} : null);
+    } catch (error) {
+      console.error('[Finance] Data load failed', error);
+      if (version === loadVersion.current) setLoadError(true);
+    }
   }, [period, periodPage, referenceDate, uid]);
-  useEffect(() => { load().catch(() => setData({})); }, [load]);
+  useEffect(() => { void load(); return () => { loadVersion.current += 1; }; }, [load]);
   const refresh = useCallback(async () => { setRefreshing(true); try { await load(); } finally { setRefreshing(false); } }, [load]);
   const all = useMemo(() => list(data?.transactions), [data]);
   const income = all.filter((item) => item.type === 'income').reduce((sum, item) => sum + Number(item.amount ?? 0), 0);
@@ -162,21 +177,21 @@ export default function FinanceScreen({onNavigate, page, uid}: Props) {
     <ScrollView contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={C.sage} />} showsVerticalScrollIndicator={false}>
       {/* Refactored UI: finance overview follows the period-and-filter dashboard shown in the new design. */}
       <View style={styles.header}><View><Text style={styles.eyebrow}>{filter === 'income' ? `รายรับ${periodText(periodPage)}` : filter === 'expense' ? `รายจ่าย${periodText(periodPage)}` : `สรุป${periodText(periodPage)}`}</Text><Text style={styles.title}>การเงิน</Text></View><Pressable accessibilityLabel={headerAction.label} onPress={() => onNavigate(headerAction.page)} style={styles.receiptButton}><MaterialIcon color="#fff" name={headerAction.icon} size={22} /></Pressable></View>
-      <View style={styles.periodBar}>{periods.map((item) => <Pressable key={item.page} onPress={() => { setPeriod(periodForPage(item.page)); setReferenceDate(new Date()); }} style={[styles.periodItem, periodPage === item.page && styles.periodActive]}><Text style={[styles.periodText, periodPage === item.page && styles.periodTextActive]}>{item.label}</Text></Pressable>)}</View>
+      <View style={styles.periodBar}>{periods.map((item) => <Pressable key={item.page} onPress={() => { selectRange(periodForPage(item.page), referenceDate); }} style={[styles.periodItem, periodPage === item.page && styles.periodActive]}><Text style={[styles.periodText, periodPage === item.page && styles.periodTextActive]}>{item.label}</Text></Pressable>)}</View>
       <View style={styles.rangeBar}>
-        <Pressable accessibilityLabel="Previous period" onPress={() => setReferenceDate((current) => shiftPeriod(current, periodForPage(periodPage), -1))} style={styles.rangeButton}>
+        <Pressable accessibilityLabel="Previous period" onPress={() => selectRange(period, shiftPeriod(referenceDate, period, -1))} style={styles.rangeButton}>
           <MaterialIcon color={C.ink} name="chevron_left" size={22} />
         </Pressable>
-        <Pressable accessibilityLabel="Return to current period" onPress={() => setReferenceDate(new Date())} style={styles.rangeLabel}>
+        <Pressable accessibilityLabel="Return to current period" onPress={() => selectRange(period, new Date())} style={styles.rangeLabel}>
           <Text style={styles.rangeHint}>D / W / M</Text>
           <Text style={styles.rangeToday}>{selectedRangeLabel(periodPage, referenceDate)}</Text>
         </Pressable>
-        <Pressable accessibilityLabel="Next period" onPress={() => setReferenceDate((current) => shiftPeriod(current, periodForPage(periodPage), 1))} style={styles.rangeButton}>
+        <Pressable accessibilityLabel="Next period" onPress={() => selectRange(period, shiftPeriod(referenceDate, period, 1))} style={styles.rangeButton}>
           <MaterialIcon color={C.ink} name="chevron_right" size={22} />
         </Pressable>
       </View>
-      <View style={styles.filterBar}>{(['all', 'income', 'expense'] as Filter[]).map((item) => <Pressable key={item} onPress={() => setFilter(item)} style={[styles.filterItem, filter === item && styles.filterActive]}><Text style={[styles.filterText, filter === item && styles.filterTextActive]}>{item === 'all' ? 'ภาพรวม' : item === 'income' ? 'รายรับ' : 'รายจ่าย'}</Text></Pressable>)}</View>
-      {!data ? <View style={styles.loading}><ActivityIndicator color={C.sage} size="large" /><Text style={styles.loadingText}>กำลังโหลดข้อมูลจาก Firebase</Text></View> : <>
+      <View style={styles.filterBar}>{(['all', 'income', 'expense'] as Filter[]).map((item) => <Pressable key={item} onPress={() => selectRange(period, referenceDate, item)} style={[styles.filterItem, filter === item && styles.filterActive]}><Text style={[styles.filterText, filter === item && styles.filterTextActive]}>{item === 'all' ? 'ภาพรวม' : item === 'income' ? 'รายรับ' : 'รายจ่าย'}</Text></Pressable>)}</View>
+      {loadError ? <View style={styles.loading}><Text style={styles.loadingText}>โหลดข้อมูลไม่สำเร็จ จึงยังสรุปยอดไม่ได้ ไม่ใช่ยอดเป็นศูนย์</Text><Pressable accessibilityRole="button" onPress={() => void load()} style={styles.sheetCancel}><Text style={styles.sheetCancelText}>ลองอีกครั้ง</Text></Pressable></View> : !data ? <View style={styles.loading}><ActivityIndicator color={C.sage} size="large" /><Text style={styles.loadingText}>กำลังโหลดข้อมูลจาก Firebase</Text></View> : <>
         <View style={styles.balanceCard}><View style={styles.balanceCircle} /><View style={styles.balanceTop}><View><View style={styles.balanceLabelRow}><MaterialIcon color={C.accent} name="credit_card" size={14} /><Text style={styles.balanceLabel}>{mainLabel}</Text></View><Text style={styles.balanceAmount}>{money(mainAmount)}</Text><Text style={styles.balancePeriod}>/ {periodText(periodPage)}</Text></View></View><View style={styles.progress}><View style={[styles.progressFill, {width: `${Math.min(expense / Math.max(income, expense, 1) * 100, 100)}%`}]} /></View><View style={styles.categoryTags}>{categoryTotals.length ? categoryTotals.map(([category, amount]) => <View key={category} style={styles.categoryTag}><Text style={styles.categoryTagText}>{category} {money(amount)}</Text></View>) : <View style={styles.categoryTag}><Text style={styles.categoryTagText}>ยังไม่มีค่าใช้จ่าย</Text></View>}</View></View>
         {budgetLine ? <Pressable onPress={() => onNavigate('smartlife_monthly_budget')} style={[styles.budgetStrip, budgetLine.over && styles.budgetStripOver]}>
           <View style={[styles.budgetStripIcon, budgetLine.over && styles.budgetStripIconOver]}><MaterialIcon color={budgetLine.over ? C.red : C.sage} name={budgetLine.over ? 'error' : 'savings'} size={17} /></View>
@@ -199,8 +214,8 @@ export default function FinanceScreen({onNavigate, page, uid}: Props) {
         <Pressable onPress={() => onNavigate('smartlife_line_bank')} style={[styles.menuCard, {backgroundColor: '#eef3ea'}]}>
             <View style={[styles.menuIcon, {backgroundColor: '#72956f'}]}><MaterialIcon color="#fff" name="notifications_active" size={20} /></View>
             <View style={{flex: 1}}>
-              <Text style={styles.menuTitle}>รับเงินจาก LINE ธนาคาร</Text>
-              <Text style={styles.menuSubtitle}>เปิดรับแจ้งเตือนครั้งเดียว แล้วตรวจร่างก่อนบันทึกจริง</Text>
+              <Text style={styles.menuTitle}>อ่านแจ้งเตือนการเงิน</Text>
+              <Text style={styles.menuSubtitle}>LINE และแอปธนาคารที่รองรับ • ตรวจเฉพาะรายการที่ไม่ชัดเจน</Text>
             </View>
             <MaterialIcon color={C.ink} name="chevron_right" size={21} />
         </Pressable>
@@ -296,15 +311,15 @@ function CategorySheet({current, onClose, onSelect, visible}: {current: string; 
 const shadow = {shadowColor: C.ink, shadowOffset: {height: 8, width: 0}, shadowOpacity: .07, shadowRadius: 18};
 const styles = StyleSheet.create({
   budgetStrip: {alignItems: 'center', backgroundColor: '#fff', borderColor: C.sageSoft, borderRadius: 16, borderWidth: 1, flexDirection: 'row', gap: 10, marginTop: 12, padding: 12},
-  budgetStripDetail: {color: C.muted, fontFamily: F.r, fontSize: 9, lineHeight: 14, marginTop: 2},
+  budgetStripDetail: {color: C.muted, fontFamily: F.r, fontSize: 12, lineHeight: 18, marginTop: 2},
   budgetStripIcon: {alignItems: 'center', backgroundColor: C.sageSoft, borderRadius: 14, height: 36, justifyContent: 'center', width: 36},
   budgetStripIconOver: {backgroundColor: C.redSoft},
   budgetStripOver: {borderColor: C.redSoft},
   budgetStripTitle: {color: C.ink, fontFamily: F.b, fontSize: 12},
   budgetStripTitleOver: {color: C.red},
-  allLink: {color: C.accent, fontFamily: F.b, fontSize: 9}, balanceAmount: {color: C.ink, fontFamily: F.x, fontSize: 30, marginTop: 2}, balanceCard: {...shadow, backgroundColor: '#fff', borderRadius: 21, marginTop: 10, overflow: 'hidden', padding: 15}, balanceCircle: {backgroundColor: C.accentSoft, borderBottomLeftRadius: 58, height: 72, position: 'absolute', right: 0, top: 0, width: 72}, balanceLabel: {color: C.ink, fontFamily: F.b, fontSize: 10}, balanceLabelRow: {alignItems: 'center', flexDirection: 'row', gap: 6}, balancePeriod: {color: C.muted, fontFamily: F.s, fontSize: 10, marginLeft: 92, marginTop: -14}, budgetPlanner: {alignItems: 'center', backgroundColor: '#fff0e8', borderColor: '#f0cfc1', borderRadius: 18, borderWidth: 1, flexDirection: 'row', gap: 10, marginTop: 13, padding: 12}, budgetPlannerIcon: {alignItems: 'center', backgroundColor: '#c87964', borderRadius: 20, boxShadow: '0 5px 11px rgba(176,99,79,.20)', height: 40, justifyContent: 'center', width: 40}, budgetPlannerText: {color: '#8e6256', fontFamily: F.r, fontSize: 8, marginTop: 2}, budgetPlannerTitle: {color: '#56372e', fontFamily: F.b, fontSize: 11}, balanceTop: {flexDirection: 'row', justifyContent: 'space-between'}, categoryTag: {backgroundColor: '#f1f3ef', borderRadius: 99, paddingHorizontal: 9, paddingVertical: 5}, categoryTagText: {color: '#697669', fontFamily: F.b, fontSize: 8}, categoryTags: {flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10}, content: {padding: 20, paddingBottom: 26}, delete: {alignItems: 'center', height: 28, justifyContent: 'center', marginLeft: 2, width: 22}, empty: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 18, gap: 6, paddingVertical: 28}, emptyText: {color: C.muted, fontFamily: F.r, fontSize: 10}, eyebrow: {color: C.sage, fontFamily: F.b, fontSize: 10}, filterActive: {backgroundColor: C.accent}, filterBar: {backgroundColor: '#fff', borderRadius: 16, flexDirection: 'row', marginTop: 9, padding: 5}, filterItem: {alignItems: 'center', borderRadius: 12, flex: 1, paddingVertical: 8}, filterText: {color: C.muted, fontFamily: F.b, fontSize: 10}, filterTextActive: {color: '#fff'}, header: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'}, insight: {alignItems: 'center', backgroundColor: '#eef1fa', borderRadius: 18, flexDirection: 'row', gap: 10, marginTop: 14, padding: 12}, insightIcon: {alignItems: 'center', backgroundColor: C.accent, borderRadius: 20, height: 40, justifyContent: 'center', width: 40}, insightText: {color: '#7c8790', fontFamily: F.r, fontSize: 8, marginTop: 2}, insightTitle: {color: C.ink, fontFamily: F.b, fontSize: 11}, loading: {alignItems: 'center', gap: 9, paddingVertical: 80}, loadingText: {color: C.muted, fontFamily: F.r, fontSize: 10}, periodActive: {backgroundColor: C.ink}, periodBar: {backgroundColor: '#fff', borderRadius: 16, flexDirection: 'row', marginTop: 12, padding: 5}, periodItem: {alignItems: 'center', borderRadius: 12, flex: 1, paddingVertical: 9}, periodText: {color: C.muted, fontFamily: F.b, fontSize: 10}, periodTextActive: {color: '#fff'}, progress: {backgroundColor: '#e4e5ec', borderRadius: 99, height: 7, marginTop: 16, overflow: 'hidden'}, progressFill: {backgroundColor: C.accent, borderRadius: 99, height: 7}, rangeBar: {alignItems: 'center', flexDirection: 'row', gap: 8, marginTop: 8}, rangeButton: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 18, height: 36, justifyContent: 'center', width: 36}, rangeHint: {color: C.accent, fontFamily: F.b, fontSize: 8}, rangeLabel: {alignItems: 'center', flex: 1, justifyContent: 'center', minHeight: 36}, rangeToday: {color: C.ink, fontFamily: F.b, fontSize: 10, marginTop: 1}, receiptButton: {alignItems: 'center', backgroundColor: C.accent, borderRadius: 28, boxShadow: '0 7px 17px rgba(69,77,125,.25)', height: 54, justifyContent: 'center', width: 54}, safe: {backgroundColor: C.mist, flex: 1}, screen: {backgroundColor: C.mist, flex: 1}, sectionHead: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10, marginTop: 17}, sectionTitle: {color: C.ink, fontFamily: F.x, fontSize: 14}, summary: {...shadow, backgroundColor: '#fff', borderRadius: 18, flex: 1, minHeight: 84, padding: 13}, summaryAmount: {fontFamily: F.x, fontSize: 19, marginTop: 6}, summaryHead: {alignItems: 'center', flexDirection: 'row', gap: 5}, summaryLabel: {color: C.muted, fontFamily: F.s, fontSize: 9}, summaryRow: {flexDirection: 'row', gap: 10, marginTop: 12}, title: {color: C.ink, fontFamily: F.x, fontSize: 24}, transaction: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 18, flexDirection: 'row', gap: 10, minHeight: 61, paddingHorizontal: 12, paddingVertical: 10}, transactionAmount: {fontFamily: F.x, fontSize: 11}, transactionIcon: {alignItems: 'center', borderRadius: 13, height: 38, justifyContent: 'center', width: 38}, transactionList: {gap: 9}, transactionMain: {alignItems: 'center', flex: 1, flexDirection: 'row', gap: 10}, transactionSub: {color: C.muted, fontFamily: F.r, fontSize: 8, marginTop: 2}, transactionSubRow: {alignItems: 'center', flexDirection: 'row', gap: 4}, transactionTitle: {color: C.ink, fontFamily: F.b, fontSize: 11}, sheet: {backgroundColor: '#fbfcf7', borderRadius: 24, maxHeight: '80%', maxWidth: 460, padding: 18, width: '92%'}, sheetCancel: {alignItems: 'center', borderRadius: 14, marginTop: 12, paddingVertical: 11}, sheetCancelText: {color: C.muted, fontFamily: F.b, fontSize: 11}, sheetHint: {color: '#8b948a', fontFamily: F.r, fontSize: 9, marginBottom: 12, marginTop: 3}, sheetOption: {alignItems: 'center', backgroundColor: '#f1f3ef', borderRadius: 99, flexDirection: 'row', gap: 6, paddingHorizontal: 11, paddingVertical: 8}, sheetOptionActive: {backgroundColor: '#5f875f'}, sheetOptionText: {color: '#6d786c', fontFamily: F.b, fontSize: 10}, sheetOptionTextActive: {color: '#fff'}, sheetOptions: {flexDirection: 'row', flexWrap: 'wrap', gap: 7}, sheetOverlay: {alignItems: 'center', backgroundColor: 'rgba(32, 40, 31, .58)', flex: 1, justifyContent: 'center', padding: 16}, sheetScroll: {maxHeight: 360}, sheetTitle: {color: C.ink, fontFamily: F.x, fontSize: 15},
+  allLink: {color: C.accent, fontFamily: F.b, fontSize: 12}, balanceAmount: {color: C.ink, fontFamily: F.x, fontSize: 30, marginTop: 2}, balanceCard: {...shadow, backgroundColor: '#fff', borderRadius: 21, marginTop: 10, overflow: 'hidden', padding: 15}, balanceCircle: {backgroundColor: C.accentSoft, borderBottomLeftRadius: 58, height: 72, position: 'absolute', right: 0, top: 0, width: 72}, balanceLabel: {color: C.ink, fontFamily: F.b, fontSize: 12}, balanceLabelRow: {alignItems: 'center', flexDirection: 'row', gap: 6}, balancePeriod: {color: C.muted, fontFamily: F.s, fontSize: 12, marginLeft: 92, marginTop: -14}, budgetPlanner: {alignItems: 'center', backgroundColor: '#fff0e8', borderColor: '#f0cfc1', borderRadius: 18, borderWidth: 1, flexDirection: 'row', gap: 10, marginTop: 13, padding: 12}, budgetPlannerIcon: {alignItems: 'center', backgroundColor: '#c87964', borderRadius: 20, boxShadow: '0 5px 11px rgba(176,99,79,.20)', height: 40, justifyContent: 'center', width: 40}, budgetPlannerText: {color: '#8e6256', fontFamily: F.r, fontSize: 12, marginTop: 2}, budgetPlannerTitle: {color: '#56372e', fontFamily: F.b, fontSize: 12}, balanceTop: {flexDirection: 'row', justifyContent: 'space-between'}, categoryTag: {backgroundColor: '#f1f3ef', borderRadius: 99, paddingHorizontal: 9, paddingVertical: 5}, categoryTagText: {color: '#697669', fontFamily: F.b, fontSize: 12}, categoryTags: {flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10}, content: {padding: 20, paddingBottom: 26}, delete: {alignItems: 'center', height: 28, justifyContent: 'center', marginLeft: 2, width: 22}, empty: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 18, gap: 6, paddingVertical: 28}, emptyText: {color: C.muted, fontFamily: F.r, fontSize: 12}, eyebrow: {color: C.sage, fontFamily: F.b, fontSize: 12}, filterActive: {backgroundColor: C.accent}, filterBar: {backgroundColor: '#fff', borderRadius: 16, flexDirection: 'row', marginTop: 9, padding: 5}, filterItem: {alignItems: 'center', borderRadius: 12, flex: 1, paddingVertical: 8}, filterText: {color: C.muted, fontFamily: F.b, fontSize: 12}, filterTextActive: {color: '#fff'}, header: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'}, insight: {alignItems: 'center', backgroundColor: '#eef1fa', borderRadius: 18, flexDirection: 'row', gap: 10, marginTop: 14, padding: 12}, insightIcon: {alignItems: 'center', backgroundColor: C.accent, borderRadius: 20, height: 40, justifyContent: 'center', width: 40}, insightText: {color: '#7c8790', fontFamily: F.r, fontSize: 12, marginTop: 2}, insightTitle: {color: C.ink, fontFamily: F.b, fontSize: 12}, loading: {alignItems: 'center', gap: 9, paddingVertical: 80}, loadingText: {color: C.muted, fontFamily: F.r, fontSize: 12}, periodActive: {backgroundColor: C.ink}, periodBar: {backgroundColor: '#fff', borderRadius: 16, flexDirection: 'row', marginTop: 12, padding: 5}, periodItem: {alignItems: 'center', borderRadius: 12, flex: 1, paddingVertical: 9}, periodText: {color: C.muted, fontFamily: F.b, fontSize: 12}, periodTextActive: {color: '#fff'}, progress: {backgroundColor: '#e4e5ec', borderRadius: 99, height: 7, marginTop: 16, overflow: 'hidden'}, progressFill: {backgroundColor: C.accent, borderRadius: 99, height: 7}, rangeBar: {alignItems: 'center', flexDirection: 'row', gap: 8, marginTop: 8}, rangeButton: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 18, height: 36, justifyContent: 'center', width: 36}, rangeHint: {color: C.accent, fontFamily: F.b, fontSize: 12}, rangeLabel: {alignItems: 'center', flex: 1, justifyContent: 'center', minHeight: 36}, rangeToday: {color: C.ink, fontFamily: F.b, fontSize: 12, marginTop: 1}, receiptButton: {alignItems: 'center', backgroundColor: C.accent, borderRadius: 28, boxShadow: '0 7px 17px rgba(69,77,125,.25)', height: 54, justifyContent: 'center', width: 54}, safe: {backgroundColor: C.mist, flex: 1}, screen: {backgroundColor: C.mist, flex: 1}, sectionHead: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10, marginTop: 17}, sectionTitle: {color: C.ink, fontFamily: F.x, fontSize: 14}, summary: {...shadow, backgroundColor: '#fff', borderRadius: 18, flex: 1, minHeight: 84, padding: 13}, summaryAmount: {fontFamily: F.x, fontSize: 19, marginTop: 6}, summaryHead: {alignItems: 'center', flexDirection: 'row', gap: 5}, summaryLabel: {color: C.muted, fontFamily: F.s, fontSize: 12}, summaryRow: {flexDirection: 'row', gap: 10, marginTop: 12}, title: {color: C.ink, fontFamily: F.x, fontSize: 24}, transaction: {alignItems: 'center', backgroundColor: '#fff', borderRadius: 18, flexDirection: 'row', gap: 10, minHeight: 61, paddingHorizontal: 12, paddingVertical: 10}, transactionAmount: {fontFamily: F.x, fontSize: 12}, transactionIcon: {alignItems: 'center', borderRadius: 13, height: 38, justifyContent: 'center', width: 38}, transactionList: {gap: 9}, transactionMain: {alignItems: 'center', flex: 1, flexDirection: 'row', gap: 10}, transactionSub: {color: C.muted, fontFamily: F.r, fontSize: 12, marginTop: 2}, transactionSubRow: {alignItems: 'center', flexDirection: 'row', gap: 4}, transactionTitle: {color: C.ink, fontFamily: F.b, fontSize: 12}, sheet: {backgroundColor: '#fbfcf7', borderRadius: 24, maxHeight: '80%', maxWidth: 460, padding: 18, width: '92%'}, sheetCancel: {alignItems: 'center', borderRadius: 14, marginTop: 12, paddingVertical: 11}, sheetCancelText: {color: C.muted, fontFamily: F.b, fontSize: 12}, sheetHint: {color: '#8b948a', fontFamily: F.r, fontSize: 12, marginBottom: 12, marginTop: 3}, sheetOption: {alignItems: 'center', backgroundColor: '#f1f3ef', borderRadius: 99, flexDirection: 'row', gap: 6, paddingHorizontal: 11, paddingVertical: 8}, sheetOptionActive: {backgroundColor: '#5f875f'}, sheetOptionText: {color: '#6d786c', fontFamily: F.b, fontSize: 12}, sheetOptionTextActive: {color: '#fff'}, sheetOptions: {flexDirection: 'row', flexWrap: 'wrap', gap: 7}, sheetOverlay: {alignItems: 'center', backgroundColor: 'rgba(32, 40, 31, .58)', flex: 1, justifyContent: 'center', padding: 16}, sheetScroll: {maxHeight: 360}, sheetTitle: {color: C.ink, fontFamily: F.x, fontSize: 15},
   menuCard: { alignItems: 'center', borderRadius: 18, flexDirection: 'row', gap: 12, marginTop: 10, padding: 14, borderColor: 'rgba(0,0,0,0.04)', borderWidth: 1 },
   menuIcon: { alignItems: 'center', borderRadius: 22, height: 44, justifyContent: 'center', width: 44, shadowColor: C.ink, shadowOffset: {width: 0, height: 5}, shadowOpacity: 0.1, shadowRadius: 11 },
   menuTitle: { color: C.ink, fontFamily: F.b, fontSize: 13 },
-  menuSubtitle: { color: '#7c8790', fontFamily: F.r, fontSize: 9, marginTop: 2 },
+  menuSubtitle: { color: '#7c8790', fontFamily: F.r, fontSize: 12, marginTop: 2 },
 });

@@ -114,7 +114,7 @@ const styles = StyleSheet.create({
   confirm: {alignItems: 'center', backgroundColor: '#557653', borderRadius: 16, flex: 1.15, flexDirection: 'row', gap: 7, justifyContent: 'center', minHeight: 50},
   confirmText: {color: '#fff', fontFamily: 'Prompt_700Bold', fontSize: 13},
   disabled: {opacity: .55},
-  error: {color: '#b85f60', fontFamily: 'Prompt_600SemiBold', fontSize: 11, marginTop: 10, textAlign: 'center'},
+  error: {color: '#b85f60', fontFamily: 'Prompt_600SemiBold', fontSize: 12, marginTop: 10, textAlign: 'center'},
   icon: {alignItems: 'center', alignSelf: 'center', backgroundColor: '#e5efe2', borderRadius: 30, height: 60, justifyContent: 'center', marginBottom: 12, width: 60},
   input: {backgroundColor: '#f4f7f1', borderColor: '#dfe6dc', borderRadius: 14, borderWidth: 1, color: '#344131', fontFamily: 'Prompt_600SemiBold', fontSize: 15, marginTop: 10, minHeight: 50, paddingHorizontal: 14},
   message: {color: '#687165', fontFamily: 'Prompt_400Regular', fontSize: 12, lineHeight: 19, textAlign: 'center'},

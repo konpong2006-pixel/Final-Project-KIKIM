@@ -22,6 +22,7 @@ import {
   updateAssistantConversationState,
 } from '@/services/assistant-conversation';
 import {classifyAssistantIntent} from '@/services/assistant-intent';
+import {editScheduleDraft} from '@/services/assistant-draft-edit';
 import {uploadAndAnalyzeAssistantFile} from '@/services/assistant-file';
 import {assistantActionErrorMessage, assistantErrorMessage, classifyAssistantError} from '@/services/assistant-error';
 import {calculateBurnoutDynamicInsight} from '@/services/dynamic-insights';
@@ -45,6 +46,7 @@ import {activities, type ScheduleConflict} from '@/services/firestore';
 import type {Activity, Schedule, WithId} from '@/types/smartlife';
 import {Card, MaterialIcon, UserShell, type UserNavigate, userStyles} from './user-ui';
 import {showToast} from '@/components/app-toast';
+import {useCurrentClock} from '@/hooks/use-current-clock';
 
 function nowIso() {
   return new Date().toISOString();
@@ -388,6 +390,12 @@ function ActionCard({
   onReject: () => void;
 }) {
   const done = action.status !== 'pending';
+  // The "at least five minutes ahead" check below needs a clock. Reading
+  // `Date.now()` from the component body makes the card's output depend on when
+  // React happened to render it; this hook is the shared way to hold the time
+  // as state, and a reading up to fifteen seconds old cannot change a
+  // five-minute verdict.
+  const now = useCurrentClock();
   const icon = action.entity === 'finance' ? 'payments' : action.entity === 'note' ? 'note_alt' : action.entity === 'memory' ? 'psychology' : action.entity === 'checklist' ? 'checklist' : 'event';
   const scheduleTimeZone = action.entity === 'schedule' ? validTimeZone(action.payload.generatedForTimeZone) : THAI_TIME_ZONE;
   const initialScheduleInput = action.entity === 'schedule' ? assistantLocalInput(action.payload.startAt, scheduleTimeZone) : '';
@@ -397,7 +405,10 @@ function ActionCard({
   const [editorOpen, setEditorOpen] = useState(false);
   const [pickerTarget, setPickerTarget] = useState<'date' | 'time' | null>(null);
   const [timeDraft, setTimeDraft] = useState(initialScheduleInput.slice(11, 16));
-  const pickerValue = parseAssistantLocalInput(`${dateDraft} ${timeDraft}`, scheduleTimeZone) ?? new Date();
+  // Native picker reads device-local calendar fields, not an absolute Bangkok instant.
+  // Conversion to the schedule time zone happens only when confirming below.
+  const localPickerDate = new Date(`${dateDraft}T${timeDraft}:00`);
+  const pickerValue = Number.isNaN(localPickerDate.getTime()) ? new Date() : localPickerDate;
   const durationOptions = [30, 45, 60, 90, 120];
 
   const selectPickerValue = (selectedDate: Date) => {
@@ -414,7 +425,9 @@ function ActionCard({
   };
 
   const editedAction = (): AssistantProposedAction | null => {
-    if (action.entity !== 'schedule' || !editorOpen) return action;
+    if (action.entity !== 'schedule') return action;
+    const originalDuration = action.payload.estimatedDurationMinutes ?? Math.max(15, Math.round((new Date(action.payload.endAt ?? action.payload.startAt).getTime() - new Date(action.payload.startAt).getTime()) / 60000));
+    if (dateDraft === initialScheduleInput.slice(0, 10) && timeDraft === initialScheduleInput.slice(11, 16) && Number(durationDraft) === originalDuration) return action;
     const startAt = parseAssistantLocalInput(`${dateDraft} ${timeDraft}`, scheduleTimeZone);
     const durationMinutes = Number(durationDraft);
     if (!startAt) {
@@ -425,7 +438,7 @@ function ActionCard({
       setEditError('ระยะเวลาต้องอยู่ระหว่าง 15–720 นาที');
       return null;
     }
-    if (startAt.getTime() < Date.now() + 5 * 60_000) {
+    if (startAt.getTime() < now + 5 * 60_000) {
       setEditError('กรุณาเลือกเวลาในอนาคตอย่างน้อย 5 นาที');
       return null;
     }
@@ -434,6 +447,7 @@ function ActionCard({
       ...action,
       payload: {
         ...action.payload,
+        dateLocked: true,
         endAt: new Date(startAt.getTime() + durationMinutes * 60_000).toISOString(),
         estimatedDurationMinutes: durationMinutes,
         generatedForTimeZone: scheduleTimeZone,
@@ -443,7 +457,12 @@ function ActionCard({
     };
   };
 
-  const rows = actionDetails(action);
+  const previewStart = action.entity === 'schedule'
+    ? parseAssistantLocalInput(`${dateDraft} ${timeDraft}`, scheduleTimeZone) : null;
+  const previewDuration = Number(durationDraft);
+  const rows = actionDetails(action.entity === 'schedule' && previewStart && Number.isInteger(previewDuration) && previewDuration >= 15 && previewDuration <= 720
+    ? {...action, payload: {...action.payload, startAt: previewStart.toISOString(), endAt: new Date(previewStart.getTime() + previewDuration * 60_000).toISOString(), estimatedDurationMinutes: previewDuration}}
+    : action);
   const confirm = () => {
     const nextAction = editedAction();
     if (nextAction) onConfirm(nextAction);
@@ -928,6 +947,34 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
   const inlineAdaptiveActionInFlightRef = useRef(false);
   const retryInlineAdaptiveActionRef = useRef<{action: () => Promise<unknown>; key: string; successMessage: string; title: string} | null>(null);
   const [busy, setBusy] = useState(false);
+  const [busySeconds, setBusySeconds] = useState(0);
+  // Nothing in the assistant pipeline is abortable -- the callable keeps
+  // running whatever the user does -- so "หยุด" works by ticket instead. Every
+  // request takes one; stopping tears it up; a request whose ticket is gone is
+  // not allowed to write into the chat. The screen frees up straight away and
+  // the answer that eventually lands is dropped rather than appearing on top of
+  // whatever the user moved on to.
+  const replyTicket = useRef(0);
+  const beginReply = () => {
+    setBusySeconds(0);
+    setBusy(true);
+    return ++replyTicket.current;
+  };
+  const stopReply = () => {
+    replyTicket.current += 1;
+    setBusy(false);
+    showToast('หยุดรอคำตอบแล้ว', 'คำตอบที่ค้างอยู่จะไม่ถูกนำมาแสดง ถามใหม่ได้เลย', 'info');
+  };
+  // The counter is zeroed by whoever starts a request, not by this effect:
+  // setting state from an effect body only to undo the previous render is the
+  // cascading-render shape React asks us to avoid, and the start of a request
+  // is the honest place for "the clock starts now" to live anyway.
+  useEffect(() => {
+    if (!busy) return;
+    const started = Date.now();
+    const timer = setInterval(() => setBusySeconds(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => clearInterval(timer);
+  }, [busy]);
   const [completingTaskId, setCompletingTaskId] = useState('');
   const [adaptiveActivationStatus, setAdaptiveActivationStatus] = useState<AsyncActionStatus>('idle');
   const [adaptiveActivationError, setAdaptiveActivationError] = useState('');
@@ -1180,6 +1227,18 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     queueScrollToLatest();
   };
 
+  /**
+   * `appendAssistant` for one request, silent once that request is stopped.
+   * Handlers shadow the plain name with this, so every reply inside them is
+   * covered without each call site having to remember. Replies the screen makes
+   * on its own -- confirming a rejected card, say -- keep using the plain one,
+   * because those are not a request and stopping must not swallow them.
+   */
+  const replyFor = (ticket: number) => (...args: Parameters<typeof appendAssistant>) => {
+    if (ticket !== replyTicket.current) return;
+    appendAssistant(...args);
+  };
+
   const appendUser = (content: string, state = conversationState) => {
     const nextMessage: AssistantChatMessage = {content, id: messageId('user'), role: 'user', timestamp: nowIso()};
     setMessages((current) => trimChatHistory([...current, nextMessage]));
@@ -1314,10 +1373,26 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     setQuickAddOpen(false);
     setQuickAddCategory(null);
     setInput('');
-    setBusy(true);
+    const ticket = beginReply();
+    // Shadowed so every reply below this line belongs to this request and goes quiet if the user stops it.
+    const appendAssistant = replyFor(ticket);
     setConversationState(nextConversationState);
     appendUser(text, nextConversationState);
     try {
+      // Searched over the whole chat, not the twelve turns sent as context: a
+      // draft the user left open, asked three other things about, then came
+      // back to fell outside that window and the edit became a brand new task.
+      // Only one schedule draft is ever pending at a time, so the last one
+      // found is the one on screen.
+      const latestDraft = [...messages].reverse().find((turn) => turn.proposedAction?.entity === 'schedule' && turn.proposedAction.status === 'pending');
+      const revision = latestDraft?.proposedAction ? editScheduleDraft(text, latestDraft.proposedAction) : null;
+      if (revision) {
+        if (revision.action && latestDraft) {
+          updateActionStatus(latestDraft.id, 'rejected');
+          appendAssistant('ปรับเฉพาะเวลาของร่างเดิมแล้ว ชื่องานเดิมยังอยู่ ตรวจการ์ดด้านล่างก่อนยืนยันบันทึก', revision.action);
+        } else appendAssistant(revision.error ?? 'กรุณาแก้วันที่/เวลาบนการ์ดเดิม');
+        return;
+      }
       // Use semantic scheduling analysis for all schedule/task language. The
       // user does not need command words; read-only questions simply fall
       // through when Adaptive returns no operation.
@@ -1401,7 +1476,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
         ? appCheckErrorMessage(error)
         : 'ตอนนี้ผู้ช่วยยังเชื่อมต่อข้อมูลไม่สำเร็จ แต่ข้อมูลเดิมไม่ได้หาย กรุณาลองใหม่อีกครั้ง');
     } finally {
-      setBusy(false);
+      if (ticket === replyTicket.current) setBusy(false);
     }
   };
 
@@ -1415,7 +1490,9 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     setQuickAddCategory(null);
     setAdaptiveActivationError('');
     setAdaptiveActivationStatus('loading');
-    setBusy(true);
+    const ticket = beginReply();
+    // Shadowed so every reply below this line belongs to this request and goes quiet if the user stops it.
+    const appendAssistant = replyFor(ticket);
     if (!retry) {
       setConversationState(nextConversationState);
       appendUser(prompt, nextConversationState);
@@ -1458,7 +1535,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
       setAdaptiveActivationStatus('error');
     } finally {
       adaptiveActivationInFlightRef.current = false;
-      setBusy(false);
+      if (ticket === replyTicket.current) setBusy(false);
     }
   };
 
@@ -1476,7 +1553,9 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     setInlineAdaptiveFeedbackMessage('กำลังตรวจตารางและข้อมูลล่าสุดก่อนบันทึก');
     setInlineAdaptiveFeedbackStatus('loading');
     setInlineAdaptiveFeedbackTitle(title);
-    setBusy(true);
+    const ticket = beginReply();
+    // Shadowed so every reply below this line belongs to this request and goes quiet if the user stops it.
+    const appendAssistant = replyFor(ticket);
     try {
       await action();
       const dashboard = await adaptiveScheduling.getDashboard();
@@ -1491,7 +1570,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     } finally {
       inlineAdaptiveActionInFlightRef.current = false;
       setInlineAdaptiveBusyKey('');
-      setBusy(false);
+      if (ticket === replyTicket.current) setBusy(false);
     }
   };
 
@@ -1501,7 +1580,9 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     retryConfirmActionRef.current = {action, targetMessageId};
     setConfirmationActionError('');
     setConfirmationActionStatus('loading');
-    setBusy(true);
+    const ticket = beginReply();
+    // Shadowed so every reply below this line belongs to this request and goes quiet if the user stops it.
+    const appendAssistant = replyFor(ticket);
     setSavingActionId(action.id);
     try {
       const result = await confirmAssistantAction(uid, action);
@@ -1525,7 +1606,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     } finally {
       confirmActionInFlightRef.current = false;
       setSavingActionId('');
-      setBusy(false);
+      if (ticket === replyTicket.current) setBusy(false);
     }
   };
 
@@ -1674,19 +1755,25 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
               appendAssistant('ยังไม่ได้ยินเสียงครับ กดไมค์แล้วพูดใหม่อีกครั้งได้เลย');
               return;
             }
-            setBusy(true);
+            // Named rather than shadowed here: this block already speaks above,
+            // before the ticket exists.
+            const voiceTicket = beginReply();
+            const replyToVoice = replyFor(voiceTicket);
             transcribeAssistantAudio(blob)
               .then((transcript) => {
+                // Stopped means stopped: dropping the words into the composer
+                // minutes later is the same surprise as a late reply.
+                if (voiceTicket !== replyTicket.current) return;
                 setInput([speechBaseInputRef.current, transcript].filter(Boolean).join(' '));
                 requestAnimationFrame(() => chatScrollRef.current?.scrollToEnd({animated: true}));
               })
               .catch((error) => {
                 const kind = classifyAssistantError(error);
-                appendAssistant(kind === 'unknown'
+                replyToVoice(kind === 'unknown'
                   ? 'แปลงเสียงเป็นข้อความไม่สำเร็จครับ กรุณาลองพูดใหม่อีกครั้ง'
                   : assistantErrorMessage(kind));
               })
-              .finally(() => setBusy(false));
+              .finally(() => { if (voiceTicket === replyTicket.current) setBusy(false); });
           };
           recorder.start(250);
           setListening(true);
@@ -1766,7 +1853,9 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     if (busy) return;
     setQuickAddOpen(false);
     setQuickAddCategory(null);
-    setBusy(true);
+    const ticket = beginReply();
+    // Shadowed so every reply below this line belongs to this request and goes quiet if the user stops it.
+    const appendAssistant = replyFor(ticket);
     try {
       const DocumentPicker = await import('expo-document-picker');
       const result = await DocumentPicker.getDocumentAsync({
@@ -1807,7 +1896,7 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
         ? 'อัปโหลดหรือวิเคราะห์ไฟล์ไม่สำเร็จ กรุณาตรวจอินเทอร์เน็ตแล้วลองเลือกไฟล์ PDF, TXT, CSV หรือ ICS อีกครั้ง'
         : assistantErrorMessage(kind));
     } finally {
-      setBusy(false);
+      if (ticket === replyTicket.current) setBusy(false);
     }
   };
 
@@ -2006,7 +2095,18 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
             {busy ? (
               <View style={local.thinking}>
                 <ActivityIndicator color="#668d65" />
-                <Text style={userStyles.muted}>{savingActionId ? 'กำลังตรวจสอบเวลาและบันทึกอย่างปลอดภัย...' : 'กำลังดูข้อมูลจริงในระบบ...'}</Text>
+                <View style={{flex: 1}} accessibilityLiveRegion="polite">
+                  <Text style={userStyles.bodyText}>{savingActionId ? 'กำลังตรวจสอบเวลาและบันทึก...' : 'กำลังวิเคราะห์คำถามและข้อมูลในระบบ...'}</Text>
+                  <Text style={userStyles.muted}>รอแล้ว {busySeconds} วินาที • {busySeconds >= 30 ? 'ใช้เวลานานกว่าปกติ กรุณาอย่ากดส่งซ้ำ' : 'ระยะเวลาขึ้นกับข้อมูลและเครือข่าย'}</Text>
+                </View>
+                {/* Saving is deliberately not stoppable: the write may already
+                    have gone through, and a button that says otherwise lies. */}
+                {savingActionId ? null : (
+                  <Pressable accessibilityLabel="หยุดรอคำตอบ" accessibilityRole="button" onPress={stopReply} style={local.stopButton}>
+                    <MaterialIcon color="#7d6a63" name="stop_circle" size={17} />
+                    <Text style={local.stopButtonText}>หยุด</Text>
+                  </Pressable>
+                )}
               </View>
             ) : null}
             <FocusSuggestions messages={visibleMessages} />
@@ -2191,25 +2291,25 @@ const local = StyleSheet.create({
   actionCard: {alignSelf: 'stretch', marginTop: 8, padding: 14},
   actionDurationChip: {backgroundColor: '#ffffff', borderColor: '#dce7d8', borderRadius: 99, borderWidth: 1, paddingHorizontal: 9, paddingVertical: 6},
   actionDurationChipActive: {backgroundColor: '#668b62', borderColor: '#668b62'},
-  actionDurationChipText: {color: '#63715f', fontFamily: 'Prompt_600SemiBold', fontSize: 8},
+  actionDurationChipText: {color: '#63715f', fontFamily: 'Prompt_600SemiBold', fontSize: 12},
   actionDurationChipTextActive: {color: '#ffffff'},
   actionDurationOptions: {flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8},
   actionEditorDurationRow: {alignItems: 'flex-end', flexDirection: 'row', gap: 9},
-  actionEditorError: {color: '#a05e5e', fontFamily: 'Prompt_500Medium', fontSize: 10, lineHeight: 15, marginTop: 8},
+  actionEditorError: {color: '#a05e5e', fontFamily: 'Prompt_500Medium', fontSize: 12, lineHeight: 18, marginTop: 8},
   actionEditorField: {flex: 1.35},
   actionEditorFieldSmall: {flex: .8},
-  actionEditorHint: {color: '#73806f', fontFamily: 'Prompt_400Regular', fontSize: 9, lineHeight: 14, marginTop: 8},
+  actionEditorHint: {color: '#73806f', fontFamily: 'Prompt_400Regular', fontSize: 12, lineHeight: 18, marginTop: 8},
   actionEditorHintBadge: {alignItems: 'center', backgroundColor: '#eaf3e7', borderRadius: 12, flexDirection: 'row', gap: 4, marginBottom: 1, paddingHorizontal: 8, paddingVertical: 8},
-  actionEditorHintBadgeText: {color: '#587454', fontFamily: 'Prompt_600SemiBold', fontSize: 8},
-  actionEditorInput: {backgroundColor: '#ffffff', borderColor: '#dce7d8', borderRadius: 12, borderWidth: 1, color: '#2d3a31', fontFamily: 'Prompt_600SemiBold', fontSize: 11, minHeight: 42, paddingHorizontal: 10, paddingVertical: 8},
-  actionEditorLabel: {color: '#6f7c6b', fontFamily: 'Prompt_600SemiBold', fontSize: 9, marginBottom: 5},
+  actionEditorHintBadgeText: {color: '#587454', fontFamily: 'Prompt_600SemiBold', fontSize: 12},
+  actionEditorInput: {backgroundColor: '#ffffff', borderColor: '#dce7d8', borderRadius: 12, borderWidth: 1, color: '#2d3a31', fontFamily: 'Prompt_600SemiBold', fontSize: 12, minHeight: 42, paddingHorizontal: 10, paddingVertical: 8},
+  actionEditorLabel: {color: '#6f7c6b', fontFamily: 'Prompt_600SemiBold', fontSize: 12, marginBottom: 5},
   actionEditorPanel: {backgroundColor: '#f5f9f2', borderColor: '#dce8d7', borderRadius: 16, borderWidth: 1, marginTop: 8, padding: 11},
   actionPickerButton: {alignItems: 'center', backgroundColor: '#ffffff', borderColor: '#dce7d8', borderRadius: 12, borderWidth: 1, flexDirection: 'row', gap: 6, minHeight: 42, paddingHorizontal: 9, paddingVertical: 8},
-  actionPickerValue: {color: '#2d3a31', flex: 1, fontFamily: 'Prompt_600SemiBold', fontSize: 10},
+  actionPickerValue: {color: '#2d3a31', flex: 1, fontFamily: 'Prompt_600SemiBold', fontSize: 12},
   actionEditorRow: {flexDirection: 'row', gap: 8, marginBottom: 9},
   actionEditorToggle: {alignItems: 'center', backgroundColor: '#eef5eb', borderColor: '#d8e5d4', borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: 7, justifyContent: 'center', minHeight: 44, paddingHorizontal: 10},
   actionEditorToggleActive: {backgroundColor: '#668b62', borderColor: '#668b62'},
-  actionEditorToggleText: {color: '#547151', flex: 1, fontFamily: 'Prompt_700Bold', fontSize: 10},
+  actionEditorToggleText: {color: '#547151', flex: 1, fontFamily: 'Prompt_700Bold', fontSize: 12},
   actionEditorToggleTextActive: {color: '#ffffff'},
   actionEditorWrap: {marginTop: 10},
   actionHeader: {alignItems: 'center', flexDirection: 'row', gap: 10},
@@ -2220,17 +2320,17 @@ const local = StyleSheet.create({
   bubble: {borderRadius: 24, maxWidth: '88%', paddingHorizontal: 15, paddingVertical: 12},
   bubbleText: {color: '#2d3a31', fontFamily: 'Prompt_400Regular', fontSize: 14, lineHeight: 21},
   behaviorAction: {alignItems: 'center', backgroundColor: '#2b3916', borderRadius: 14, flexDirection: 'row', gap: 7, justifyContent: 'center', marginTop: 12, minHeight: 43},
-  behaviorActionText: {color: '#fff', fontFamily: 'Prompt_700Bold', fontSize: 11},
+  behaviorActionText: {color: '#fff', fontFamily: 'Prompt_700Bold', fontSize: 12},
   behaviorHeading: {alignItems: 'center', flexDirection: 'row', gap: 9},
   behaviorIcon: {alignItems: 'center', backgroundColor: '#e4eee3', borderRadius: 13, height: 34, justifyContent: 'center', width: 34},
   behaviorPanel: {backgroundColor: '#ffffff', borderRadius: 20, marginTop: 10, padding: 14},
-  behaviorText: {color: '#7c8979', fontFamily: 'Prompt_400Regular', fontSize: 9, lineHeight: 14, marginTop: 2},
+  behaviorText: {color: '#7c8979', fontFamily: 'Prompt_400Regular', fontSize: 12, lineHeight: 18, marginTop: 2},
   behaviorTiming: {flexDirection: 'row', gap: 8, marginTop: 11},
   behaviorTitle: {color: '#2d3a31', fontFamily: 'Prompt_800ExtraBold', fontSize: 13},
   burnoutIcon: {alignItems: 'center', backgroundColor: '#e8e9cc', borderRadius: 13, height: 34, justifyContent: 'center', width: 34},
   burnoutPanel: {alignItems: 'flex-start', backgroundColor: '#f0f1dc', borderColor: '#d9dcad', borderRadius: 18, borderWidth: 1, flexDirection: 'row', gap: 9, marginTop: 12, padding: 13},
-  burnoutText: {color: '#727560', fontFamily: 'Prompt_400Regular', fontSize: 10, lineHeight: 15, marginTop: 2},
-  burnoutTitle: {color: '#35402d', fontFamily: 'Prompt_700Bold', fontSize: 11},
+  burnoutText: {color: '#727560', fontFamily: 'Prompt_400Regular', fontSize: 12, lineHeight: 18, marginTop: 2},
+  burnoutTitle: {color: '#35402d', fontFamily: 'Prompt_700Bold', fontSize: 12},
   chatContent: {gap: 14, paddingBottom: 138, paddingHorizontal: 18, paddingTop: 18},
   chatStack: {gap: 10},
   circleButton: {alignItems: 'center', backgroundColor: '#ffffff', borderRadius: 12, height: 34, justifyContent: 'center', width: 34},
@@ -2238,68 +2338,68 @@ const local = StyleSheet.create({
   composerWrap: {bottom: 18, gap: 8, left: 18, position: 'absolute', right: 18, zIndex: 20},
   confirmRow: {alignItems: 'center', flexDirection: 'row', gap: 10, marginTop: 12},
   detailBox: {backgroundColor: '#f7f9f4', borderRadius: 14, gap: 8, marginTop: 12, padding: 12},
-  detailLabel: {color: '#7d8779', fontFamily: 'Prompt_500Medium', fontSize: 11, width: 72},
+  detailLabel: {color: '#7d8779', fontFamily: 'Prompt_500Medium', fontSize: 12, width: 72},
   detailRow: {alignItems: 'flex-start', flexDirection: 'row', gap: 8},
   detailValue: {color: '#33412e', flex: 1, fontFamily: 'Prompt_500Medium', fontSize: 12, lineHeight: 18},
   disabled: {opacity: .5},
   emptyHistory: {alignItems: 'center', gap: 10, paddingVertical: 36},
   focusHeading: {color: '#2d3a31', fontFamily: 'Prompt_800ExtraBold', fontSize: 14, marginBottom: 8},
-  focusCount: {color: '#668d65', fontFamily: 'Prompt_700Bold', fontSize: 9},
+  focusCount: {color: '#668d65', fontFamily: 'Prompt_700Bold', fontSize: 12},
   focusHeader: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginTop: 18},
   focusIcon: {alignItems: 'center', backgroundColor: '#e4eee3', borderRadius: 12, height: 30, justifyContent: 'center', width: 30},
   focusItem: {alignItems: 'center', backgroundColor: '#ffffff', borderRadius: 16, flexDirection: 'row', gap: 9, padding: 10},
-  focusItemTitle: {color: '#2d3a31', fontFamily: 'Prompt_700Bold', fontSize: 11},
+  focusItemTitle: {color: '#2d3a31', fontFamily: 'Prompt_700Bold', fontSize: 12},
   focusList: {gap: 8},
   focusSection: {marginTop: 10},
-  focusText: {color: '#4b584e', flex: 1, fontFamily: 'Prompt_500Medium', fontSize: 11, lineHeight: 16},
+  focusText: {color: '#4b584e', flex: 1, fontFamily: 'Prompt_500Medium', fontSize: 12, lineHeight: 18},
   feedbackButton: {alignItems: 'center', backgroundColor: '#eef3eb', borderRadius: 14, height: 28, justifyContent: 'center', width: 30},
   feedbackButtonActive: {backgroundColor: '#668166'},
   feedbackButtonSpeaking: {backgroundColor: '#668166'},
   feedbackButtonNegative: {backgroundColor: '#a66e6e'},
-  feedbackPrompt: {color: '#849080', flex: 1, fontFamily: 'Prompt_400Regular', fontSize: 9},
+  feedbackPrompt: {color: '#849080', flex: 1, fontFamily: 'Prompt_400Regular', fontSize: 12},
   feedbackRow: {alignItems: 'center', borderTopColor: '#edf0ea', borderTopWidth: 1, flexDirection: 'row', gap: 6, marginTop: 10, paddingTop: 8},
   heroCard: {alignItems: 'center', borderRadius: 24, flexDirection: 'row', gap: 12, minHeight: 122, overflow: 'hidden', padding: 17},
   heroCopy: {flex: 1, gap: 7},
-  heroText: {color: 'rgba(255,255,255,.82)', fontFamily: 'Prompt_400Regular', fontSize: 11, lineHeight: 17},
+  heroText: {color: 'rgba(255,255,255,.82)', fontFamily: 'Prompt_400Regular', fontSize: 12, lineHeight: 18},
   heroTitle: {color: '#ffffff', fontFamily: 'Prompt_800ExtraBold', fontSize: 21, lineHeight: 26},
   input: {color: '#2d3a31', flex: 1, fontFamily: 'Prompt_400Regular', fontSize: 14, maxHeight: 100, minHeight: 42, paddingHorizontal: 5, paddingVertical: 8},
   inputFade: {bottom: 0, height: 145, left: 0, position: 'absolute', right: 0},
   inlineAcceptButton: {alignItems: 'center', backgroundColor: '#587f55', borderRadius: 13, flex: 1.35, flexDirection: 'row', gap: 6, justifyContent: 'center', minHeight: 45, paddingHorizontal: 10},
-  inlineAcceptText: {color: '#ffffff', fontFamily: 'Prompt_700Bold', fontSize: 11},
+  inlineAcceptText: {color: '#ffffff', fontFamily: 'Prompt_700Bold', fontSize: 12},
   inlineAdaptiveActions: {flexDirection: 'row', gap: 8, marginTop: 12},
   inlineAdaptiveArrow: {alignItems: 'center', backgroundColor: '#e6f0e2', borderRadius: 16, height: 32, justifyContent: 'center', width: 32},
   inlineAdaptiveCard: {backgroundColor: 'rgba(255,255,255,.94)', borderColor: '#dfe9db', borderRadius: 20, borderWidth: 1, boxShadow: '0 6px 15px rgba(56,73,51,.08)', marginTop: 10, padding: 13},
   inlineAdaptiveCategory: {backgroundColor: '#e9f3e5', borderRadius: 99, paddingHorizontal: 9, paddingVertical: 5},
-  inlineAdaptiveCategoryText: {color: '#557451', fontFamily: 'Prompt_700Bold', fontSize: 9},
-  inlineAdaptiveConfidence: {color: '#6f7f6c', fontFamily: 'Prompt_600SemiBold', fontSize: 9},
+  inlineAdaptiveCategoryText: {color: '#557451', fontFamily: 'Prompt_700Bold', fontSize: 12},
+  inlineAdaptiveConfidence: {color: '#6f7f6c', fontFamily: 'Prompt_600SemiBold', fontSize: 12},
   inlineAdaptiveCount: {alignItems: 'center', backgroundColor: '#e6f0e2', borderRadius: 15, height: 30, justifyContent: 'center', width: 30},
-  inlineAdaptiveCountText: {color: '#52734f', fontFamily: 'Prompt_800ExtraBold', fontSize: 11},
+  inlineAdaptiveCountText: {color: '#52734f', fontFamily: 'Prompt_800ExtraBold', fontSize: 12},
   inlineAdaptiveHeader: {alignItems: 'center', flexDirection: 'row', gap: 9},
   inlineAdaptiveHeaderIcon: {alignItems: 'center', backgroundColor: '#5f845b', borderRadius: 16, height: 36, justifyContent: 'center', width: 36},
   inlineAdaptiveHeading: {color: '#2e3c2a', fontFamily: 'Prompt_800ExtraBold', fontSize: 14},
-  inlineAdaptiveHint: {color: '#758272', fontFamily: 'Prompt_400Regular', fontSize: 9, marginTop: 1},
-  inlineAdaptiveLearning: {color: '#70806c', fontFamily: 'Prompt_500Medium', fontSize: 9, lineHeight: 14, marginTop: 7},
+  inlineAdaptiveHint: {color: '#758272', fontFamily: 'Prompt_400Regular', fontSize: 12, marginTop: 1},
+  inlineAdaptiveLearning: {color: '#70806c', fontFamily: 'Prompt_500Medium', fontSize: 12, lineHeight: 18, marginTop: 7},
   inlineAdaptivePanel: {borderColor: '#dbe6d6', borderRadius: 24, borderWidth: 1, boxShadow: '0 8px 22px rgba(47,64,43,.09)', marginTop: 4, padding: 12},
-  inlineAdaptiveReason: {backgroundColor: '#f2f7ef', borderRadius: 13, color: '#50604d', fontFamily: 'Prompt_400Regular', fontSize: 10, lineHeight: 16, marginTop: 10, padding: 10},
-  inlineAdaptiveTimeLabel: {color: '#8a9586', fontFamily: 'Prompt_500Medium', fontSize: 8},
+  inlineAdaptiveReason: {backgroundColor: '#f2f7ef', borderRadius: 13, color: '#50604d', fontFamily: 'Prompt_400Regular', fontSize: 12, lineHeight: 18, marginTop: 10, padding: 10},
+  inlineAdaptiveTimeLabel: {color: '#8a9586', fontFamily: 'Prompt_500Medium', fontSize: 12},
   inlineAdaptiveTimeRow: {alignItems: 'center', backgroundColor: '#f7f9f5', borderRadius: 14, flexDirection: 'row', gap: 8, marginTop: 9, padding: 10},
-  inlineAdaptiveTimeValue: {color: '#354431', fontFamily: 'Prompt_700Bold', fontSize: 10, lineHeight: 15, marginTop: 2},
+  inlineAdaptiveTimeValue: {color: '#354431', fontFamily: 'Prompt_700Bold', fontSize: 12, lineHeight: 18, marginTop: 2},
   inlineAdaptiveTitle: {color: '#2d3a29', fontFamily: 'Prompt_800ExtraBold', fontSize: 14, marginTop: 9},
   inlineAdaptiveTitleRow: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'},
   inlineAlternativeButton: {alignItems: 'center', backgroundColor: '#f3f6ef', borderColor: '#dce6d7', borderRadius: 12, borderWidth: 1, flexDirection: 'row', gap: 5, paddingHorizontal: 9, paddingVertical: 7},
   inlineAlternativeList: {flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: 9},
-  inlineAlternativeText: {color: '#557052', fontFamily: 'Prompt_600SemiBold', fontSize: 9},
+  inlineAlternativeText: {color: '#557052', fontFamily: 'Prompt_600SemiBold', fontSize: 12},
   inlineRejectButton: {alignItems: 'center', backgroundColor: '#edf1e9', borderRadius: 13, flex: 1, justifyContent: 'center', minHeight: 45, paddingHorizontal: 10},
-  inlineRejectText: {color: '#687363', fontFamily: 'Prompt_700Bold', fontSize: 10},
-  historyDate: {color: '#9aa296', fontFamily: 'Prompt_400Regular', fontSize: 9, marginTop: 3},
+  inlineRejectText: {color: '#687363', fontFamily: 'Prompt_700Bold', fontSize: 12},
+  historyDate: {color: '#9aa296', fontFamily: 'Prompt_400Regular', fontSize: 12, marginTop: 3},
   historyDelete: {alignItems: 'center', backgroundColor: '#f7eeee', borderRadius: 15, height: 32, justifyContent: 'center', width: 32},
   historyIcon: {alignItems: 'center', backgroundColor: '#eaf2e7', borderRadius: 15, height: 40, justifyContent: 'center', width: 40},
   historyItem: {alignItems: 'center', borderBottomColor: '#e9eee5', borderBottomWidth: 1, flexDirection: 'row', gap: 10, paddingVertical: 12},
   historyList: {paddingBottom: 16},
-  historyPreview: {color: '#778274', fontFamily: 'Prompt_400Regular', fontSize: 10, marginTop: 2},
+  historyPreview: {color: '#778274', fontFamily: 'Prompt_400Regular', fontSize: 12, marginTop: 2},
   historySheet: {maxHeight: '82%', minHeight: 360},
   historyTitle: {color: '#2d3a31', fontFamily: 'Prompt_700Bold', fontSize: 13},
-  insightCount: {color: '#668d65', fontFamily: 'Prompt_700Bold', fontSize: 9},
+  insightCount: {color: '#668d65', fontFamily: 'Prompt_700Bold', fontSize: 12},
   insightDivider: {backgroundColor: '#d9e0d3', borderRadius: 99, height: 5, marginTop: 8, width: '100%'},
   insightHeader: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'},
   insightHeading: {color: '#2d3a31', fontFamily: 'Prompt_800ExtraBold', fontSize: 14},
@@ -2307,14 +2407,14 @@ const local = StyleSheet.create({
   keyboardAvoiding: {flex: 1},
   messageRow: {alignItems: 'flex-start'},
   messageRowUser: {alignItems: 'flex-end'},
-  miniBrand: {color: '#668d65', fontFamily: 'Prompt_700Bold', fontSize: 8, lineHeight: 10},
+  miniBrand: {color: '#668d65', fontFamily: 'Prompt_700Bold', fontSize: 12, lineHeight: 18},
   modalClose: {alignItems: 'center', backgroundColor: '#eef2eb', borderRadius: 16, height: 34, justifyContent: 'center', width: 34},
   modalHandle: {alignSelf: 'center', backgroundColor: '#d4ddd0', borderRadius: 99, height: 4, marginBottom: 14, width: 42},
   modalHeaderRow: {alignItems: 'center', flexDirection: 'row', gap: 10},
-  modalHint: {color: '#778274', fontFamily: 'Prompt_400Regular', fontSize: 11, lineHeight: 17, marginBottom: 12, marginTop: 2},
+  modalHint: {color: '#778274', fontFamily: 'Prompt_400Regular', fontSize: 12, lineHeight: 18, marginBottom: 12, marginTop: 2},
   modalOption: {alignItems: 'center', backgroundColor: '#f8faf6', borderColor: '#e3eadf', borderRadius: 16, borderWidth: 1, flexDirection: 'row', gap: 11, marginTop: 8, minHeight: 68, padding: 11},
   modalOptionIcon: {alignItems: 'center', backgroundColor: '#e7f0e4', borderRadius: 16, height: 42, justifyContent: 'center', width: 42},
-  modalOptionText: {color: '#7b8577', fontFamily: 'Prompt_400Regular', fontSize: 10, lineHeight: 15, marginTop: 2},
+  modalOptionText: {color: '#7b8577', fontFamily: 'Prompt_400Regular', fontSize: 12, lineHeight: 18, marginTop: 2},
   modalOptionTitle: {color: '#2d3a31', fontFamily: 'Prompt_700Bold', fontSize: 13},
   modalOverlay: {backgroundColor: 'rgba(31,38,29,.42)', flex: 1, justifyContent: 'flex-end'},
   modalSheet: {backgroundColor: '#ffffff', borderTopLeftRadius: 26, borderTopRightRadius: 26, paddingBottom: 24, paddingHorizontal: 18, paddingTop: 10},
@@ -2322,22 +2422,22 @@ const local = StyleSheet.create({
   pressed: {opacity: .7, transform: [{translateY: -1}]},
   pendingTaskButton: {alignItems: 'center', backgroundColor: '#5d8059', borderRadius: 12, flexDirection: 'row', gap: 5, justifyContent: 'center', minHeight: 38, paddingHorizontal: 10},
   pendingTaskButtonDone: {backgroundColor: '#e8f1e5', borderColor: '#cdddc9', borderWidth: 1},
-  pendingTaskButtonText: {color: '#ffffff', fontFamily: 'Prompt_700Bold', fontSize: 10},
+  pendingTaskButtonText: {color: '#ffffff', fontFamily: 'Prompt_700Bold', fontSize: 12},
   pendingTaskButtonTextDone: {color: '#5b7c57'},
   pendingTaskCopy: {flex: 1, minWidth: 0},
-  pendingTaskDue: {color: '#7f8a7a', fontFamily: 'Prompt_400Regular', fontSize: 9, lineHeight: 14, marginTop: 2},
+  pendingTaskDue: {color: '#7f8a7a', fontFamily: 'Prompt_400Regular', fontSize: 12, lineHeight: 18, marginTop: 2},
   pendingTaskList: {gap: 7, marginTop: 10},
   pendingTaskRow: {alignItems: 'center', backgroundColor: '#f5f8f2', borderColor: '#e0e8dc', borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: 9, padding: 9},
-  pendingTaskTitle: {color: '#33412e', fontFamily: 'Prompt_700Bold', fontSize: 11, lineHeight: 16},
+  pendingTaskTitle: {color: '#33412e', fontFamily: 'Prompt_700Bold', fontSize: 12, lineHeight: 18},
   quickAddCopy: {flex: 1, minWidth: 0},
   quickAddBack: {alignItems: 'center', backgroundColor: '#edf4ea', borderRadius: 14, height: 36, justifyContent: 'center', width: 36},
   quickAddCategoryHeader: {alignItems: 'center', flexDirection: 'row', gap: 9},
   quickAddCreate: {alignItems: 'center', backgroundColor: '#5d8059', borderRadius: 14, flexDirection: 'row', gap: 8, justifyContent: 'center', minHeight: 46, paddingHorizontal: 12},
   quickAddCreateText: {color: '#ffffff', fontFamily: 'Prompt_700Bold', fontSize: 12},
-  quickAddDetail: {color: '#7d8878', fontFamily: 'Prompt_400Regular', fontSize: 10, marginTop: 2},
+  quickAddDetail: {color: '#7d8878', fontFamily: 'Prompt_400Regular', fontSize: 12, marginTop: 2},
   quickAddGrid: {gap: 8, marginTop: 10},
   quickAddHeader: {gap: 1},
-  quickAddHint: {color: '#7b8876', fontFamily: 'Prompt_400Regular', fontSize: 11},
+  quickAddHint: {color: '#7b8876', fontFamily: 'Prompt_400Regular', fontSize: 12},
   quickAddIcon: {alignItems: 'center', backgroundColor: '#e9f2e6', borderRadius: 13, height: 38, justifyContent: 'center', width: 38},
   quickAddMenu: {borderColor: '#e1e8dc', borderRadius: 18, borderWidth: 1, boxShadow: '0 -8px 24px rgba(44, 52, 27, 0.11)', padding: 12},
   quickAddOption: {alignItems: 'center', backgroundColor: '#ffffff', borderColor: '#e5eadf', borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: 10, minHeight: 54, padding: 8},
@@ -2358,10 +2458,10 @@ const local = StyleSheet.create({
   shortcutEditorHeader: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'},
   shortcutEditorInput: {backgroundColor: '#ffffff', borderColor: '#dfe7db', borderRadius: 12, borderWidth: 1, color: '#2d3a31', fontFamily: 'Prompt_400Regular', fontSize: 12, minHeight: 42, paddingHorizontal: 11, paddingVertical: 8},
   shortcutEditorList: {gap: 10, paddingBottom: 8},
-  shortcutEditorNumber: {color: '#4d634a', fontFamily: 'Prompt_700Bold', fontSize: 11},
+  shortcutEditorNumber: {color: '#4d634a', fontFamily: 'Prompt_700Bold', fontSize: 12},
   shortcutEditorPrompt: {minHeight: 66, textAlignVertical: 'top'},
   shortcutIcon: {alignItems: 'center', backgroundColor: '#eef5ed', borderRadius: 10, height: 31, justifyContent: 'center', width: 31},
-  shortcutSubtitle: {color: '#8a9585', fontFamily: 'Prompt_400Regular', fontSize: 9, marginTop: 2},
+  shortcutSubtitle: {color: '#8a9585', fontFamily: 'Prompt_400Regular', fontSize: 12, marginTop: 2},
   shortcutTitle: {color: '#26321f', fontFamily: 'Prompt_800ExtraBold', fontSize: 12},
   statusConfirmed: {backgroundColor: '#e8f1e5'},
   statusIcon: {alignItems: 'center', borderRadius: 15, height: 27, justifyContent: 'center', width: 27},
@@ -2374,13 +2474,15 @@ const local = StyleSheet.create({
   statusTextRejected: {color: '#8a5b5b'},
   suggestionChip: {alignItems: 'center', alignSelf: 'stretch', backgroundColor: '#f1f6ef', borderColor: '#dce8d8', borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: 8, justifyContent: 'space-between', minHeight: 40, paddingHorizontal: 12, paddingVertical: 8},
   suggestionList: {gap: 7, marginTop: 10},
-  suggestionText: {color: '#52664f', flex: 1, fontFamily: 'Prompt_500Medium', fontSize: 11, lineHeight: 16},
+  suggestionText: {color: '#52664f', flex: 1, fontFamily: 'Prompt_500Medium', fontSize: 12, lineHeight: 18},
+  stopButton: {alignItems: 'center', backgroundColor: '#f2ece9', borderColor: '#e1d5cf', borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: 4, paddingHorizontal: 10, paddingVertical: 7},
+  stopButtonText: {color: '#7d6a63', fontFamily: 'Prompt_600SemiBold', fontSize: 12},
   thinking: {alignItems: 'center', flexDirection: 'row', gap: 8, padding: 10},
-  timingLabel: {color: '#7e8b7a', fontFamily: 'Prompt_500Medium', fontSize: 8},
+  timingLabel: {color: '#7e8b7a', fontFamily: 'Prompt_500Medium', fontSize: 12},
   timingTile: {backgroundColor: '#f1f5ef', borderRadius: 14, flex: 1, padding: 10},
-  timingValue: {color: '#34412e', fontFamily: 'Prompt_700Bold', fontSize: 11, marginTop: 2},
+  timingValue: {color: '#34412e', fontFamily: 'Prompt_700Bold', fontSize: 12, marginTop: 2},
   temporaryBadge: {alignItems: 'center', backgroundColor: '#e8f1e5', borderRadius: 99, flexDirection: 'row', gap: 3, paddingHorizontal: 7, paddingVertical: 3},
-  temporaryBadgeText: {color: '#5d8059', fontFamily: 'Prompt_700Bold', fontSize: 8},
+  temporaryBadgeText: {color: '#5d8059', fontFamily: 'Prompt_700Bold', fontSize: 12},
   titleRow: {alignItems: 'center', flexDirection: 'row', gap: 7},
   topBar: {alignItems: 'center', flexDirection: 'row', gap: 9},
   topActions: {alignItems: 'center', flexDirection: 'row', gap: 6},

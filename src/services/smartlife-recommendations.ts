@@ -6,6 +6,9 @@ import {isDemoMode} from '@/lib/demo-mode';
 import {withAssistantAuthRetry} from '@/services/assistant-auth-retry';
 import type {Activity, ActivityType, Note, NoteCategory, Schedule, WithId} from '@/types/smartlife';
 
+import {thailandDayStart, thailandTimeKey, thailandAtHour} from '@/lib/thailand-time';
+import {futureSuggestion} from '@/lib/ux-time';
+
 type TimeValue = Date | string | number | {seconds?: number; toDate?: () => Date; toMillis?: () => number} | null | undefined;
 
 type BusyBlock = {
@@ -55,10 +58,10 @@ const recommendationCache = new Map<string, {expiresAt: number; value: (Activity
 
 async function enhanceRecommendations<T extends ActivitySuggestion | NoteSuggestion>(uid: string, kind: RecommendationKind, candidates: T[]) {
   if (isDemoMode || !candidates.length) return candidates;
-  const fingerprint = JSON.stringify(candidates.map((item) => [item.title, item.detail, item.reasons]));
+  const fingerprint = JSON.stringify(candidates);
   const cacheKey = `${uid}:${kind}:${fingerprint}`;
   const cached = recommendationCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) return cached.value as T[];
+  if (cached && cached.expiresAt > Date.now()) return cached.value.filter(item => !('startAt' in item) || futureSuggestion(item)) as T[];
   try {
     await ensureAppCheckReady();
     const result = await withAssistantAuthRetry(
@@ -83,11 +86,11 @@ async function enhanceRecommendations<T extends ActivitySuggestion | NoteSuggest
       } as T;
     });
     recommendationCache.set(cacheKey, {expiresAt: Date.now() + 2 * 60_000, value: merged});
-    return merged;
+    return merged.filter(item => !('startAt' in item) || futureSuggestion(item));
   } catch {
     // Recommendations remain usable from the deterministic, conflict-safe engine
     // while App Check, connectivity, quota, or Gemini is temporarily unavailable.
-    return candidates;
+    return candidates.filter(item => !('startAt' in item) || futureSuggestion(item));
   }
 }
 
@@ -129,29 +132,18 @@ function toDate(value: TimeValue) {
 }
 
 function startOfDay(date: Date, offsetDays = 0) {
-  const result = new Date(date);
-  result.setDate(result.getDate() + offsetDays);
-  result.setHours(0, 0, 0, 0);
-  return result;
+  return thailandDayStart(date, offsetDays);
 }
 
 function endOfDay(date: Date, offsetDays = 0) {
-  const result = startOfDay(date, offsetDays);
-  result.setHours(23, 59, 59, 999);
-  return result;
+  return new Date(startOfDay(date, offsetDays + 1).getTime() - 1);
 }
 
 function activeWindow(date: Date) {
-  const start = startOfDay(date);
-  start.setHours(8, 0, 0, 0);
-  const end = startOfDay(date);
-  end.setHours(22, 0, 0, 0);
-  return {end, start};
+  return {start: thailandAtHour(date, 8), end: thailandAtHour(date, 22)};
 }
 
-function formatTime(date: Date) {
-  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-}
+function formatTime(date: Date) { return thailandTimeKey(date); }
 
 function formatTimeRange(start: Date, end: Date) {
   return `${formatTime(start)} - ${formatTime(end)}`;
@@ -189,10 +181,11 @@ function buildBusyBlocks(scheduleItems: WithId<Schedule>[], activityItems: WithI
   return blocks.sort((first, second) => first.start.getTime() - second.start.getTime());
 }
 
-function findFreeSlots(blocks: BusyBlock[], day: Date, minMinutes = 30) {
+function findFreeSlots(blocks: BusyBlock[], day: Date, minMinutes = 30, now = new Date()) {
   const window = activeWindow(day);
   const slots: FreeSlot[] = [];
-  let cursor = new Date(window.start);
+  // Leave a full minute to act; discard expired portions before fitting duration.
+  let cursor = new Date(Math.max(window.start.getTime(), Math.ceil((now.getTime() + 60000) / 60000) * 60000));
   blocks
     .filter((block) => block.end > window.start && block.start < window.end)
     .forEach((block) => {
@@ -261,7 +254,7 @@ export function buildGroundedAcademicSuggestionsFromData(
 ) {
   const blocks = buildBusyBlocks(scheduleItems, activityItems);
   const freeSlots = [0, 1]
-    .flatMap((offset) => findFreeSlots(blocks, startOfDay(now, offset), 35))
+    .flatMap((offset) => findFreeSlots(blocks, startOfDay(now, offset), 35, now))
     .filter((slot) => slot.end > now)
     .sort((first, second) => first.start.getTime() - second.start.getTime());
   const deadlines = activityItems
@@ -314,7 +307,7 @@ export function buildActivitySuggestionsFromData(
 ) {
   const today = startOfDay(now);
   const blocks = buildBusyBlocks(scheduleItems, activityItems);
-  const slots = findFreeSlots(blocks, today, 30).filter((slot) => slot.end > now);
+  const slots = findFreeSlots(blocks, today, 30, now).filter((slot) => slot.end > now);
   const tasks = activityItems
     .filter((item) => item.type === 'task' && item.status !== 'completed')
     .map((item) => ({item, ...scoreTask(item, now)}))

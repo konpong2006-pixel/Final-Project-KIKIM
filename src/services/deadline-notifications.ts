@@ -2,7 +2,8 @@ import {useEffect} from 'react';
 import {Platform} from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {router, type Href} from 'expo-router';
-import * as Notifications from 'expo-notifications';
+// Avoid evaluating Expo's native push-token auto-registration side effect on web.
+const Notifications: typeof import('expo-notifications') = Platform.OS === 'web' ? {} as typeof import('expo-notifications') : require('expo-notifications');
 
 import {thailandDateKey, thailandDayStart} from '@/lib/thailand-time';
 import {activities} from '@/services/firestore';
@@ -252,7 +253,7 @@ export function useDeadlineNotificationNavigation() {
   useEffect(() => {
     if (Platform.OS === 'web') return undefined;
 
-    const redirect = (notification: Notifications.Notification) => {
+    const redirect = (notification: import('expo-notifications').Notification) => {
       const url = notification.request.content.data?.url;
       if (typeof url === 'string') router.push(url as Href);
     };

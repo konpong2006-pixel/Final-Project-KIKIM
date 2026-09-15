@@ -185,6 +185,7 @@ export type ScanLog = OwnedDocument & {
   errorMessage: string;
   extractedText: string;
   imagePath: string;
+  sourceImageHash?: string;
   kind: ScanKind;
   needsReview?: boolean;
   ocrConfidence?: number;

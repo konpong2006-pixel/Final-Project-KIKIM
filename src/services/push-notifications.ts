@@ -1,6 +1,9 @@
 import * as Device from 'expo-device';
-import * as Notifications from 'expo-notifications';
 import {Platform} from 'react-native';
+
+// Avoid evaluating Expo's native push-token auto-registration side effect on web.
+const Notifications: typeof import('expo-notifications') = Platform.OS === 'web' ? {} as typeof import('expo-notifications') : require('expo-notifications');
+
 
 import {adaptiveScheduling} from '@/services/adaptive-scheduling';
 
@@ -89,6 +92,7 @@ function formatTime(offset: number): string {
 }
 
 export async function cancelAllTaskReminders() {
+  if (Platform.OS === 'web') return 0;
   const all = await Notifications.getAllScheduledNotificationsAsync();
   const taskIds = all
     .filter((n) => n.content.categoryIdentifier === TASK_REMINDER_CATEGORY)

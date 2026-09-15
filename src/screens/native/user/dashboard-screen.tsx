@@ -17,6 +17,8 @@ import {recordTaskCompleted} from '@/services/behavior-tracking';
 import {aggregateSpending, type SpendingTransactionInput} from '@/services/spending-analytics';
 import {updateAndroidHomeWidget} from '@/services/android-home-widget';
 import {MaterialIcon, UserGradientBackdrop, UserTabBar} from './user-ui';
+import {useCurrentClock} from '@/hooks/use-current-clock';
+import {bangkokGreeting} from '@/lib/ux-time';
 import {showToast} from '@/components/app-toast';
 
 /**
@@ -50,6 +52,7 @@ function StatCard({icon, value, label, tint = colors.sageSoft}: {icon: string; v
 }
 
 export default function DashboardScreen({onNavigate, uid}: Props) {
+  const clockNow = useCurrentClock();
   const [data, setData] = useState<Item | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [seeding, setSeeding] = useState(false);
@@ -192,7 +195,7 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
   return <ResponsiveSafeArea style={styles.safe}><View style={styles.screen}><UserGradientBackdrop />
     <ScrollView contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={colors.sage} />} showsVerticalScrollIndicator={false}>
       <View style={styles.topRow}>
-        <SoftPress onPress={() => onNavigate('smartlife_profile')} style={styles.profileRow}><View style={styles.avatar}><View style={styles.avatarGlow} /><Text style={styles.avatarText}>{string(profile, 'displayName', 'SL').slice(0, 2).toUpperCase()}</Text></View><View style={styles.greeting}><Text numberOfLines={1} style={styles.hello}>สวัสดีตอนเช้า</Text><Text ellipsizeMode="tail" numberOfLines={1} style={styles.name}>{string(profile, 'displayName', 'เพื่อน')}</Text></View></SoftPress>
+        <SoftPress onPress={() => onNavigate('smartlife_profile')} style={styles.profileRow}><View style={styles.avatar}><View style={styles.avatarGlow} /><Text style={styles.avatarText}>{string(profile, 'displayName', 'SL').slice(0, 2).toUpperCase()}</Text></View><View style={styles.greeting}><Text numberOfLines={1} style={styles.hello}>{bangkokGreeting(new Date(clockNow))}</Text><Text ellipsizeMode="tail" numberOfLines={1} style={styles.name}>{string(profile, 'displayName', 'เพื่อน')}</Text></View></SoftPress>
         <SoftPress onPress={() => onNavigate('smartlife_notifications')} style={styles.bell}><MaterialIcon name="notifications" size={24} />{unread > 0 ? <View style={styles.unread}><Text style={styles.unreadText}>{unread > 9 ? '9+' : unread}</Text></View> : null}</SoftPress>
       </View>
 
@@ -222,7 +225,7 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
         <Text style={styles.sectionTitle}>โฟกัสวันนี้</Text>
         <View style={styles.focusGrid}>
           <SoftPress onPress={() => onNavigate('smartlife_add_task')} style={styles.focusCard}><View style={styles.panelHeading}><MaterialIcon color={colors.note} name="check_box" size={17} /><Text style={styles.panelTitle}>โฟกัสวันนี้</Text></View>{pending.length ? pending.slice(0, 2).map((item, index) => <View key={string(item, 'id', String(index))} style={styles.taskRow}><View style={styles.taskCheck}><MaterialIcon color="#fff" name="check" size={11} /></View><View style={{flex: 1}}><Text numberOfLines={1} style={styles.taskTitle}>{string(item, 'title')}</Text><Text style={styles.taskTime}>{time(item.startAt)}</Text></View></View>) : <Text style={styles.panelEmpty}>ยังไม่มีงานที่ต้องทำ</Text>}</SoftPress>
-          <SoftPress onPress={() => onNavigate('smartlife_finance_day')} style={styles.focusCard}><View style={styles.panelHeading}><MaterialIcon color={colors.finance} name="account_balance_wallet" size={17} /><Text style={styles.panelTitle}>งบคงเหลือ</Text></View><View style={styles.budgetLine}><Text style={styles.budgetValue}>{allowanceValue}</Text><Text style={styles.budgetUnit}>{allowance ? '/ วันนี้' : 'ยังไม่ได้ตั้งงบ'}</Text></View><View style={styles.progress}><View style={[styles.progressFill, {width: `${monthBudgetLeftPercent}%`}]} /></View><View style={styles.tagWrap}>{transactions.filter((item) => item.type === 'expense').slice(0, 3).map((item, index) => <View key={string(item, 'id', String(index))} style={styles.tag}><Text numberOfLines={1} style={styles.tagText}>{string(item, 'category', 'ทั่วไป')} {money(Number(item.amount ?? 0))}</Text></View>)}</View></SoftPress>
+          <SoftPress onPress={() => onNavigate('smartlife_finance_day')} style={styles.focusCard}><View style={styles.panelHeading}><MaterialIcon color={colors.finance} name="account_balance_wallet" size={17} /><Text style={styles.panelTitle}>งบใช้ได้วันนี้</Text></View><View style={styles.budgetLine}><Text style={styles.budgetValue}>{allowanceValue}</Text><Text style={styles.budgetUnit}>{allowance ? '/ วันนี้' : 'ยังไม่ได้ตั้งงบ'}</Text></View><View style={styles.progress}><View style={[styles.progressFill, {width: `${monthBudgetLeftPercent}%`}]} /></View><View style={styles.tagWrap}>{transactions.filter((item) => item.type === 'expense').slice(0, 3).map((item, index) => <View key={string(item, 'id', String(index))} style={styles.tag}><Text numberOfLines={1} style={styles.tagText}>{string(item, 'category', 'ทั่วไป')} {money(Number(item.amount ?? 0))}</Text></View>)}</View></SoftPress>
         </View>
 
         {notes[0] ? <SoftPress onPress={() => onNavigate('smartlife_notes_study')} style={styles.noteLink}><View style={styles.noteIcon}><MaterialIcon color={colors.note} name="note_alt" size={20} /></View><View style={{flex: 1}}><Text style={styles.noteEyebrow}>โน้ตที่เชื่อมกับตารางวันนี้</Text><Text numberOfLines={1} style={styles.noteTitle}>{string(notes[0], 'title')}</Text></View><MaterialIcon color={colors.sageDark} name="chevron_right" size={23} /></SoftPress> : null}
@@ -240,10 +243,10 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
 const shadow = {shadowColor: colors.pine, shadowOffset: {height: 10, width: 0}, shadowOpacity: .08, shadowRadius: 22};
 const font = {regular: 'Prompt_400Regular', medium: 'Prompt_500Medium', semibold: 'Prompt_600SemiBold', bold: 'Prompt_700Bold', extra: 'Prompt_800ExtraBold'};
 const styles = StyleSheet.create({
-  seedAction: {color: colors.sageDark, fontFamily: font.bold, fontSize: 10},
+  seedAction: {color: colors.sageDark, fontFamily: font.bold, fontSize: 12},
   seedCard: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderColor: 'rgba(111,143,109,.18)', borderRadius: 17, borderWidth: 1, flexDirection: 'row', gap: 10, marginBottom: 15, padding: 13},
   seedIcon: {alignItems: 'center', backgroundColor: colors.sageSoft, borderRadius: 13, height: 40, justifyContent: 'center', width: 40},
-  seedSub: {color: colors.muted, fontFamily: font.regular, fontSize: 9, marginTop: 1},
+  seedSub: {color: colors.muted, fontFamily: font.regular, fontSize: 12, marginTop: 1},
   seedTitle: {color: colors.pine, fontFamily: font.bold, fontSize: 12},
   aiCard: {...shadow, backgroundColor: '#88a188', borderRadius: 18, marginBottom: 15, minHeight: 142, overflow: 'hidden', padding: 16},
   aiHeading: {alignItems: 'center', flexDirection: 'row', gap: 10},
@@ -257,46 +260,46 @@ const styles = StyleSheet.create({
   // over, not the one control in the header.
   bell: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 25, flexGrow: 0, flexShrink: 0, height: 50, justifyContent: 'center', width: 50},
   budgetLine: {alignItems: 'baseline', flexDirection: 'row', marginTop: 11},
-  budgetUnit: {color: colors.muted, fontFamily: font.regular, fontSize: 10, marginLeft: 4},
+  budgetUnit: {color: colors.muted, fontFamily: font.regular, fontSize: 12, marginLeft: 4},
   budgetValue: {color: colors.pine, fontFamily: font.extra, fontSize: 24},
   classBorder: {borderTopColor: 'rgba(44,52,27,.08)', borderTopWidth: 1},
   classRow: {alignItems: 'center', flexDirection: 'row', minHeight: 70, paddingHorizontal: 13},
-  classTime: {color: colors.sageDark, fontFamily: font.bold, fontSize: 11},
+  classTime: {color: colors.sageDark, fontFamily: font.bold, fontSize: 12},
   collapsed: {alignItems: 'center', backgroundColor: '#eef2e9', borderRadius: 11, flexDirection: 'row', gap: 8, marginTop: 10, paddingHorizontal: 11, paddingVertical: 9},
-  collapsedText: {color: '#7b8476', flex: 1, fontFamily: font.regular, fontSize: 9, lineHeight: 14},
+  collapsedText: {color: '#7b8476', flex: 1, fontFamily: font.regular, fontSize: 12, lineHeight: 18},
   content: {padding: 22, paddingBottom: 28},
   courseCopy: {flex: 1},
   courseLine: {borderRadius: 3, height: 38, marginHorizontal: 11, width: 4},
   courseTitle: {color: colors.pine, fontFamily: font.semibold, fontSize: 13},
   dynamicBadge: {backgroundColor: '#e8f0e4', borderRadius: 99, paddingHorizontal: 9, paddingVertical: 5},
-  dynamicText: {color: colors.sageDark, fontFamily: font.semibold, fontSize: 8},
+  dynamicText: {color: colors.sageDark, fontFamily: font.semibold, fontSize: 12},
   doneButton: {alignItems: 'center', backgroundColor: colors.sageDark, borderRadius: 10, flexDirection: 'row', gap: 2, minHeight: 29, paddingHorizontal: 7},
-  doneText: {color: '#fff', fontFamily: font.bold, fontSize: 7},
+  doneText: {color: '#fff', fontFamily: font.bold, fontSize: 12},
   empty: {alignItems: 'center', gap: 8, paddingVertical: 22},
-  emptyText: {color: colors.muted, fontFamily: font.regular, fontSize: 11},
+  emptyText: {color: colors.muted, fontFamily: font.regular, fontSize: 12},
   focusCard: {...shadow, backgroundColor: '#fff', borderRadius: 17, flex: 1, minHeight: 154, padding: 13},
   focusGrid: {flexDirection: 'row', gap: 11, marginBottom: 15, marginTop: 11},
   hello: {color: '#8a9282', fontFamily: font.regular, fontSize: 12},
   loading: {alignItems: 'center', gap: 12, paddingVertical: 100},
   mic: {alignItems: 'center', backgroundColor: 'rgba(255,255,255,.95)', borderColor: 'rgba(255,255,255,.55)', borderRadius: 22, borderWidth: 5, height: 44, justifyContent: 'center', width: 44},
-  muted: {color: colors.muted, fontFamily: font.regular, fontSize: 11},
+  muted: {color: colors.muted, fontFamily: font.regular, fontSize: 12},
   name: {color: colors.pine, fontFamily: font.extra, fontSize: 19, marginTop: -1},
-  noteEyebrow: {color: colors.note, fontFamily: font.semibold, fontSize: 9},
+  noteEyebrow: {color: colors.note, fontFamily: font.semibold, fontSize: 12},
   noteIcon: {alignItems: 'center', backgroundColor: colors.noteSoft, borderRadius: 12, height: 39, justifyContent: 'center', width: 39},
   noteLink: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 17, flexDirection: 'row', gap: 11, marginBottom: 4, padding: 13},
   noteTitle: {color: colors.pine, fontFamily: font.semibold, fontSize: 12, marginTop: 1},
-  panelEmpty: {color: colors.muted, fontFamily: font.regular, fontSize: 10, marginTop: 16},
+  panelEmpty: {color: colors.muted, fontFamily: font.regular, fontSize: 12, marginTop: 16},
   panelHeading: {alignItems: 'center', flexDirection: 'row', gap: 6},
-  panelTitle: {color: colors.pine, fontFamily: font.bold, fontSize: 11},
+  panelTitle: {color: colors.pine, fontFamily: font.bold, fontSize: 12},
   pressed: {opacity: .85, transform: [{scale: .985}]},
-  priorityCaption: {color: colors.muted, fontFamily: font.regular, fontSize: 9, marginBottom: 8, marginTop: 3},
+  priorityCaption: {color: colors.muted, fontFamily: font.regular, fontSize: 12, marginBottom: 8, marginTop: 3},
   priorityCard: {...shadow, backgroundColor: '#fff', borderRadius: 18, marginBottom: 15, padding: 14},
   priorityCopy: {flex: 1},
   priorityHeader: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'},
   priorityItem: {alignItems: 'center', backgroundColor: '#f6f8f3', borderColor: 'rgba(44,52,27,.06)', borderRadius: 12, borderWidth: 1, flexDirection: 'row', gap: 9, marginTop: 7, padding: 9},
   priorityActions: {alignItems: 'flex-end', gap: 6},
-  priorityItemSub: {color: colors.muted, fontFamily: font.regular, fontSize: 9, marginTop: 1},
-  priorityItemTitle: {color: colors.pine, fontFamily: font.semibold, fontSize: 11},
+  priorityItemSub: {color: colors.muted, fontFamily: font.regular, fontSize: 12, marginTop: 1},
+  priorityItemTitle: {color: colors.pine, fontFamily: font.semibold, fontSize: 12},
   priorityTitle: {color: colors.pine, fontFamily: font.bold, fontSize: 14},
   priorityTitleRow: {alignItems: 'center', flexDirection: 'row', gap: 7},
   progress: {backgroundColor: '#e6e6ec', borderRadius: 99, height: 6, marginTop: 9, overflow: 'hidden'},
@@ -309,44 +312,44 @@ const styles = StyleSheet.create({
   prompt: {alignItems: 'center', backgroundColor: 'rgba(72,105,72,.24)', borderColor: 'rgba(44,52,27,.08)', borderRadius: 14, borderWidth: 1, flexDirection: 'row', height: 41, justifyContent: 'space-between', marginTop: 10, paddingHorizontal: 13},
   promptText: {color: '#fff', flex: 1, fontFamily: font.regular, fontSize: 12},
   quickAnswer: {alignItems: 'center', backgroundColor: 'rgba(255,255,255,.45)', borderRadius: 11, flexDirection: 'row', justifyContent: 'space-between', marginTop: 7, paddingHorizontal: 11, paddingVertical: 7},
-  quickQuestion: {color: colors.pine, fontFamily: font.regular, fontSize: 9},
-  quickValue: {color: colors.pine, fontFamily: font.bold, fontSize: 9},
+  quickQuestion: {color: colors.pine, fontFamily: font.regular, fontSize: 12},
+  quickValue: {color: colors.pine, fontFamily: font.bold, fontSize: 12},
   rank: {alignItems: 'center', backgroundColor: colors.pine, borderRadius: 9, height: 26, justifyContent: 'center', width: 26},
   rankSoft: {backgroundColor: colors.sage},
-  rankText: {color: '#fff', fontFamily: font.bold, fontSize: 10},
+  rankText: {color: '#fff', fontFamily: font.bold, fontSize: 12},
   reasonChip: {backgroundColor: '#edf3ea', borderRadius: 99, paddingHorizontal: 7, paddingVertical: 3},
-  reasonText: {color: colors.sageDark, fontFamily: font.semibold, fontSize: 7},
+  reasonText: {color: colors.sageDark, fontFamily: font.semibold, fontSize: 12},
   reasonWrap: {flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 5},
   roomRow: {alignItems: 'center', flexDirection: 'row', marginTop: 3},
-  roomText: {color: '#899284', fontFamily: font.regular, fontSize: 9},
+  roomText: {color: '#899284', fontFamily: font.regular, fontSize: 12},
   safe: {backgroundColor: '#eef1e9', flex: 1},
   scheduleCard: {...shadow, backgroundColor: '#fff', borderRadius: 18, marginBottom: 16, overflow: 'hidden'},
   screen: {backgroundColor: colors.mist, flex: 1},
   sectionHeading: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10},
   sectionTitle: {color: colors.pine, fontFamily: font.bold, fontSize: 15},
-  seeAll: {color: colors.sageDark, fontFamily: font.semibold, fontSize: 10},
+  seeAll: {color: colors.sageDark, fontFamily: font.semibold, fontSize: 12},
   statCard: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 17, flex: 1, height: 101, justifyContent: 'center'},
   statIcon: {alignItems: 'center', borderRadius: 17, height: 34, justifyContent: 'center', width: 34},
-  statLabel: {color: colors.muted, fontFamily: font.regular, fontSize: 9, marginTop: 1, textAlign: 'center'},
+  statLabel: {color: colors.muted, fontFamily: font.regular, fontSize: 12, marginTop: 1, textAlign: 'center'},
   statValue: {color: colors.pine, fontFamily: font.extra, fontSize: 19, marginTop: 4},
   stats: {flexDirection: 'row', gap: 10, marginBottom: 17},
   tag: {backgroundColor: colors.financeSoft, borderRadius: 99, maxWidth: '100%', paddingHorizontal: 7, paddingVertical: 3},
-  tagText: {color: '#73799f', fontFamily: font.medium, fontSize: 7},
+  tagText: {color: '#73799f', fontFamily: font.medium, fontSize: 12},
   tagWrap: {flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 9},
   taskCheck: {alignItems: 'center', backgroundColor: colors.note, borderRadius: 7, height: 20, justifyContent: 'center', width: 20},
   taskRow: {alignItems: 'center', flexDirection: 'row', gap: 7, marginTop: 11},
-  taskTime: {color: colors.muted, fontFamily: font.regular, fontSize: 8},
-  taskTitle: {color: colors.pine, fontFamily: font.semibold, fontSize: 9},
+  taskTime: {color: colors.muted, fontFamily: font.regular, fontSize: 12},
+  taskTitle: {color: colors.pine, fontFamily: font.semibold, fontSize: 12},
   timePill: {alignItems: 'center', backgroundColor: '#edf3ea', borderRadius: 10, minWidth: 48, paddingHorizontal: 7, paddingVertical: 6},
   topRow: {alignItems: 'center', flexDirection: 'row', gap: 12, justifyContent: 'space-between', marginBottom: 15},
   unread: {alignItems: 'center', backgroundColor: '#f35659', borderColor: '#fff', borderRadius: 8, borderWidth: 2, height: 16, justifyContent: 'center', minWidth: 16, position: 'absolute', right: 4, top: 4},
-  unreadText: {color: '#fff', fontFamily: font.bold, fontSize: 7},
+  unreadText: {color: '#fff', fontFamily: font.bold, fontSize: 12},
   urgency: {backgroundColor: '#fff', borderRadius: 99, paddingHorizontal: 8, paddingVertical: 4},
-  urgencyText: {color: colors.note, fontFamily: font.semibold, fontSize: 8},
+  urgencyText: {color: colors.note, fontFamily: font.semibold, fontSize: 12},
   weeklySpendingCard: {...shadow, backgroundColor: '#fff', borderColor: 'rgba(111,143,109,.16)', borderRadius: 19, borderWidth: 1, marginBottom: 5, marginTop: 12, padding: 14},
-  weeklySpendingEyebrow: {color: colors.finance, fontFamily: font.bold, fontSize: 9},
+  weeklySpendingEyebrow: {color: colors.finance, fontFamily: font.bold, fontSize: 12},
   weeklySpendingHead: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'},
   weeklySpendingLink: {alignItems: 'center', flexDirection: 'row', gap: 2, paddingVertical: 5},
-  weeklySpendingLinkText: {color: colors.sageDark, fontFamily: font.semibold, fontSize: 9},
+  weeklySpendingLinkText: {color: colors.sageDark, fontFamily: font.semibold, fontSize: 12},
   weeklySpendingTitle: {color: colors.pine, fontFamily: font.extra, fontSize: 15, marginTop: 1},
 });

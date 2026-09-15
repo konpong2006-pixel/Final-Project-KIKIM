@@ -53,29 +53,41 @@ export type ReviewedReceiptPayload = {
   }[];
   merchant: string;
   occurredAt: string;
+  reference?: string;
   scanId: string;
   storagePath: string;
 };
 
 const saveReviewedReceiptCall = httpsCallable<
   ReviewedReceiptPayload,
-  {transactionId: string}
+  {duplicate: boolean; transactionId: string}
 >(functions, 'saveReviewedReceipt');
 
 export async function saveReviewedReceipt(payload: ReviewedReceiptPayload) {
-  if (isDemoMode) return `demo-transaction-${Date.now()}`;
+  if (isDemoMode) return {duplicate: false, transactionId: `demo-transaction-${Date.now()}`};
   await ensureAppCheckReady();
   const response = await saveReviewedReceiptCall(payload);
-  return response.data.transactionId;
+  return response.data;
 }
+
+/**
+ * The stages a scan passes through, in order.
+ *
+ * Reported so the waiting screen can say which one is running. A single frozen
+ * "กำลังอ่านเอกสาร" for the whole wait reads as a hang once the upload is slow,
+ * which is what the feedback about not knowing how long it takes was about.
+ */
+export type ScanStage = 'uploading' | 'analyzing';
 
 export async function uploadAndAnalyzeScan({
   contentType = 'image/jpeg',
+  onStage,
   scanType,
   uid,
   uri,
 }: {
   contentType?: string;
+  onStage?: (stage: ScanStage) => void;
   scanType: ScanType;
   uid: string;
   uri: string;
@@ -131,7 +143,12 @@ export async function uploadAndAnalyzeScan({
     };
   }
   const kind: UploadKind = scanType === 'auto' || scanType === 'document' ? 'scans' : scanType === 'receipt' ? 'receipts' : 'schedules';
+  onStage?.('uploading');
   const upload = await uploadUserImage({contentType, kind, uid, uri});
-  const response = await analyzeScan({scanType, storagePath: upload.path});
+  onStage?.('analyzing');
+  const response = await analyzeScan({
+    scanType,
+    storagePath: upload.path,
+  });
   return {...response.data, downloadUrl: upload.downloadUrl, storagePath: upload.path};
 }

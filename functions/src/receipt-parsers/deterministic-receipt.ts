@@ -617,13 +617,14 @@ function knownMerchant(lines: string[], text: string) {
   ) ?? null;
 }
 
-function receiptCategory(text: string) {
+function receiptCategory(text: string, merchant = "") {
   if (/(?:BIG\s*C|\bBCM\b|7[ -]?ELEVEN|LOTUS|MAKRO|TOPS|FOODLAND|CJ\s*EXPRESS|MAXVALU|SUPERMARKET|CONVENIENCE)/i.test(text)) return "Groceries";
   if (/(?:MCDONALD|KFC|STARBUCKS|CAFE|COFFEE|RESTAURANT|PIZZA|BURGER|SUSHI|FOOD\s*COURT|ร้านอาหาร|กาแฟ|ข้าว|ก๋วยเตี๋ยว)/i.test(text)) return "Food";
   if (/(?:MR\.?\s*D\.?\s*I\.?\s*Y|SHOPEE|LAZADA|UNIQLO|ADVICE|ELECTRONIC|DEPARTMENT\s*STORE)/i.test(text)) return "Shopping";
-  if (/(?:PEA|MEA|ELECTRIC|WATER\s*BILL|INTERNET|AIS|TRUE|DTAC|UTILITY)/i.test(text)) return "Utilities";
+  // A payment footer (e.g. TrueMoney) is not evidence that the purchase was a utility bill.
+  if (/\b(?:PEA|MEA|ELECTRIC|WATER\s*BILL|INTERNET|AIS|TRUE|DTAC|UTILITY)\b/i.test(merchant) || /ค่าไฟ|ค่าน้ำ|\b(?:ELECTRIC|WATER)\s*BILL\b/i.test(text)) return "Utilities";
   if (/(?:PTT|BANGCHAK|SHELL|ESSO|GRAB|BOLT|BTS|MRT|TOLL|PARKING|FUEL)/i.test(text)) return "Transport";
-  if (/(?:NETFLIX|SPOTIFY|STEAM|CINEMA|MAJOR\s*CINEPLEX|GAME)/i.test(text)) return "Entertainment";
+  if (/(?:NETFLIX|SPOTIFY|STEAM|CINEMA|MAJOR\s*CINEPLEX|GAME|เติมเกม|บัตรเกม)/i.test(text)) return "Entertainment";
   return "Others";
 }
 
@@ -754,7 +755,7 @@ export function parseReceiptDeterministic(rawText: string) {
   const date = timestamp.date;
   const time = timestamp.time;
   const reference = receiptReference(text);
-  const category = receiptCategory(`${merchant ?? ""}\n${text}`);
+  const category = receiptCategory(`${merchant ?? ""}\n${text}`, merchant ?? "");
   const populated = [merchant, total, date, time].filter((value) => value !== null).length;
   return {
     category,

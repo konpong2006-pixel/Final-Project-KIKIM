@@ -1,16 +1,45 @@
 import {useEffect, useState} from 'react';
-import {Animated, Easing, Modal, StyleSheet, Text, View} from 'react-native';
+import {Animated, Easing, Modal, Pressable, StyleSheet, Text, View} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
 
 export type FeedbackPhase = 'loading' | 'success';
 
+/**
+ * Seconds since this was put on screen.
+ *
+ * Its own component so the count resets by mounting rather than by an effect
+ * writing state during a render pass. It stays mounted across a job's stages,
+ * so what the reader sees is the whole wait, not the current step.
+ */
+function ElapsedSeconds() {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    const started = Date.now();
+    const timer = setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  return <Text style={styles.elapsed}>
+    {`รอแล้ว ${seconds} วินาที${seconds >= 30 ? ' · ใช้เวลานานกว่าปกติ ไม่ต้องกดซ้ำ' : ''}`}
+  </Text>;
+}
+
 export default function LoadingAndSuccessModal({
+  onCancel,
   phase,
+  showElapsed = false,
   subtitle,
   title,
   visible,
 }: {
+  /**
+   * Shown as a way out while loading. Pass it only for work the caller can
+   * genuinely walk away from -- a modal with no exit is what left people
+   * staring at a spinner with nothing to press.
+   */
+  onCancel?: () => void;
   phase: FeedbackPhase;
+  /** Counts the seconds while loading, so a long wait reads as slow, not stuck. */
+  showElapsed?: boolean;
   subtitle: string;
   title: string;
   visible: boolean;
@@ -65,7 +94,11 @@ export default function LoadingAndSuccessModal({
           </LinearGradient>}
           <Text style={styles.title}>{title}</Text>
           <Text style={styles.subtitle}>{subtitle}</Text>
+          {showElapsed && phase === 'loading' ? <ElapsedSeconds /> : null}
           <View style={styles.progressTrack}><LinearGradient colors={phase === 'success' ? ['#71956d', '#9297bb'] : ['#9297bb', '#71956d', '#c1cda9']} end={{x: 1, y: 0}} start={{x: 0, y: 0}} style={[styles.progressFill, phase === 'success' && styles.progressComplete]} /></View>
+          {onCancel && phase === 'loading' ? <Pressable accessibilityLabel="ยกเลิก" accessibilityRole="button" onPress={onCancel} style={({pressed}) => [styles.cancel, pressed && styles.cancelPressed]}>
+            <Text style={styles.cancelText}>ยกเลิก</Text>
+          </Pressable> : null}
         </LinearGradient>
       </Animated.View>
     </Animated.View>
@@ -73,6 +106,10 @@ export default function LoadingAndSuccessModal({
 }
 
 const styles = StyleSheet.create({
+  cancel: {alignItems: 'center', borderColor: 'rgba(44,52,27,.16)', borderRadius: 15, borderWidth: 1, marginTop: 16, paddingHorizontal: 20, paddingVertical: 8},
+  cancelPressed: {backgroundColor: 'rgba(44,52,27,.06)'},
+  cancelText: {color: '#5c6553', fontFamily: 'Prompt_600SemiBold', fontSize: 12},
+  elapsed: {color: '#8d9487', fontFamily: 'Prompt_500Medium', fontSize: 12, lineHeight: 18, marginTop: 6, textAlign: 'center'},
   check: {color: '#fff', fontFamily: 'Prompt_700Bold', fontSize: 34, lineHeight: 43},
   checkCircle: {alignItems: 'center', borderColor: 'rgba(255,255,255,.9)', borderRadius: 40, borderWidth: 4, height: 78, justifyContent: 'center', shadowColor: '#52754e', shadowOffset: {height: 12, width: 0}, shadowOpacity: .3, shadowRadius: 22, width: 78},
   glow: {backgroundColor: 'rgba(146,151,187,.13)', borderRadius: 120, height: 180, position: 'absolute', right: -72, top: -78, width: 180},
@@ -86,6 +123,6 @@ const styles = StyleSheet.create({
   spinnerCore: {alignItems: 'center', backgroundColor: 'rgba(255,255,255,.88)', borderRadius: 25, height: 50, justifyContent: 'center', width: 50},
   spinnerMark: {color: '#5b7857', fontFamily: 'Prompt_700Bold', fontSize: 14},
   spinnerTrack: {alignItems: 'center', height: 78, justifyContent: 'center', width: 78},
-  subtitle: {color: '#7d8678', fontFamily: 'Prompt_400Regular', fontSize: 11, lineHeight: 18, marginTop: 5, textAlign: 'center'},
+  subtitle: {color: '#7d8678', fontFamily: 'Prompt_400Regular', fontSize: 12, lineHeight: 18, marginTop: 5, textAlign: 'center'},
   title: {color: '#2c341b', fontFamily: 'Prompt_700Bold', fontSize: 18, marginTop: 18, textAlign: 'center'},
 });

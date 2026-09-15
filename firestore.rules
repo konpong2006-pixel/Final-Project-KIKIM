@@ -231,7 +231,7 @@ service cloud.firestore {
           'ownerId', 'type', 'amount', 'category', 'merchant', 'note',
           'occurredAt', 'receiptPath', 'accountLast4',
           'balanceAfterReported', 'bank', 'confirmationMethod',
-          'confidence', 'fingerprint', 'items', 'rawTextRetained',
+          'confidence', 'dedupeKeys', 'fingerprint', 'items', 'rawTextRetained',
           'reviewedAt', 'reviewedByUser', 'scanId', 'source', 'status',
           'createdAt', 'updatedAt'
         ])
@@ -247,6 +247,7 @@ service cloud.firestore {
         // /scans and may still be classified as receipts by OCR.
         && (data.receiptPath == '' || data.receiptPath.matches('^users/' + userId + '/(receipts|scans)/.*'))
         && (!('confidence' in data) || (data.confidence is number && data.confidence >= 0 && data.confidence <= 1))
+        && (!('dedupeKeys' in data) || (data.dedupeKeys is list && data.dedupeKeys.size() <= 5))
         && (!('items' in data) || (data.items is list && data.items.size() <= 100))
         && (!('accountLast4' in data) || data.accountLast4 == null || (data.accountLast4 is string && data.accountLast4.matches('^[0-9]{4}$')))
         && (!('balanceAfterReported' in data) || data.balanceAfterReported == null || (data.balanceAfterReported is number && data.balanceAfterReported >= 0 && data.balanceAfterReported <= 1000000000000))
@@ -491,11 +492,15 @@ service cloud.firestore {
         allow read: if isOwner(userId) || isAdmin();
         // LINE-derived records are created only by trusted callable functions
         // after explicit user confirmation. A client cannot forge that audit trail.
+        // Scanned receipts belong to that group too: `saveReviewedReceipt` runs the
+        // duplicate check and the write in one transaction, so letting a client
+        // post its own `receipt_scan` row would walk straight past the three
+        // deduplication keys and put the repeated totals back.
         allow create: if isOwner(userId)
           && userExists(userId)
           && validTransaction(request.resource.data, userId)
           && hasValidCreateMeta(request.resource.data, userId)
-          && (!('source' in request.resource.data) || request.resource.data.source in ['manual_entry', 'receipt_scan']);
+          && (!('source' in request.resource.data) || request.resource.data.source == 'manual_entry');
         allow update: if isOwner(userId)
           && validTransaction(request.resource.data, userId)
           && hasValidUpdateMeta(request.resource.data, userId)

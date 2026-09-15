@@ -2410,6 +2410,7 @@ export async function confirmAssistantAction(uid: string, action: AssistantPropo
       deadline: payload.deadline ?? null,
       durationMinutes: payload.estimatedDurationMinutes ?? Math.max(15, Math.round((endAt.getTime() - startAt.getTime()) / 60_000)),
       endAt: endAt.toISOString(),
+      generatedForTimeZone: payload.generatedForTimeZone,
       explanation: payload.aiReason ?? 'จัดเวลาจาก SmartLife AI และตรวจสอบตารางก่อนบันทึก',
       startAt: startAt.toISOString(),
       title: payload.title,

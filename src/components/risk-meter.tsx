@@ -47,8 +47,8 @@ const styles = StyleSheet.create({
   fill: {borderRadius: 99, height: '100%'},
   fillVisible: {minWidth: 4},
   scale: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginTop: 4},
-  scaleText: {color: '#9aa196', fontFamily: 'Prompt_500Medium', fontSize: 8},
-  scaleValue: {fontFamily: 'Prompt_700Bold', fontSize: 9},
+  scaleText: {color: '#9aa196', fontFamily: 'Prompt_500Medium', fontSize: 12},
+  scaleValue: {fontFamily: 'Prompt_700Bold', fontSize: 12},
   track: {backgroundColor: RISK_METER_TRACK_COLOR, borderRadius: 99, height: 8, overflow: 'hidden', width: '100%'},
   wrap: {marginTop: 8, width: '100%'},
 });

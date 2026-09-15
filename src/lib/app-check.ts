@@ -92,11 +92,37 @@ export function appCheckErrorMessage(error: unknown) {
   return 'ยังยืนยัน Development Build กับ Firebase ไม่สำเร็จ กรุณาปิดและเปิดแอปใหม่แล้วลองอีกครั้ง';
 }
 
+// Firebase reads this global the first time initializeAppCheck() runs on web.
+// Setting it to `true` makes the SDK mint a random debug token and print it in
+// the browser console instead of calling reCAPTCHA Enterprise, so no secret is
+// ever committed or shipped inside the web bundle. Register the printed token
+// once under Firebase Console -> App Check -> Manage debug tokens, or pin a
+// shared one through EXPO_PUBLIC_FIREBASE_APP_CHECK_WEB_DEBUG_TOKEN when the
+// whole team develops against the same host. Guarded by __DEV__ and a loopback
+// hostname so any deployed build always goes through reCAPTCHA Enterprise.
+function enableWebAppCheckDebugToken() {
+  if (!__DEV__ || typeof window === 'undefined') return;
+
+  const {hostname} = window.location;
+  if (hostname !== 'localhost' && hostname !== '127.0.0.1' && hostname !== '::1') return;
+
+  const debugGlobal = window as typeof window & {
+    FIREBASE_APPCHECK_DEBUG_TOKEN?: string | boolean;
+  };
+  // Never clobber a token the developer set by hand in the browser console.
+  if (debugGlobal.FIREBASE_APPCHECK_DEBUG_TOKEN) return;
+
+  const configuredToken = process.env.EXPO_PUBLIC_FIREBASE_APP_CHECK_WEB_DEBUG_TOKEN?.trim();
+  debugGlobal.FIREBASE_APPCHECK_DEBUG_TOKEN = configuredToken || true;
+}
+
 async function initializeBrowserAppCheck() {
   const siteKey = process.env.EXPO_PUBLIC_FIREBASE_APP_CHECK_RECAPTCHA_ENTERPRISE_SITE_KEY?.trim();
   if (!siteKey) throw new AppCheckWebSiteKeyMissingError();
 
   if (!appCheckRuntime.webAppCheckInstance) {
+    // Must run before initializeAppCheck() -- the SDK snapshots the global.
+    enableWebAppCheckDebugToken();
     appCheckRuntime.webAppCheckInstance = initializeWebAppCheck(firebaseApp, {
       isTokenAutoRefreshEnabled: true,
       provider: new ReCaptchaEnterpriseProvider(siteKey),

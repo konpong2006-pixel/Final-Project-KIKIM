@@ -243,5 +243,5 @@ export default function AdminDashboardView({data, onNavigate}: AdminViewProps) {
 
 const local = StyleSheet.create({
   divider: {color: C.pine, fontFamily: F.b, fontSize: 13, marginTop: 22},
-  more: {color: C.muted, fontFamily: F.r, fontSize: 9, marginTop: 8, textAlign: 'right'},
+  more: {color: C.muted, fontFamily: F.r, fontSize: 12, marginTop: 8, textAlign: 'right'},
 });

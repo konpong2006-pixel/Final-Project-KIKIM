@@ -1965,7 +1965,8 @@ function createAdaptiveSchedulingFunctions({ db, geminiApiKey, region }) {
         }
         const requestedTimeZone = text(request.data?.generatedForTimeZone, 80);
         const lockTimeZone = validTimeZone(requestedTimeZone) ? requestedTimeZone : (await preferences(uid)).timeZone;
-        const fixedLocalDate = dateLocked ? localDateKey(requestedStartMs, lockTimeZone) : null;
+        // A manually chosen date must not be clipped by the automatic 14-day horizon.
+        const fixedLocalDate = dateLocked || userSelectedTime ? localDateKey(requestedStartMs, lockTimeZone) : null;
         const activity = {
             allowAiReschedule: true,
             category: activityCategory,

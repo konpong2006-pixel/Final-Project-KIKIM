@@ -708,24 +708,34 @@ function AssistantInsights({adaptiveDashboard, data, onAsk, uid}: {adaptiveDashb
       : burnout.sleepEvidenceSource === 'baseline'
         ? `ยังไม่มีบันทึกจริง ใช้ช่วงนอนปกติที่ตั้งไว้ ${burnout.averageSleepHours} ชม. เป็นค่าอ้างอิง`
         : 'ยังไม่มีข้อมูลการนอน จึงไม่คาดเดา';
-    const debt = burnout.sleepDebtHours !== null && burnout.sleepDebtNights >= 3
-      ? ` · นอนขาดสะสม ${burnout.sleepDebtHours} ชม.`
-      : '';
-    const ratio = burnout.studyWorkToSleepRatio === null ? '' : ` · สัดส่วนงานต่อการนอน ${burnout.studyWorkToSleepRatio}:1`;
-    const riskCopy = `คะแนน ${burnout.score}/100 · เรียน/งาน ${burnout.busyHoursThisWeek} ชม. · งานค้าง ${burnout.pendingTaskCount} · ${sleepEvidence}${debt}${ratio}`;
+    // One short fact per line instead of one " · "-joined sentence, so no
+    // fragment has to share a wrapping line with the others. The old leading
+    // "คะแนน N/100" is gone because RiskMeter's own scale caption renders the
+    // same score directly below this block -- the number is still on screen.
+    const riskFacts = [
+      `เรียน/งาน ${burnout.busyHoursThisWeek} ชม.`,
+      `งานค้าง ${burnout.pendingTaskCount}`,
+      sleepEvidence,
+    ];
+    if (burnout.sleepDebtHours !== null && burnout.sleepDebtNights >= 3) {
+      riskFacts.push(`นอนขาดสะสม ${burnout.sleepDebtHours} ชม.`);
+    }
+    if (burnout.studyWorkToSleepRatio !== null) {
+      riskFacts.push(`สัดส่วนงานต่อการนอน ${burnout.studyWorkToSleepRatio}:1`);
+    }
     const focus: InsightItem[] = all.slice(0, 3).map((item) => ({icon: item.icon, subtitle: item.kind, title: item.title}));
     if (!focus.length) focus.push(
       {icon: 'calendar_month', subtitle: 'เริ่มจากข้อมูลที่มี', title: 'เพิ่มตารางของสัปดาห์นี้'},
       {icon: 'task_alt', subtitle: 'ช่วยจัดลำดับให้ได้', title: 'บันทึกงานที่ต้องส่ง'},
       {icon: 'savings', subtitle: 'วางแผนง่ายขึ้น', title: 'กำหนดงบสำหรับสัปดาห์นี้'},
     );
-    return {behaviorEvidence, focus, focusMinutes, preferred, risk, riskCopy, riskLevel: burnout.riskLevel, score: burnout.score, workload};
+    return {behaviorEvidence, focus, focusMinutes, preferred, risk, riskFacts, riskLevel: burnout.riskLevel, score: burnout.score, workload};
   }, [adaptiveDashboard?.patterns, data, sleepBaselineHours]);
 
   return <View style={local.insightSection}>
     <View style={local.insightHeader}><Text style={local.insightHeading}>วิเคราะห์ข้อมูล 7 วันที่ผ่านมา</Text><Text style={local.insightCount}>{insight.workload} รายการ</Text></View>
     <View style={local.insightDivider} />
-    <View style={local.burnoutPanel}><View style={local.burnoutIcon}><MaterialIcon color="#8a8050" name="warning_amber" size={18} /></View><View style={{flex: 1}}><Text style={local.burnoutTitle}>ความเสี่ยงสภาวะหมดไฟ: {insight.risk}</Text><Text style={local.burnoutText}>{insight.riskCopy}</Text><RiskMeter level={insight.riskLevel} score={insight.score} /></View></View>
+    <View style={local.burnoutPanel}><View style={local.burnoutIcon}><MaterialIcon color="#8a8050" name="warning_amber" size={18} /></View><View style={{flex: 1}}><Text style={local.burnoutTitle}>ความเสี่ยงสภาวะหมดไฟ: {insight.risk}</Text>{insight.riskFacts.map((fact) => <Text key={fact} style={local.burnoutText}>{fact}</Text>)}<RiskMeter level={insight.riskLevel} score={insight.score} /></View></View>
     <View style={local.behaviorPanel}><View style={local.behaviorHeading}><View style={local.behaviorIcon}><MaterialIcon color="#668d65" name="schedule" size={18} /></View><View style={{flex: 1}}><Text style={local.behaviorTitle}>AI เรียนรู้พฤติกรรม</Text><Text style={local.behaviorText}>{insight.behaviorEvidence}</Text></View></View><View style={local.behaviorTiming}><View style={local.timingTile}><Text style={local.timingLabel}>ช่วงที่เหมาะ</Text><Text style={local.timingValue}>{insight.preferred}</Text></View><View style={local.timingTile}><Text style={local.timingLabel}>ระยะเวลาที่แนะนำ</Text><Text style={local.timingValue}>โฟกัส {insight.focusMinutes} นาที</Text></View></View><Pressable onPress={() => onAsk(`ช่วยจัดช่วงโฟกัส ${insight.focusMinutes} นาทีให้เหมาะกับตารางของฉัน`)} style={local.behaviorAction}><MaterialIcon color="#fff" name="check" size={17} /><Text style={local.behaviorActionText}>ใช้แผน Adaptive ในแชตนี้</Text></Pressable></View>
     <View style={local.focusHeader}><Text style={local.focusHeading}>AI แนะนำให้โฟกัส</Text><Text style={local.focusCount}>{insight.focus.length} รายการ</Text></View>
     <View style={local.focusList}>{insight.focus.map((item, index) => <Pressable key={`${item.title}-${index}`} onPress={() => onAsk(`ช่วยวางแผน ${item.title}`)} style={local.focusItem}><View style={local.focusIcon}><MaterialIcon color="#678266" name={item.icon} size={17} /></View><View style={{flex: 1}}><Text numberOfLines={1} style={local.focusItemTitle}>{item.title}</Text><Text numberOfLines={1} style={local.focusText}>{item.subtitle}</Text></View><MaterialIcon color="#95a18f" name="chevron_right" size={18} /></Pressable>)}</View>
@@ -2326,7 +2336,11 @@ const local = StyleSheet.create({
   attachButtonActive: {backgroundColor: '#5d8059'},
   bubble: {borderRadius: 24, maxWidth: '88%', paddingHorizontal: 15, paddingVertical: 12},
   bubbleText: {color: '#2d3a31', fontFamily: 'Prompt_400Regular', fontSize: 14, lineHeight: 21},
-  behaviorAction: {alignItems: 'center', backgroundColor: '#2b3916', borderRadius: 14, flexDirection: 'row', gap: 7, justifyContent: 'center', marginTop: 12, minHeight: 43},
+  // Softened from #2b3916: the solid near-black fill made this button the
+  // heaviest thing on the card, out-weighing the risk score it follows. #4a6b45
+  // keeps white text at 6.03:1 (WCAG AA needs 4.5:1) -- the app's existing mid
+  // greens (#5d8059, #618661) all fall just under 4.5:1 with white text.
+  behaviorAction: {alignItems: 'center', backgroundColor: '#4a6b45', borderRadius: 14, flexDirection: 'row', gap: 7, justifyContent: 'center', marginTop: 12, minHeight: 43},
   behaviorActionText: {color: '#fff', fontFamily: 'Prompt_700Bold', fontSize: 12},
   behaviorHeading: {alignItems: 'center', flexDirection: 'row', gap: 9},
   behaviorIcon: {alignItems: 'center', backgroundColor: '#e4eee3', borderRadius: 13, height: 34, justifyContent: 'center', width: 34},

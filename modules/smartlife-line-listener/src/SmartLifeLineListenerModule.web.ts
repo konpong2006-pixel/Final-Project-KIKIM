@@ -28,6 +28,7 @@ class SmartLifeLineListenerModule extends NativeModule<SmartLifeLineListenerModu
     _budgetLabel: SmartLifeHomeWidgetPayload['budgetLabel'],
     _updatedAtLabel: SmartLifeHomeWidgetPayload['updatedAtLabel'],
   ) {}
+  async updateSleepWidgetAsync(_statusText: string) {}
 }
 
 export default registerWebModule(SmartLifeLineListenerModule, 'SmartLifeLineListenerModule');

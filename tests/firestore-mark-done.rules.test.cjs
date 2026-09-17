@@ -73,6 +73,23 @@ async function main() {
         source: 'ai',
       }));
       await setDoc(doc(adminDb, 'users', 'alice', 'notes', 'work-note'), noteShape());
+      // Shapes that really exist in the field and that the full-document check
+      // locked their owner out of: a field no version of this schema lists, and
+      // a document written before a key became required.
+      await setDoc(doc(adminDb, 'users', 'alice', 'activities', 'unknown-field'), activityShape({slotId: 'slot-1'}));
+      await setDoc(doc(adminDb, 'users', 'alice', 'activities', 'missing-location'), (() => {
+        const shape = activityShape();
+        delete shape.location;
+        return shape;
+      })());
+      // A note the scanner created: its category is outside the four the note
+      // editor offers, and older notes predate `relatedScheduleId`.
+      await setDoc(doc(adminDb, 'users', 'alice', 'notes', 'scanned'), noteShape({category: 'general'}));
+      await setDoc(doc(adminDb, 'users', 'alice', 'notes', 'legacy'), (() => {
+        const shape = noteShape();
+        delete shape.relatedScheduleId;
+        return shape;
+      })());
     });
 
     const alice = testEnv.authenticatedContext('alice', {email: 'alice@example.com'}).firestore();
@@ -89,8 +106,26 @@ async function main() {
     // carries it, so the owner cannot close their own task.
     await assertSucceeds(updateDoc(doc(alice, 'users', 'alice', 'activities', 'adaptive'), markDone));
 
+    // --- The two drifted activity shapes that used to be locked out forever:
+    // an unlisted field a full-document check would have rejected, and a
+    // required field an older write left out entirely. Neither is touched by
+    // this write, so a check scoped to the changed keys must let it through.
+    await assertSucceeds(updateDoc(doc(alice, 'users', 'alice', 'activities', 'unknown-field'), markDone));
+    await assertSucceeds(updateDoc(doc(alice, 'users', 'alice', 'activities', 'missing-location'), markDone));
+
     // --- Marking a note done, the dashboard's other completion path.
     await assertSucceeds(updateDoc(doc(alice, 'users', 'alice', 'notes', 'work-note'), {
+      completedAt: serverTimestamp(), status: 'completed', updatedAt: serverTimestamp(),
+    }));
+
+    // --- The two drifted note shapes: a scanned note whose category
+    // ("general") is outside the four the note editor offers, and a note
+    // written before `relatedScheduleId` existed. Completing either must not
+    // depend on a field the write never touches.
+    await assertSucceeds(updateDoc(doc(alice, 'users', 'alice', 'notes', 'scanned'), {
+      completedAt: serverTimestamp(), status: 'completed', updatedAt: serverTimestamp(),
+    }));
+    await assertSucceeds(updateDoc(doc(alice, 'users', 'alice', 'notes', 'legacy'), {
       completedAt: serverTimestamp(), status: 'completed', updatedAt: serverTimestamp(),
     }));
 

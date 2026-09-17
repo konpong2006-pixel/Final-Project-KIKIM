@@ -33,7 +33,10 @@ const RECEIPT_SIGNALS: WeightedSignal[] = [
   {pattern: /(?:RECEIPT\s*\/\s*TAX\s*INVOICE|TAX\s*INVOICE|ใบเสร็จรับเงิน|ใบกำกับภาษี)/gi, weight: 10},
   // Payment-success slips may not use the word "receipt", but their wallet and
   // paid-amount labels are stronger evidence than incidental timetable text.
-  {pattern: /(?:ทำรายการสำเร็จ|เป๋าตัง|G\s*-?\s*WALLET|จำนวน(?:เงิน)?(?:ที่)?(?:ชำระ|จ่าย)|ยอด(?:เงิน)?ที่ชำระ)/gi, weight: 12},
+  // Bank transfer/bill-pay apps (K PLUS and similar) title the slip with the
+  // specific action instead of a generic "ทำรายการสำเร็จ", so those headers
+  // need their own anchor or the slip scores as plain, unclassified text.
+  {pattern: /(?:ทำรายการสำเร็จ|จ่ายบิลสำเร็จ|โอนเงินสำเร็จ|โอนสำเร็จ|รับเงินสำเร็จ|เป๋าตัง|G\s*-?\s*WALLET|จำนวน(?:เงิน)?(?:ที่)?(?:ชำระ|จ่าย)|ยอด(?:เงิน)?ที่ชำระ)/gi, weight: 12},
   {pattern: /(?:GRAND\s*TOTAL|TOTAL\s*(?:INCL\.?\s*VAT|AMOUNT)?|ยอดรวม|ยอดสุทธิ|ยอดชำระ)/gi, weight: 5},
   {pattern: /(?:QR\s*PAYMENT|PROMPT\s*QR|PROMPTPAY|พร้อมเพย์)/gi, weight: 4},
   {pattern: /(?:TAX\s*ID|POS\s*ID|APPROVAL\s*CODE|TRC\s*NUM|BATCH\s*NO)/gi, weight: 3},
@@ -205,7 +208,7 @@ export function classifyScanText(rawText: string): ScanClassification {
   if (detectAccountStatement(text)) {
     return {certain: true, confidence: 0.95, scores: {receipt, schedule}, type: "document"};
   }
-  const hardReceipt = matchCount(text, /(?:RECEIPT\s*\/\s*TAX\s*INVOICE|TAX\s*INVOICE|ใบเสร็จรับเงิน|ใบกำกับภาษี|ทำรายการสำเร็จ|เป๋าตัง|G\s*-?\s*WALLET|จำนวน(?:เงิน)?(?:ที่)?(?:ชำระ|จ่าย)|ยอด(?:เงิน)?ที่ชำระ)/gi);
+  const hardReceipt = matchCount(text, /(?:RECEIPT\s*\/\s*TAX\s*INVOICE|TAX\s*INVOICE|ใบเสร็จรับเงิน|ใบกำกับภาษี|ทำรายการสำเร็จ|จ่ายบิลสำเร็จ|โอนเงินสำเร็จ|โอนสำเร็จ|รับเงินสำเร็จ|เป๋าตัง|G\s*-?\s*WALLET|จำนวน(?:เงิน)?(?:ที่)?(?:ชำระ|จ่าย)|ยอด(?:เงิน)?ที่ชำระ)/gi);
   const structure = scheduleStructure(text);
   // Financial documents can contain dates, times, and long numeric IDs. Two
   // receipt anchors are enough to distinguish them from timetable evidence.
@@ -547,7 +550,12 @@ function receiptItems(lines: string[]): ReceiptLineItem[] {
 function receiptTotal(lines: string[]) {
   const footerIndex = lines.findIndex((line) => RECEIPT_FOOTER_TEXT.test(line));
   const contentLines = footerIndex >= 0 ? lines.slice(0, footerIndex) : lines;
-  const paidLabel = /(?:จำนวนเงินที่ชำระ|ยอดสุทธิ|ยอดชำระ)/i;
+  // A bank transfer/bill-pay slip (K PLUS and similar apps) labels the paid
+  // amount with the bare word "จำนวน:" on its own line, not "จำนวนเงินที่ชำระ".
+  // That line has to be anchored to nothing else on it, or this would also
+  // fire on an itemised receipt's "รายการ จำนวน ราคา" column header and steal
+  // the quantity column as the total.
+  const paidLabel = /(?:จำนวนเงินที่ชำระ|ยอดสุทธิ|ยอดชำระ|^จำนวน\s*[:：]\s*$)/i;
   // A payment confirmation is authoritative. OCR can misread decorative
   // characters next to Total (for example "(4)********54.00").
   const paymentLabel = /QR\s*PAYMENT/i;
@@ -603,12 +611,23 @@ function knownMerchant(lines: string[], text: string) {
   const thaiShop = lines.find((line) => /^ร้าน(?!ค้า\s*$)[^:：]{2,100}$/u.test(line.trim()));
   if (thaiShop) return thaiShop.replace(/\s+/g, " ").trim();
 
+  // K PLUS labels an informal-market vendor's wallet as "ถุงเงิน (shop name)"
+  // instead of naming the shop directly. The wallet label itself is not the
+  // payee, so unwrap it rather than let the fallback below use "ถุงเงิน".
+  const thungNgern = lines.find((line) => /^ถุงเงิน\s*\(.+\)\s*$/u.test(line.trim()));
+  if (thungNgern) {
+    return thungNgern.trim().replace(/^ถุงเงิน\s*\(/u, "").replace(/\)\s*$/, "").replace(/\s+/g, " ").trim();
+  }
+
   const labeledMerchant = text.match(/(?:ผู้รับเงิน|ร้านค้า|ชำระให้|ไปยัง)\s*[:：-]?\s*([^\n]{2,100})/iu)?.[1]?.trim();
   if (labeledMerchant && /[A-Za-z\u0e00-\u0e7f]{2,}/u.test(labeledMerchant)) {
     return labeledMerchant.replace(/\s+/g, " ");
   }
 
-  const ignored = /(?:RECEIPT|INVOICE|TAX|VAT|POS\s*ID|DESCRIPTION|QTY|PRICE|AMOUNT|TOTAL|PAYMENT|APPROVAL|BRANCH|TEL\.?|ITEM|CASHIER|CHANGE|DISCOUNT|ทำรายการสำเร็จ|รหัสอ้างอิง|จำนวนเงิน|ค่าสินค้า|สิทธิ|วันที่|เวลา)/i;
+  // Bank-app status headers ("bill payment successful", "transfer successful")
+  // describe the app action, not a party in the transaction, so the fallback
+  // below must not mistake one for the payee name.
+  const ignored = /(?:RECEIPT|INVOICE|TAX|VAT|POS\s*ID|DESCRIPTION|QTY|PRICE|AMOUNT|TOTAL|PAYMENT|APPROVAL|BRANCH|TEL\.?|ITEM|CASHIER|CHANGE|DISCOUNT|ทำรายการสำเร็จ|จ่ายบิลสำเร็จ|โอนเงินสำเร็จ|โอนสำเร็จ|รับเงินสำเร็จ|ชำระเงินสำเร็จ|รหัสอ้างอิง|จำนวนเงิน|ค่าสินค้า|สิทธิ|วันที่|เวลา)/i;
   return lines.slice(0, 18).find((line) =>
     /[A-Za-z\u0e00-\u0e7f]{2,}/u.test(line) &&
     !ignored.test(line) &&

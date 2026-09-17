@@ -1,0 +1,31 @@
+คุณกำลังรับช่วงโปรเจกต์ SmartLife จาก Codex
+
+ให้เริ่มด้วยอ่าน docs/CLAUDE-SMARTLIFE-HANDOFF-2026-09-14.md ทั้งไฟล์
+นี่คือคู่มือระบบ แผนที่ไฟล์ ฟังก์ชัน สูตร งานแก้ PDF และงาน UX ล่าสุด พร้อมหลักฐานทดสอบและข้อจำกัด
+
+Project root เดิม: C:/Users/konpo/Downloads/Final-Project
+Local branch: codex/friend-master-widget-only
+HEAD ที่บันทึกตอนส่งต่อ: c45a4797f543dfe0b11b3edf84731eae7e44f2c5
+สำคัญ: มี tracked modifications และ untracked source ที่ยังไม่ commit การ clone GitHub อย่างเดียวไม่ได้งานแก้ล่าสุดทั้งหมด
+
+ความต้องการเจ้าของ:
+- ใช้ระบบของเพื่อนเป็นฐาน และรักษา Android Widget ของเจ้าของ
+- ห้าม push ทับ GitHub เพื่อน และห้าม deploy โดยไม่รับอนุญาต/ประสานทีมก่อน
+- PDF ข้อ 1 เป็นของเพื่อนที่แก้แล้ว ห้ามแก้ทับเอง
+- คงโทนสีเดิม รักษางานค้าง ไม่ใช้ git reset --hard หรือ git clean
+- ไม่ขอ password/secret/token ในแชต ไม่แนบ .env.local หรือข้อมูลผู้ใช้จริงไปบริการภายนอก
+- localhost ไม่ได้รับประกันว่าเป็นฐานข้อมูลทดสอบ ต้องตรวจ emulator/backend target ก่อนทดสอบ write/OCR
+
+งานแรกที่ให้ทำ:
+1. อ่านเอกสารส่งต่อและ AGENTS.md ตรวจ source ที่อ้างอิงกับ working tree ของเครื่องนี้
+2. ตรวจ git status, branch, HEAD และ untracked โดยไม่เปลี่ยน Git state
+3. อธิบายว่าระบบทำอะไร และแยกสิ่งที่มีโค้ด / test ผ่าน / ยังไม่ได้ทดสอบจริง
+4. ถ้าไฟล์ source ไม่ครบ แจ้งรายการที่ขาดก่อน ห้ามสมมุติว่าบน GitHub มีแล้ว
+5. เสนอขั้นตอนทดสอบที่เหลือทีละหมวด โดยยังไม่ deploy หรือเขียนข้อมูลจริงเอง
+
+หลักฐานวันที่ 14 กันยายน 2026:
+App typecheck ผ่าน, Functions tsc --noEmit ผ่าน, npm test ผ่าน, PDF regression และ UX regression ผ่าน
+การ build เว็บและ local login smoke เคยผ่านในรอบแก้ก่อนจัดทำเอกสาร
+ยังไม่ใช่คำรับรอง OCR provider จริง, concurrent Firestore E2E, ทุกหน้าหลัง login, native notification delivery หรือ APK/Widget ล่าสุด
+
+ถ้าจะเริ่มลงมือแก้เพิ่มเติม ให้รอเจ้าของเลือกงานและขอบเขตหลังอ่านรายงานนี้

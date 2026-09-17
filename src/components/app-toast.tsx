@@ -23,7 +23,8 @@ import {MaterialIcon} from '@/screens/native/user/user-ui';
  */
 
 export type ToastTone = 'error' | 'info' | 'success';
-type Toast = {id: number; message?: string; title: string; tone: ToastTone};
+export type ToastAction = {label: string; onPress: () => void};
+type Toast = {action?: ToastAction; id: number; message?: string; title: string; tone: ToastTone};
 
 const VISIBLE_MS = 4000;
 const listeners = new Set<(toast: Toast | null) => void>();
@@ -35,11 +36,18 @@ function publish(toast: Toast | null) {
   for (const listener of listeners) listener(toast);
 }
 
-/** Shows a toast. Safe to call from anywhere, including outside React. */
-export function showToast(title: string, message?: string, tone: ToastTone = 'error') {
+/**
+ * Shows a toast. Safe to call from anywhere, including outside React.
+ *
+ * `action` turns a one-way notice into a low-friction undo: a low-stakes,
+ * reversible outcome (e.g. a duplicate transaction that was auto-skipped) can
+ * report itself and offer a way back, instead of blocking on a dialog before
+ * the outcome is even known.
+ */
+export function showToast(title: string, message?: string, tone: ToastTone = 'error', action?: ToastAction) {
   if (!title && !message) return;
   nextId += 1;
-  publish({id: nextId, message, title, tone});
+  publish({action, id: nextId, message, title, tone});
 }
 
 /** Turns an unknown thrown value into the message these toasts want. */
@@ -102,25 +110,29 @@ export default function ToastHost() {
           transform: [{translateY: progress.interpolate({inputRange: [0, 1], outputRange: [-18, 0]})}],
         }]}
       >
-        <Pressable
-          accessibilityLabel={`ปิดข้อความ ${toast.title}`}
-          accessibilityRole="alert"
-          onPress={dismissToast}
-          style={[styles.card, {backgroundColor: tone.background, borderColor: tone.border}]}
-        >
+        <View accessibilityRole="alert" style={[styles.card, {backgroundColor: tone.background, borderColor: tone.border}]}>
           <MaterialIcon color={tone.accent} name={tone.icon} size={21} />
           <View style={styles.copy}>
             <Text style={[styles.title, {color: tone.accent}]}>{toast.title}</Text>
             {toast.message ? <Text numberOfLines={3} style={styles.message}>{toast.message}</Text> : null}
           </View>
-          <MaterialIcon color="#97a094" name="close" size={17} />
-        </Pressable>
+          {toast.action ? (
+            <Pressable accessibilityLabel={toast.action.label} onPress={() => { toast.action?.onPress(); dismissToast(); }} style={styles.actionButton}>
+              <Text style={[styles.actionText, {color: tone.accent}]}>{toast.action.label}</Text>
+            </Pressable>
+          ) : null}
+          <Pressable accessibilityLabel={`ปิดข้อความ ${toast.title}`} hitSlop={10} onPress={dismissToast}>
+            <MaterialIcon color="#97a094" name="close" size={17} />
+          </Pressable>
+        </View>
       </Animated.View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  actionButton: {paddingHorizontal: 4, paddingVertical: 4},
+  actionText: {fontSize: 12.5, fontWeight: '800', textDecorationLine: 'underline'},
   animated: {maxWidth: 520, width: '100%'},
   card: {alignItems: 'center', borderRadius: 18, borderWidth: 1, flexDirection: 'row', gap: 11, paddingHorizontal: 15, paddingVertical: 13, shadowColor: '#20281f', shadowOffset: {height: 8, width: 0}, shadowOpacity: .16, shadowRadius: 18},
   copy: {flex: 1},

@@ -113,6 +113,7 @@
     "test:notification-feed": "node --experimental-strip-types --import ./scripts/register-monthly-budget-test.mjs ./scripts/test-notification-feed.mjs",
     "test:firestore-monthly-budget-rules": "npx -y firebase-tools@latest emulators:exec --only firestore --project smartlife-budget \"node tests/firestore-monthly-budget.rules.test.cjs\"",
     "test:firestore-mark-done-rules": "npx -y firebase-tools@latest emulators:exec --only firestore --project smartlife-budget \"node tests/firestore-mark-done.rules.test.cjs\"",
+    "test:firestore-transaction-edit-rules": "npx -y firebase-tools@latest emulators:exec --only firestore --project smartlife-budget \"node tests/firestore-transaction-edit.rules.test.cjs\"",
     "test:firestore-sleep-baseline-rules": "npm run emulator:clear && npx -y firebase-tools@latest emulators:exec --only firestore --project smartlife-budget \"node tests/firestore-sleep-baseline.rules.test.cjs\"",
     "test:sleep-log": "npm run emulator:clear && npx -y firebase-tools@latest emulators:exec --only firestore,auth --project smartlife-budget \"node --experimental-strip-types --import ./scripts/register-sleep-log-test.mjs ./scripts/test-sleep-log-integration.mjs\"",
     "emulator:clear": "node ./scripts/clear-firestore-emulator.cjs",

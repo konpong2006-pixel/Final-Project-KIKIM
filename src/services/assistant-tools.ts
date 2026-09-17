@@ -2238,8 +2238,11 @@ export async function buildAssistantReply(
   // Firestore if a deterministic fallback is actually needed.
   if (executionRoute === 'gemini') {
     try {
-      await ensureAppCheckReady();
-      const [context] = await loadAssistantState(uid);
+      // App Check readiness and the Firestore context read are independent --
+      // `loadAssistantState` runs elsewhere in this file without waiting on
+      // App Check at all -- so there is no reason to pay for them back to back
+      // before the Gemini call can even go out.
+      const [, [context]] = await Promise.all([ensureAppCheckReady(), loadAssistantState(uid)]);
       const history = conversation
         .filter((turn): turn is AssistantConversationTurn & {role: 'assistant' | 'user'} =>
           turn.role === 'assistant' || turn.role === 'user',

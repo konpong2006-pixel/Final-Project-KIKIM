@@ -33,11 +33,24 @@ function InstitutionTypeSelector({onChange, value}: {onChange: (value: Instituti
 export default function OnboardingScreen({page, onNavigate}: {page: string; onNavigate: UserNavigate}) {
   const {institutionType, setInstitutionType} = useInstitution();
   const step = page.includes('step_3') ? 3 : page.includes('step_2') ? 2 : 1;
+  // Written for a first-time user who has never opened an app like this
+  // before -- plain, concrete sentences that say what to do and what happens
+  // next, not just the feature's name. No jargon a reader would have to
+  // already know (no "sync", "AI-powered", percentages, or field names).
   const content = step === 1
-    ? ['เริ่มจัดชีวิตการเรียน', 'เลือกประเภทสถานศึกษาเพื่อให้ SmartLife ตั้งภาคเรียนและอ่านตารางได้เหมาะสม']
+    ? [
+      'เริ่มต้นใช้งาน SmartLife',
+      'ก่อนอื่นบอกให้ระบบรู้ว่าคุณเรียนอยู่ระดับไหน จะได้ตั้งวันเปิด-ปิดเทอมและอ่านตารางเรียนให้ตรงกับของจริง แตะเลือกอย่างใดอย่างหนึ่งด้านล่างนี้ แล้วกดปุ่ม "ถัดไป"',
+    ]
     : step === 2
-      ? ['นำเข้าตารางได้อย่างรวดเร็ว', 'ถ่ายรูปตารางเรียนหรือเชื่อม Google Calendar เพื่อเริ่มต้น']
-      : ['พร้อมใช้งานแล้ว', 'เริ่มจากแดชบอร์ด แล้ว SmartLife จะช่วยสรุปสิ่งสำคัญให้คุณ'];
+      ? [
+        'ไม่ต้องพิมพ์เอง แค่ถ่ายรูป',
+        'ถ่ายรูปตารางเรียน หรือถ่ายรูปสลิปโอนเงิน/ใบเสร็จตอนซื้อของ ระบบจะอ่านตัวหนังสือในรูปแล้วกรอกข้อมูลให้เองอัตโนมัติ ถ้ามีจุดไหนอ่านผิดหรือไม่ชัด ก็แค่แตะที่ข้อมูลนั้นเพื่อแก้ไขก่อนกดบันทึก หรือถ้าสะดวก จะเชื่อมกับ Google Calendar แทนก็ได้',
+      ]
+      : [
+        'พร้อมใช้งานแล้ว',
+        'หน้าแรกที่เจอคือ "แดชบอร์ด" จะโชว์งานที่ต้องทำวันนี้และยอดเงินคงเหลือให้ดูง่ายๆ ต้องการเพิ่มงาน บันทึกรายรับ-รายจ่าย หรือถ่ายรูปสแกนเมื่อไหร่ ให้กดปุ่ม + ตรงกลางแถบล่างสุดได้เลยทุกหน้าจอ',
+      ];
   const next = step === 1 ? 'smartlife_onboarding_step_2' : step === 2 ? 'smartlife_onboarding_step_3' : 'index';
   const continueOnboarding = () => {
     if (step === 1 && !institutionType) {

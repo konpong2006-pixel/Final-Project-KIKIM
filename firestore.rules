@@ -41,6 +41,23 @@ service cloud.firestore {
         && data.updatedAt == request.time;
     }
 
+    /**
+     * The keys this write actually changes.
+     *
+     * Update rules validate these rather than the whole stored document. A
+     * document whose shape has drifted -- written by an older client, by a
+     * backend that sets a field this schema has not caught up with, or by an
+     * import path that left an optional key out -- would otherwise fail the
+     * full-document check forever, and its owner could never mark it done,
+     * rename it, or fix it. Adding an unlisted key is still refused, and every
+     * value the client does write is still checked below, so the write stays
+     * exactly as constrained as before; only the untouched remainder of the
+     * document stops being a reason to reject the owner's own edit.
+     */
+    function changedKeys(data) {
+      return data.diff(resource.data).affectedKeys();
+    }
+
     function validColor(value) {
       return value is string && value.matches('^#[0-9A-Fa-f]{6}$');
     }
@@ -309,6 +326,86 @@ service cloud.firestore {
       ]);
     }
 
+    /** Value checks for the activity fields this particular write touches. */
+    function validActivityUpdatedValues(data) {
+      return (!changedKeys(data).hasAny(['title']) || (data.title is string && data.title.size() >= 1 && data.title.size() <= 120))
+        && (!changedKeys(data).hasAny(['type']) || data.type in ['activity', 'task', 'appointment'])
+        && (!changedKeys(data).hasAny(['startAt', 'endAt']) || (data.startAt is timestamp && data.endAt is timestamp && data.startAt < data.endAt))
+        && (!changedKeys(data).hasAny(['location']) || (data.location is string && data.location.size() <= 120))
+        && (!changedKeys(data).hasAny(['color']) || validColor(data.color))
+        && (!changedKeys(data).hasAny(['status']) || data.status in ['planned', 'in-progress', 'completed', 'cancelled'])
+        && (!changedKeys(data).hasAny(['source']) || data.source in ['manual', 'ai'])
+        && (!changedKeys(data).hasAny(['note']) || (data.note is string && data.note.size() <= 5000))
+        && (!changedKeys(data).hasAny(['reminder']) || (data.reminder is string && data.reminder.size() <= 160))
+        && (!changedKeys(data).hasAny(['category']) || (data.category is string && data.category.size() <= 80))
+        && (!changedKeys(data).hasAny(['priority']) || (data.priority is string && data.priority.size() <= 24))
+        && (!changedKeys(data).hasAny(['attendees']) || (data.attendees is string && data.attendees.size() <= 500))
+        && (!changedKeys(data).hasAny(['deadline']) || data.deadline == null || data.deadline is timestamp)
+        && (!changedKeys(data).hasAny(['estimatedDurationMinutes']) || (data.estimatedDurationMinutes is int && data.estimatedDurationMinutes >= 15 && data.estimatedDurationMinutes <= 720))
+        && (!changedKeys(data).hasAny(['fixedLocalDate']) || (data.fixedLocalDate is string && data.fixedLocalDate.matches('^\\d{4}-\\d{2}-\\d{2}$')))
+        && (!changedKeys(data).hasAny(['isFlexible']) || data.isFlexible is bool)
+        && (!changedKeys(data).hasAny(['isLocked']) || data.isLocked is bool)
+        && (!changedKeys(data).hasAny(['allowAiReschedule']) || data.allowAiReschedule is bool)
+        && (!changedKeys(data).hasAny(['userSelectedTime']) || data.userSelectedTime is bool);
+    }
+
+    /**
+     * Notes had no key whitelist for updates at all -- the full-document check
+     * was doing that job. Naming the editable keys keeps ownership, provenance
+     * (`scanLogId`) and the timestamps out of reach now that the check is
+     * scoped to what changed.
+     */
+    function validNoteClientUpdate(data) {
+      return data.diff(resource.data).affectedKeys().hasOnly([
+        'title', 'content', 'category', 'relatedScheduleId', 'color', 'priority', 'status', 'completedAt',
+        'bodyFormat', 'drawingPaths', 'folderId', 'linkedNoteIds', 'locked', 'pinned', 'tags', 'updatedAt'
+      ]);
+    }
+
+    /** Value checks for the note fields this particular write touches. */
+    function validNoteUpdatedValues(data) {
+      return (!changedKeys(data).hasAny(['title']) || (data.title is string && data.title.size() >= 1 && data.title.size() <= 160))
+        && (!changedKeys(data).hasAny(['content']) || (data.content is string && data.content.size() <= 50000))
+        && (!changedKeys(data).hasAny(['category']) || data.category in ['study', 'work', 'idea', 'personal'])
+        && (!changedKeys(data).hasAny(['relatedScheduleId']) || (data.relatedScheduleId is string && data.relatedScheduleId.size() <= 128))
+        && (!changedKeys(data).hasAny(['color']) || validColor(data.color))
+        && (!changedKeys(data).hasAny(['priority']) || data.priority in ['normal', 'important', 'urgent'])
+        && (!changedKeys(data).hasAny(['status']) || data.status in ['pending', 'completed'])
+        && (!changedKeys(data).hasAny(['completedAt']) || data.completedAt == null || data.completedAt is timestamp)
+        // Completing a note still has to record when, exactly as before.
+        && (!changedKeys(data).hasAny(['status']) || data.status != 'completed' || (('completedAt' in data) && data.completedAt is timestamp))
+        && (!changedKeys(data).hasAny(['bodyFormat']) || data.bodyFormat in ['plain', 'html'])
+        && (!changedKeys(data).hasAny(['drawingPaths']) || (data.drawingPaths is list && data.drawingPaths.size() <= 20))
+        && (!changedKeys(data).hasAny(['folderId']) || (data.folderId is string && data.folderId.size() <= 128))
+        && (!changedKeys(data).hasAny(['linkedNoteIds']) || (data.linkedNoteIds is list && data.linkedNoteIds.size() <= 50))
+        && (!changedKeys(data).hasAny(['locked']) || data.locked is bool)
+        && (!changedKeys(data).hasAny(['pinned']) || data.pinned is bool)
+        && (!changedKeys(data).hasAny(['tags']) || (data.tags is list && data.tags.size() <= 20));
+    }
+
+    /**
+     * The transaction fields a client update may touch: re-categorizing,
+     * correcting the amount/merchant/note, fixing the date, or resolving a
+     * needs-review flag. Provenance (`source`, `scanId`, `receiptPath`,
+     * dedupe/fingerprint keys) and `type` stay out of reach either way, so
+     * dropping the whole-document check below them does not loosen anything.
+     */
+    function validTransactionClientUpdate(data) {
+      return data.diff(resource.data).affectedKeys().hasOnly([
+        'amount', 'category', 'merchant', 'note', 'occurredAt', 'status', 'updatedAt'
+      ]);
+    }
+
+    /** Value checks for the transaction fields this particular write touches. */
+    function validTransactionUpdatedValues(data) {
+      return (!changedKeys(data).hasAny(['amount']) || (data.amount is number && data.amount > 0 && data.amount <= 1000000000))
+        && (!changedKeys(data).hasAny(['category']) || (data.category is string && data.category.size() >= 1 && data.category.size() <= 80))
+        && (!changedKeys(data).hasAny(['merchant']) || (data.merchant is string && data.merchant.size() <= 160))
+        && (!changedKeys(data).hasAny(['note']) || (data.note is string && data.note.size() <= 1000))
+        && (!changedKeys(data).hasAny(['occurredAt']) || data.occurredAt is timestamp)
+        && (!changedKeys(data).hasAny(['status']) || data.status in ['verified', 'needs_review']);
+    }
+
     function validAssistantConversation(data, userId) {
       return data.keys().hasAll(['ownerId', 'mode', 'title', 'lastMessagePreview', 'messageCount', 'stateJson', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly(['ownerId', 'mode', 'title', 'lastMessagePreview', 'messageCount', 'stateJson', 'createdAt', 'updatedAt'])
@@ -409,7 +506,7 @@ service cloud.firestore {
       match /activities/{activityId} {
         allow read: if isOwner(userId) || isAdmin();
         allow create: if isOwner(userId) && userExists(userId) && validActivity(request.resource.data, userId) && validActivityClientCreate(request.resource.data) && hasValidCreateMeta(request.resource.data, userId);
-        allow update: if isOwner(userId) && validActivity(request.resource.data, userId) && validActivityClientUpdate(request.resource.data) && hasValidUpdateMeta(request.resource.data, userId);
+        allow update: if isOwner(userId) && validActivityClientUpdate(request.resource.data) && validActivityUpdatedValues(request.resource.data) && hasValidUpdateMeta(request.resource.data, userId);
         allow delete: if isOwner(userId);
       }
 
@@ -477,7 +574,7 @@ service cloud.firestore {
       match /notes/{noteId} {
         allow read: if isOwner(userId) || isAdmin();
         allow create: if isOwner(userId) && userExists(userId) && validNote(request.resource.data, userId) && hasValidCreateMeta(request.resource.data, userId);
-        allow update: if isOwner(userId) && validNote(request.resource.data, userId) && hasValidUpdateMeta(request.resource.data, userId);
+        allow update: if isOwner(userId) && validNoteClientUpdate(request.resource.data) && validNoteUpdatedValues(request.resource.data) && hasValidUpdateMeta(request.resource.data, userId);
         allow delete: if isOwner(userId);
       }
 
@@ -502,12 +599,9 @@ service cloud.firestore {
           && hasValidCreateMeta(request.resource.data, userId)
           && (!('source' in request.resource.data) || request.resource.data.source == 'manual_entry');
         allow update: if isOwner(userId)
-          && validTransaction(request.resource.data, userId)
-          && hasValidUpdateMeta(request.resource.data, userId)
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-            'amount', 'category', 'merchant', 'note', 'occurredAt',
-            'status', 'updatedAt'
-          ]);
+          && validTransactionClientUpdate(request.resource.data)
+          && validTransactionUpdatedValues(request.resource.data)
+          && hasValidUpdateMeta(request.resource.data, userId);
         allow delete: if isOwner(userId);
       }
 

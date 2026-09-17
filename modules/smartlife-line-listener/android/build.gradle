@@ -16,3 +16,10 @@ android {
     abortOnError false
   }
 }
+
+dependencies {
+  // expo-modules-core depends on this via `implementation`, not `api`, so it
+  // is not visible transitively -- needed here directly for the sleep
+  // widget's Headless JS task service (com.facebook.react.HeadlessJsTaskService).
+  implementation 'com.facebook.react:react-android'
+}

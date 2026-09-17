@@ -80,3 +80,13 @@ modules/**/android/build/
 # IDE and operating-system files
 .idea/
 Thumbs.db
+
+# Build outputs and emulator screenshots
+*.apk
+mumu-*.png
+mumu-*.xml
+smartlife-*.png
+scripts/*.png
+diff_*.txt
+.codex-runtime/
+Claude outputs/

@@ -20,6 +20,7 @@ type SmartLifeLineListenerModule = {
     budgetLabel: string,
     updatedAtLabel: string,
   ): Promise<void>;
+  updateSleepWidgetAsync(statusText: string): Promise<void>;
 };
 
 let nativeModulePromise: Promise<SmartLifeLineListenerModule | null> | null = null;
@@ -46,4 +47,15 @@ export async function updateAndroidHomeWidget(payload: SmartLifeHomeWidgetPayloa
     payload.budgetLabel,
     payload.updatedAtLabel,
   );
+}
+
+/**
+ * The sleep widget is a second, separate home-screen widget -- just the two
+ * "เข้านอน"/"ตื่นนอน" buttons -- so it gets its own status text rather than
+ * reusing the dashboard summary widget's payload shape.
+ */
+export async function updateAndroidSleepWidget(statusText: string) {
+  const native = await nativeModule();
+  if (!native) return;
+  await native.updateSleepWidgetAsync(statusText);
 }

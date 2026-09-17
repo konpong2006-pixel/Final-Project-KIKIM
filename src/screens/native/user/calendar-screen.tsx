@@ -6,6 +6,7 @@ import {Timestamp} from 'firebase/firestore';
 
 import {registerThaiCalendarLocale, THAI_MONTH_NAMES} from '@/lib/calendar-locale';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
+import {AddItemSheet} from '@/components/add-item-sheet';
 import GoogleCalendarSyncCard from '@/components/google-calendar-sync-card';
 import AiActivityRecommendationCard from '@/components/ai-activity-recommendation-card';
 import ConfirmDialog from '@/components/confirm-dialog';
@@ -13,6 +14,8 @@ import {activities, deleteCourseSeries, schedules} from '@/services/firestore';
 import {recordTaskCompleted, recordTaskPostponed} from '@/services/behavior-tracking';
 import {MaterialIcon, UserTabBar} from './user-ui';
 import {showToast} from '@/components/app-toast';
+import {useTourTarget} from '@/hooks/use-tour-target';
+import {useTour} from '@/providers/tour-provider';
 
 type Page = 'smartlife_calendar_day' | 'smartlife_calendar_week' | 'smartlife_calendar_month';
 type PlannerTab = 'adaptive' | 'calendar' | 'notes';
@@ -138,8 +141,19 @@ function miniMonthDays(year: number, month: number) {
 }
 
 export default function CalendarScreen({onNavigate, page, planner, uid}: Props) {
+  const {maybeStartTour} = useTour();
+  const {ref: importScheduleRef, onLayout: importScheduleOnLayout} = useTourTarget('calendar', 'import-schedule');
+  const {ref: addActivityRef, onLayout: addActivityOnLayout} = useTourTarget('calendar', 'add-activity');
+  useEffect(() => {
+    maybeStartTour('calendar');
+  }, [maybeStartTour]);
   const {width} = useWindowDimensions();
   const calendarWidth = Math.min(Math.max(width - 32, 310), width >= 900 ? 1168 : 680);
+  // Both the header circle button and the FAB used to jump straight to "add
+  // activity" -- a plain "+" icon with no visible label, so a first-time user
+  // had no way to know it would not offer appointment/task/etc. They now open
+  // the same choice sheet the tab bar's "+" already uses.
+  const [addSheetOpen, setAddSheetOpen] = useState(false);
   const [today] = useState(todayKey);
   const [mode, setMode] = useState<ViewMode>(page === 'smartlife_calendar_month' ? 'month' : page === 'smartlife_calendar_week' ? 'week' : 'day');
   const [selectedDate, setSelectedDate] = useState(today);
@@ -475,8 +489,8 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
           <View style={styles.topBar}>
             <Pressable onPress={goToday}><Text style={styles.todayLink}>วันนี้</Text></Pressable>
             <View style={styles.topActions}>
-              <Pressable accessibilityLabel="นำเข้าตารางเรียน" onPress={() => onNavigate('smartlife_scan_schedule')} style={styles.circleButton}><MaterialIcon color={C.accent} name="document_scanner" size={20} /></Pressable>
-              <Pressable accessibilityLabel="เพิ่มกิจกรรม" onPress={() => onNavigate('smartlife_add_activity')} style={styles.circleButton}><MaterialIcon color={C.accent} name="add" size={24} /></Pressable>
+              <Pressable accessibilityLabel="นำเข้าตารางเรียน" onLayout={importScheduleOnLayout} onPress={() => onNavigate('smartlife_scan_schedule')} ref={importScheduleRef} style={styles.circleButton}><MaterialIcon color={C.accent} name="document_scanner" size={20} /></Pressable>
+              <Pressable accessibilityLabel="เพิ่มรายการ" onPress={() => setAddSheetOpen(true)} style={styles.circleButton}><MaterialIcon color={C.accent} name="add" size={24} /></Pressable>
             </View>
           </View>
           <Text style={styles.largeTitle}>ปฏิทิน</Text>
@@ -506,7 +520,8 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
           {mode !== 'day' ? <View style={styles.agendaSection}><View style={styles.sectionHeader}><View><Text style={styles.sectionTitle}>{selectedDate === today ? 'วันนี้' : formatLongDate(selectedDate)}</Text><Text style={styles.sectionSub}>{selectedEvents.length ? `${selectedEvents.length} รายการ` : 'ไม่มีกิจกรรม'}</Text></View><Pressable onPress={() => setDetailsOpen(true)}><Text style={styles.seeAll}>ดูทั้งหมด</Text></Pressable></View><AgendaList completingId={completingId} events={selectedEvents} onComplete={(event) => void completeEvent(event)} onDelete={deleteEvent} onOpen={() => setDetailsOpen(true)} onPostpone={setPostponing} /></View> : null}
         </ScrollView>
 
-        <Pressable accessibilityLabel="เพิ่มกิจกรรมใหม่" accessibilityRole="button" onPress={() => onNavigate('smartlife_add_activity')} style={({pressed}) => [styles.fab, pressed && styles.fabPressed]}><MaterialIcon color={C.accent} name="add" size={30} /></Pressable>
+        <Pressable accessibilityLabel="เพิ่มรายการใหม่" accessibilityRole="button" onLayout={addActivityOnLayout} onPress={() => setAddSheetOpen(true)} ref={addActivityRef} style={({pressed}) => [styles.fab, pressed && styles.fabPressed]}><MaterialIcon color={C.accent} name="add" size={30} /></Pressable>
+        <AddItemSheet onClose={() => setAddSheetOpen(false)} onNavigate={onNavigate} visible={addSheetOpen} />
 
         <UserTabBar active={planner ? 'smartlife_planner' : 'smartlife_calendar_day'} onNavigate={onNavigate} />
 

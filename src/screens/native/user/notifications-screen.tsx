@@ -72,7 +72,7 @@ function toneFor(kind: Notification['kind']) {
   return {bg: '#eef5ed', fg: '#6f8f6d', icon: 'notifications'};
 }
 
-function Header({onNavigate, meta}: {meta: typeof pageMeta[Page]; onNavigate: UserNavigate}) {
+function Header({onNavigate, meta, onMarkAllRead, markingAll}: {markingAll: boolean; meta: typeof pageMeta[Page]; onMarkAllRead: () => void; onNavigate: UserNavigate}) {
   return (
     <View style={styles.header}>
       <Pressable onPress={() => onNavigate('smartlife_ai_assistant')} style={styles.headerButton}>
@@ -82,11 +82,26 @@ function Header({onNavigate, meta}: {meta: typeof pageMeta[Page]; onNavigate: Us
         <Text style={styles.eyebrow}>{meta.eyebrow}</Text>
         <Text style={styles.title}>{meta.title}</Text>
       </View>
-      <Pressable style={styles.headerButton}>
-        <MaterialIcon color="#26321f" name="check" size={20} />
+      <Pressable accessibilityLabel="อ่านทั้งหมด" disabled={markingAll} onPress={onMarkAllRead} style={styles.headerButton}>
+        <MaterialIcon color="#26321f" name="done_all" size={20} />
       </Pressable>
     </View>
   );
+}
+
+/**
+ * Where tapping a notification should take the user, so they don't have to
+ * manually switch tabs and hunt for the item it is about. Derived alerts
+ * carry no per-record route to open, so this lands on the relevant tab
+ * rather than a specific transaction/task -- still one fewer step than today.
+ */
+function targetPageFor(item: FeedItem): string | null {
+  if (item.source === 'note') return 'smartlife_notes';
+  if (item.source === 'calendar') return 'smartlife_calendar_day';
+  if (item.source === 'finance' || item.kind === 'finance') return 'smartlife_finance_day';
+  if (item.kind === 'schedule') return 'smartlife_calendar_day';
+  if (item.kind === 'ai') return 'smartlife_ai_assistant';
+  return null;
 }
 
 /**
@@ -232,6 +247,7 @@ function Chip({children, tone}: {children: string; tone: 'green' | 'purple' | 'r
 
 export default function NotificationsScreen({page, uid, onNavigate}: {page: Page; uid: string; onNavigate: UserNavigate}) {
   const [model, setModel] = useState<ViewModel | null>(null);
+  const [markingAll, setMarkingAll] = useState(false);
   const meta = pageMeta[page];
 
   // The same three sources the dashboard bell counts, gathered here so the list
@@ -284,9 +300,31 @@ export default function NotificationsScreen({page, uid, onNavigate}: {page: Page
     } : current);
   };
 
+  const openItem = (item: FeedItem) => {
+    void markRead(item);
+    const target = targetPageFor(item);
+    if (target) onNavigate(target);
+  };
+
+  // Only stored items carry a read flag; a derived alert has nothing to mark.
+  const markAllRead = async () => {
+    const unreadStored = (model?.feed ?? []).filter((item) => item.source === 'stored' && item.unread);
+    if (!unreadStored.length || markingAll) return;
+    setMarkingAll(true);
+    try {
+      await Promise.all(unreadStored.map((item) => notifications.markRead(uid, item.id.replace('stored:', ''))));
+      setModel((current) => current ? {
+        ai: current.ai,
+        feed: current.feed.map((entry) => entry.source === 'stored' ? {...entry, unread: false} : entry),
+      } : current);
+    } finally {
+      setMarkingAll(false);
+    }
+  };
+
   return (
     <UserShell active="index" onNavigate={onNavigate}>
-      <Header meta={meta} onNavigate={onNavigate} />
+      <Header markingAll={markingAll} meta={meta} onMarkAllRead={() => void markAllRead()} onNavigate={onNavigate} />
       {model === null ? (
         <View style={styles.loading}>
           <ActivityIndicator color="#6f966f" size="large" />
@@ -299,7 +337,7 @@ export default function NotificationsScreen({page, uid, onNavigate}: {page: Page
           <SectionHeader meta={meta} />
           <View style={styles.list}>
             {visibleItems.length ? visibleItems.map((item) => (
-              <FeedCard item={item} key={item.id} onPress={() => void markRead(item)} />
+              <FeedCard item={item} key={item.id} onPress={() => openItem(item)} />
             )) : null}
             {(page === 'smartlife_notifications_ai' || page === 'smartlife_notifications') && visibleAi.length ? visibleAi.map((item) => (
               <AiCard item={item} key={item.id} />

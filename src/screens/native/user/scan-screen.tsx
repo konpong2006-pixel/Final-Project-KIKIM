@@ -33,6 +33,8 @@ import {
   type ReceiptItem,
 } from "@/lib/receipt-html";
 import { decodeUnicodeEscapes } from "@/lib/unicode-text";
+import { useTourTarget } from "@/hooks/use-tour-target";
+import { useTour } from "@/providers/tour-provider";
 import { useInstitution } from "@/providers/institution-provider";
 import { uploadAndAnalyzeScan, type OcrResult, type ScanStage } from "@/services/ocr";
 import { saveOcrResult } from "@/services/scan-save";
@@ -1121,6 +1123,11 @@ export default function ScanScreen({
   uid: string;
   onNavigate: UserNavigate;
 }) {
+  const { maybeStartTour } = useTour();
+  const { ref: addDocumentRef, onLayout: addDocumentOnLayout } = useTourTarget("scan", "add-document");
+  useEffect(() => {
+    maybeStartTour("scan");
+  }, [maybeStartTour]);
   const safeAreaInsets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
   // Keep the dismiss action clear of Android's system navigation controls.
@@ -1323,7 +1330,10 @@ export default function ScanScreen({
                 : `ตรวจพบตารางเรียน${institutionType === "high-school" ? "มัธยมศึกษา" : "มหาวิทยาลัย"}`,
           title: "อ่านเอกสารสำเร็จ",
         },
-        950,
+        // Long enough to register as "done", short enough that a batch of
+        // slips does not spend seconds sitting on a checkmark no one is
+        // reading twice.
+        400,
       );
       return true;
     } catch (error) {
@@ -1672,7 +1682,9 @@ export default function ScanScreen({
         }
         handleClearData();
         onNavigate(saved.destination);
-      }, 1050);
+        // Same reasoning as the OCR-success flash above: a shorter, still
+        // visible pause instead of a fixed second-plus per slip in a batch.
+      }, 450);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error("[SmartScan] Confirm and save failed", {
@@ -1835,7 +1847,9 @@ export default function ScanScreen({
               <Pressable
                 accessibilityLabel="เพิ่มรูปเอกสาร"
                 accessibilityRole="button"
+                onLayout={addDocumentOnLayout}
                 onPress={() => setPickerOpen(true)}
+                ref={addDocumentRef}
                 style={({ pressed }) => [
                   localStyles.fab,
                   pressed && localStyles.pressed,

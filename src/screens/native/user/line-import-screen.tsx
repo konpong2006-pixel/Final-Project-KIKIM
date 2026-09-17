@@ -299,23 +299,26 @@ function EditableDraftCard({
   </Card>;
 }
 
-type DuplicatePrompt = {rerun: (action: 'skip' | 'update_note') => Promise<void>};
-
 /**
- * Decides whether the save hit a duplicate and, if so, hands the two ways
- * forward to the caller's dialog state.
+ * A duplicate is a low-stakes, reversible call -- skipping it is the safe
+ * default -- so it is skipped automatically and reported with an undo,
+ * instead of blocking on a dialog before the user even knows the outcome.
  *
- * This was an `Alert.alert` with three buttons, which is an empty function on
- * react-native-web: the save looked like it had succeeded while the duplicate
- * was silently left unresolved.
+ * This used to be an `Alert.alert` with three buttons, which is an empty
+ * function on react-native-web: the save looked like it had succeeded while
+ * the duplicate was silently left unresolved. A blocking `ConfirmDialog`
+ * fixed that, but still cost a tap for something that is safe to undo instead.
  */
-function duplicatePrompt(
+function handleDuplicate(
   result: ConfirmLineTransactionResult,
   rerun: (action: 'skip' | 'update_note') => Promise<void>,
-  open: (prompt: DuplicatePrompt | null) => void,
 ) {
   if (!result.duplicate || result.skipped || result.updatedNote) return false;
-  open({rerun});
+  void rerun('skip').catch(() => undefined);
+  showToast('ข้ามรายการซ้ำแล้ว', 'ลายนิ้วมือข้อความตรงกับรายการเดิม', 'info', {
+    label: 'อัปเดตโน้ตแทน',
+    onPress: () => { void rerun('update_note').catch(() => undefined); },
+  });
   return true;
 }
 
@@ -325,7 +328,6 @@ function ManualImport({onNavigate, uid}: {onNavigate: UserNavigate; uid: string}
   const [source, setSource] = useState<TransactionSource>('line_paste');
   const [analyzing, setAnalyzing] = useState(false);
   const [saving, setSaving] = useState<string | null>(null);
-  const [duplicate, setDuplicate] = useState<DuplicatePrompt | null>(null);
   const [consent, setConsent] = useState<LineConsentProfile>({});
   const [nativeState, setNativeState] = useState(EMPTY_NATIVE_STATE);
   const autoReady = Platform.OS === 'android' && consent.consentTier === 'line_auto_sync' && nativeState.permissionGranted;
@@ -379,7 +381,7 @@ function ManualImport({onNavigate, uid}: {onNavigate: UserNavigate; uid: string}
     setSaving(draft.fingerprint);
     try {
       const result = await confirmLineTransaction(draft, source, {duplicateAction});
-      if (duplicatePrompt(result, (action) => confirm(draft, action), setDuplicate)) return;
+      if (handleDuplicate(result, (action) => confirm(draft, action))) return;
       setDrafts((current) => current.filter((item) => item.fingerprint !== draft.fingerprint));
       showToast(result.updatedNote ? 'อัปเดตโน้ตแล้ว' : result.skipped ? 'ข้ามรายการแล้ว' : 'บันทึกแล้ว', 'ข้อความดิบไม่ได้ถูกเก็บไว้ในรายการการเงิน', 'success');
     } catch (error) {
@@ -429,18 +431,6 @@ function ManualImport({onNavigate, uid}: {onNavigate: UserNavigate; uid: string}
       <Pressable onPress={() => onNavigate('smartlife_line_pending')} style={styles.quickLink}><MaterialIcon color={C.violet} name="fact_check" size={19} /><Text style={styles.quickLinkText}>รายการรอตรวจ</Text></Pressable>
       <Pressable onPress={() => onNavigate('smartlife_line_settings')} style={styles.quickLink}><MaterialIcon color={C.violet} name="settings" size={19} /><Text style={styles.quickLinkText}>ตั้งค่าการเชื่อมต่อ</Text></Pressable>
     </View>
-    <ConfirmDialog
-      confirmLabel="ข้ามรายการ"
-      extraAction={{icon: 'edit_note', label: 'อัปเดตโน้ต', onPress: () => { const prompt = duplicate; setDuplicate(null); void prompt?.rerun('update_note').catch(() => undefined); }}}
-      icon="content_copy"
-      cancelLabel="กลับไปตรวจ"
-      message="ลายนิ้วมือข้อความตรงกับรายการเดิม เลือกข้าม หรืออัปเดตโน้ตของรายการเดิม"
-      onCancel={() => setDuplicate(null)}
-      onConfirm={() => { const prompt = duplicate; setDuplicate(null); void prompt?.rerun('skip').catch(() => undefined); }}
-      title="พบรายการนี้แล้ว"
-      tone="neutral"
-      visible={Boolean(duplicate)}
-    />
     {drafts.map((draft) => <EditableDraftCard actionLabel="ยืนยันและบันทึก" disabled={saving === draft.fingerprint} draft={draft} key={draft.fingerprint} onConfirm={confirm} />)}
   </UserShell>;
 }
@@ -451,6 +441,7 @@ function PendingReview({onNavigate, uid}: {onNavigate: UserNavigate; uid: string
   const [loading, setLoading] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
   const [saving, setSaving] = useState<string | null>(null);
+  const [bulkWorking, setBulkWorking] = useState(false);
   const autoSaving = useRef(new Set<string>());
 
   useEffect(() => {
@@ -534,7 +525,7 @@ function PendingReview({onNavigate, uid}: {onNavigate: UserNavigate; uid: string
         draftId: item.id,
         duplicateAction,
       });
-      if (duplicatePrompt(result, (action) => confirm(item, draft, action), setDuplicate)) return;
+      if (handleDuplicate(result, (action) => confirm(item, draft, action))) return;
       showToast(result.updatedNote ? 'อัปเดตโน้ตแล้ว' : result.skipped ? 'ข้ามรายการแล้ว' : 'บันทึกแล้ว', 'ข้อความดิบถูกลบทันทีหลังยืนยัน', 'success');
     } catch (error) {
       showToast('บันทึกไม่สำเร็จ', error instanceof Error ? error.message : 'กรุณาลองใหม่อีกครั้ง');
@@ -545,25 +536,67 @@ function PendingReview({onNavigate, uid}: {onNavigate: UserNavigate; uid: string
 
   // Asked with a Modal, not `Alert.alert`, which is an empty function on
   // react-native-web and so never showed the prompt or ran the delete there.
-  const [rejecting, setRejecting] = useState<WithId<PendingLineReview> | null>(null);
-  const [duplicate, setDuplicate] = useState<DuplicatePrompt | null>(null);
+  const [rejecting, setRejecting] = useState<WithId<PendingLineReview> | 'all' | null>(null);
   const reject = (item: WithId<PendingLineReview>) => setRejecting(item);
   const confirmReject = () => {
-    const item = rejecting;
+    const target = rejecting;
     setRejecting(null);
-    if (item) rejectLinePendingReview(item.id).catch(() => showToast('ลบไม่สำเร็จ', 'กรุณาลองใหม่'));
+    if (target === 'all') {
+      Promise.all(items.map((item) => rejectLinePendingReview(item.id))).catch(() => showToast('ลบไม่สำเร็จบางรายการ', 'กรุณาลองใหม่'));
+    } else if (target) {
+      rejectLinePendingReview(target.id).catch(() => showToast('ลบไม่สำเร็จ', 'กรุณาลองใหม่'));
+    }
+  };
+
+  // Confirms every item at once instead of an open/edit/tap cycle per item.
+  // A duplicate that needs a human choice (skip vs. update the old note) is
+  // left in the list rather than blocking the batch on N modals -- the toast
+  // below tells the user how many still need a look.
+  const confirmAll = async () => {
+    if (bulkWorking || !items.length) return;
+    setBulkWorking(true);
+    let confirmed = 0;
+    let needsDecision = 0;
+    let failed = 0;
+    try {
+      await Promise.all(items.map(async (item) => {
+        try {
+          const result = await confirmLineTransaction(fromPending(item), item.source, {draftId: item.id});
+          if (result.duplicate && !result.skipped && !result.updatedNote) needsDecision += 1;
+          else confirmed += 1;
+        } catch {
+          failed += 1;
+        }
+      }));
+      const parts = [`บันทึกแล้ว ${confirmed} รายการ`];
+      if (needsDecision) parts.push(`เหลือ ${needsDecision} รายการที่ซ้ำ ต้องเลือกเอง`);
+      if (failed) parts.push(`ล้มเหลว ${failed} รายการ`);
+      showToast(failed ? 'ยืนยันไม่สำเร็จบางรายการ' : 'ยืนยันรายการแล้ว', parts.join(' · '), failed ? 'error' : 'success');
+    } finally {
+      setBulkWorking(false);
+    }
   };
 
   return <UserShell active="smartlife_finance_day" onNavigate={onNavigate}>
     <ConfirmDialog
       confirmLabel="ลบทิ้ง"
-      message="ข้อความดิบของรายการนี้จะถูกลบและไม่บันทึกเป็นธุรกรรม"
+      message={rejecting === 'all' ? `ข้อความดิบของทั้ง ${items.length} รายการจะถูกลบและไม่บันทึกเป็นธุรกรรม` : 'ข้อความดิบของรายการนี้จะถูกลบและไม่บันทึกเป็นธุรกรรม'}
       onCancel={() => setRejecting(null)}
       onConfirm={confirmReject}
-      title="ลบรายการรอตรวจ?"
+      title={rejecting === 'all' ? 'ลบทุกรายการที่รอตรวจ?' : 'ลบรายการรอตรวจ?'}
       visible={Boolean(rejecting)}
     />
     <Header onBack={() => onNavigate('smartlife_line_import')} subtitle="รายการที่ข้อมูลไม่ครบ มีข้อควรตรวจ หรืออาจซ้ำ แม้คะแนนอ่านสูงก็อาจต้องยืนยัน" title="รายการที่ต้องตรวจ" />
+    {!loading && !loadError && items.length > 1 ? <View style={styles.bulkRow}>
+      <Pressable disabled={bulkWorking} onPress={() => void confirmAll()} style={[styles.bulkButton, styles.bulkConfirm, bulkWorking && styles.disabled]}>
+        {bulkWorking ? <ActivityIndicator color="#fff" size="small" /> : <MaterialIcon color="#fff" name="done_all" size={17} />}
+        <Text style={styles.bulkConfirmText}>ยืนยันทั้งหมด ({items.length})</Text>
+      </Pressable>
+      <Pressable disabled={bulkWorking} onPress={() => setRejecting('all')} style={[styles.bulkButton, styles.bulkSkip, bulkWorking && styles.disabled]}>
+        <MaterialIcon color={C.danger} name="playlist_remove" size={17} />
+        <Text style={styles.bulkSkipText}>ข้ามทั้งหมด</Text>
+      </Pressable>
+    </View> : null}
     <Card colors={['#eef1fa', '#f7f8fd']} style={styles.privacyCard}>
       <View style={styles.infoRow}><MaterialIcon color={C.violet} name="verified_user" size={22} /><View style={{flex: 1}}><Text style={styles.infoTitle}>เก็บชั่วคราวไม่เกิน 7 วัน</Text><Text style={styles.infoText}>ยืนยันแล้วข้อความดิบจะถูกลบทันที หากไม่ทำอะไรระบบจะลบอัตโนมัติเมื่อครบกำหนด</Text></View></View>
     </Card>
@@ -578,18 +611,6 @@ function PendingReview({onNavigate, uid}: {onNavigate: UserNavigate; uid: string
       </Pressable>
     </Card> : null}
     {!loading && !loadError && !items.length ? <Card style={styles.emptyCard}><MaterialIcon color={C.sage} name="task_alt" size={34} /><Text style={styles.emptyTitle}>ไม่มีรายการที่ต้องตรวจ</Text><Text style={styles.infoText}>รายการจากแจ้งเตือนที่ข้อมูลครบและผ่านการตรวจจะบันทึกอัตโนมัติ ดูได้ที่หน้าการเงิน</Text></Card> : null}
-    <ConfirmDialog
-      confirmLabel="ข้ามรายการ"
-      extraAction={{icon: 'edit_note', label: 'อัปเดตโน้ต', onPress: () => { const prompt = duplicate; setDuplicate(null); void prompt?.rerun('update_note').catch(() => undefined); }}}
-      icon="content_copy"
-      cancelLabel="กลับไปตรวจ"
-      message="ลายนิ้วมือข้อความตรงกับรายการเดิม เลือกข้าม หรืออัปเดตโน้ตของรายการเดิม"
-      onCancel={() => setDuplicate(null)}
-      onConfirm={() => { const prompt = duplicate; setDuplicate(null); void prompt?.rerun('skip').catch(() => undefined); }}
-      title="พบรายการนี้แล้ว"
-      tone="neutral"
-      visible={Boolean(duplicate)}
-    />
     {items.map((item) => <EditableDraftCard
       actionLabel="ยืนยันลงการเงิน"
       disabled={saving === item.id}
@@ -728,6 +749,12 @@ const styles = StyleSheet.create({
   autoImportCard: {marginTop: 10, padding: 14},
   back: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 15, height: 46, justifyContent: 'center', width: 46},
   confidence: {fontFamily: F.s, fontSize: 12, marginTop: 2},
+  bulkButton: {alignItems: 'center', borderRadius: 12, flex: 1, flexDirection: 'row', gap: 6, justifyContent: 'center', minHeight: 44},
+  bulkConfirm: {backgroundColor: C.sage},
+  bulkConfirmText: {color: '#fff', fontFamily: F.b, fontSize: 12},
+  bulkRow: {flexDirection: 'row', gap: 8, marginTop: 12},
+  bulkSkip: {backgroundColor: '#faece8'},
+  bulkSkipText: {color: C.danger, fontFamily: F.b, fontSize: 12},
   confirmButton: {alignItems: 'center', backgroundColor: C.sage, borderRadius: 12, flex: 1, flexDirection: 'row', gap: 6, justifyContent: 'center', minHeight: 46},
   confirmHint: {color: C.muted, fontFamily: F.r, fontSize: 12, marginTop: 8, textAlign: 'center'},
   confirmText: {color: '#fff', fontFamily: F.b, fontSize: 12},

@@ -13,6 +13,8 @@ import {loadLegacyPageData} from '@/services/legacy-data';
 import {currentMonthKey, loadMonthlyBudget} from '@/services/monthly-budget';
 import {transactions} from '@/services/firestore';
 import {EXPENSE_CATEGORIES, expenseCategoryIcon, normalizeExpenseCategory} from '@/config/expense-categories';
+import {useTourTarget} from '@/hooks/use-tour-target';
+import {useTour} from '@/providers/tour-provider';
 import {MaterialIcon, UserGradientBackdrop, UserTabBar} from './user-ui';
 
 type Page = 'smartlife_finance_day' | 'smartlife_finance_week' | 'smartlife_finance_month' | 'smartlife_finance_income' | 'smartlife_finance_expense';
@@ -62,6 +64,17 @@ function selectedRangeLabel(page: string, referenceDate: Date) {
 const categoryIcon = expenseCategoryIcon;
 
 export default function FinanceScreen({onNavigate, page, uid}: Props) {
+  const {maybeStartTour} = useTour();
+  const {ref: periodTabsRef, onLayout: periodTabsOnLayout} = useTourTarget('finance', 'period-tabs');
+  const {ref: rangeBarRef, onLayout: rangeBarOnLayout} = useTourTarget('finance', 'range-bar');
+  const scrollViewRef = useRef<ScrollView>(null);
+  useEffect(() => {
+    // Scroll to the very top before the tour measures the period-tabs bar so
+    // that measureInWindow returns the element's real on-screen position, not a
+    // position shifted by however far down the user has already scrolled.
+    scrollViewRef.current?.scrollTo({y: 0, animated: false});
+    maybeStartTour('finance');
+  }, [maybeStartTour]);
   const [data, setData] = useState<Item | null>(null);
   const [loadError, setLoadError] = useState(false);
   const loadVersion = useRef(0);
@@ -174,11 +187,11 @@ export default function FinanceScreen({onNavigate, page, uid}: Props) {
       : {icon: 'receipt_long', label: 'สแกนใบเสร็จ', page: SMART_SCAN_PAGE};
 
   return <ResponsiveSafeArea style={styles.safe}><View style={styles.screen}><UserGradientBackdrop />
-    <ScrollView contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={C.sage} />} showsVerticalScrollIndicator={false}>
+    <ScrollView ref={scrollViewRef} contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={C.sage} />} showsVerticalScrollIndicator={false}>
       {/* Refactored UI: finance overview follows the period-and-filter dashboard shown in the new design. */}
       <View style={styles.header}><View><Text style={styles.eyebrow}>{filter === 'income' ? `รายรับ${periodText(periodPage)}` : filter === 'expense' ? `รายจ่าย${periodText(periodPage)}` : `สรุป${periodText(periodPage)}`}</Text><Text style={styles.title}>การเงิน</Text></View><Pressable accessibilityLabel={headerAction.label} onPress={() => onNavigate(headerAction.page)} style={styles.receiptButton}><MaterialIcon color="#fff" name={headerAction.icon} size={22} /></Pressable></View>
-      <View style={styles.periodBar}>{periods.map((item) => <Pressable key={item.page} onPress={() => { selectRange(periodForPage(item.page), referenceDate); }} style={[styles.periodItem, periodPage === item.page && styles.periodActive]}><Text style={[styles.periodText, periodPage === item.page && styles.periodTextActive]}>{item.label}</Text></Pressable>)}</View>
-      <View style={styles.rangeBar}>
+      <View onLayout={periodTabsOnLayout} ref={periodTabsRef} style={styles.periodBar}>{periods.map((item) => <Pressable key={item.page} onPress={() => { selectRange(periodForPage(item.page), referenceDate); }} style={[styles.periodItem, periodPage === item.page && styles.periodActive]}><Text style={[styles.periodText, periodPage === item.page && styles.periodTextActive]}>{item.label}</Text></Pressable>)}</View>
+      <View onLayout={rangeBarOnLayout} ref={rangeBarRef} style={styles.rangeBar}>
         <Pressable accessibilityLabel="Previous period" onPress={() => selectRange(period, shiftPeriod(referenceDate, period, -1))} style={styles.rangeButton}>
           <MaterialIcon color={C.ink} name="chevron_left" size={22} />
         </Pressable>

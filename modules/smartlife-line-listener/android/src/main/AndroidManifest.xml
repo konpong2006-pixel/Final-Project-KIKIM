@@ -1,4 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SHORT_SERVICE" />
+
   <application>
     <service
       android:name=".SmartLifeLineNotificationService"
@@ -34,5 +37,21 @@
         android:name="android.appwidget.provider"
         android:resource="@xml/smartlife_home_widget_info" />
     </receiver>
+
+    <receiver
+      android:name=".SmartLifeSleepWidgetProvider"
+      android:exported="true">
+      <intent-filter>
+        <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+      </intent-filter>
+      <meta-data
+        android:name="android.appwidget.provider"
+        android:resource="@xml/smartlife_sleep_widget_info" />
+    </receiver>
+
+    <service
+      android:name=".SmartLifeSleepWidgetTaskService"
+      android:exported="false"
+      android:foregroundServiceType="shortService" />
   </application>
 </manifest>

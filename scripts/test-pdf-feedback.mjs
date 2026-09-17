@@ -5,7 +5,7 @@ import {clockMinutes, timetableHoursProblem} from '../src/lib/timetable-hours.ts
 const require = createRequire(import.meta.url);
 const {receiptDedupeKeys} = require('../functions/lib/receipt-parsers/receipt-dedupe.js');
 const {normalizeResult} = require('../functions/lib/receipt-parsers/gemini-receipt.js');
-const {parseReceiptDeterministic} = require('../functions/lib/receipt-parsers/deterministic-receipt.js');
+const {extractAnchoredReceiptTotal, parseReceiptDeterministic} = require('../functions/lib/receipt-parsers/deterministic-receipt.js');
 
 const now = new Date('2026-09-12T02:00:00Z');
 const draft = {id: 'same-action', entity: 'schedule', type: 'create', status: 'pending', summary: 'งานเดิม', payload: {title: 'อ่านรายงาน', startAt: '2026-09-13T03:00:00Z', endAt: '2026-09-13T04:00:00Z', estimatedDurationMinutes: 60, aiScheduled: true, isFlexible: true, type: 'task'}};
@@ -44,6 +44,22 @@ assert.equal(category('Pearl Shop'), 'Others');
 assert.equal(category('PEA'), 'Utilities');
 assert.equal(category('Cloud Prepay', 'เติมเกม Steam'), 'Entertainment');
 assert.equal(parseReceiptDeterministic('Cloud Prepay\nRECEIPT\nสินค้า 200.00\nTOTAL 200.00\nPaid by TRUE MONEY\n12/09/2026').category, 'Others');
+// K PLUS (and similar bank-app) transfer/bill-pay slips label the paid amount
+// with the bare word "จำนวน:" on its own line, never "จำนวนเงินที่ชำระ" -- the
+// only phrase the anchor recognised. The amount silently came back empty and
+// the user had to retype it by hand.
+const kPlusSlip = [
+  'จ่ายบิลสำเร็จ', '16 ก.ย. 69 16:31 น.', 'K+', 'ด.ญ. ธนัญญา ก', 'ธ.กสิกรไทย', 'XXX-X-x8186-x',
+  'ถุงเงิน (กาแฟโบราณ(ตลาดม่วนใจ๋))', '1512299056069605731', 'RACHAMON',
+  'เลขที่รายการ:', '016259163156CPM05709', 'จำนวน:', '25.00 บาท', 'ค่าธรรมเนียม:', '0.00 บาท', 'สแกนตรวจสอบสลิป',
+].join('\n');
+assert.equal(extractAnchoredReceiptTotal(kPlusSlip), 25, 'a bare "จำนวน:" label must anchor the paid amount, not just "จำนวนเงินที่ชำระ"');
+// The fee line sits right after the amount and must not be picked instead.
+assert.notEqual(extractAnchoredReceiptTotal(kPlusSlip), 0);
+// An itemised receipt's "จำนวน" column header must still be ignored: it is
+// followed by a quantity, not a paid amount, and the real total is further down.
+const itemisedReceipt = ['ร้านค้า', 'รายการ จำนวน ราคา', 'กาแฟ 2 70.00', 'ยอดรวม', '70.00 บาท'].join('\n');
+assert.equal(extractAnchoredReceiptTotal(itemisedReceipt), 70);
 // A timetable cell whose end is not after its start used to be rewritten to
 // "start plus one hour" for every week of the term, without a word on screen.
 assert.equal(timetableHoursProblem('09:00', '12:00'), null);

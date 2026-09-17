@@ -373,14 +373,17 @@ async function performLineAutoImportSync(uid: string) {
   const queued = await native.getQueuedNotificationsAsync(uid);
   let autoSavedCount = 0;
   let pendingCount = 0;
-  for (const item of queued) {
+  // Each notification is an independent write keyed on its own fingerprint,
+  // so a burst from a busy few minutes no longer pays one network round-trip
+  // per item in sequence -- they all go out together.
+  await Promise.all(queued.map(async (item) => {
     const rawText = addBankHintFromSourcePackage(
       [item.title, item.text].filter(Boolean).join('\n').trim(),
       item.sourcePackage,
     );
     if (!rawText || !isPotentialFinancialLineMessage(rawText)) {
       await native.acknowledgeNotificationsAsync([item.id]);
-      continue;
+      return;
     }
     try {
       const capturedAt = new Date(item.capturedAt);
@@ -391,7 +394,7 @@ async function performLineAutoImportSync(uid: string) {
       );
       if (!draft) {
         await native.acknowledgeNotificationsAsync([item.id]);
-        continue;
+        return;
       }
       let result;
       const source = item.sourcePackage && item.sourcePackage !== 'jp.naver.line.android'
@@ -416,7 +419,7 @@ async function performLineAutoImportSync(uid: string) {
       // Keep the encrypted native item in the queue so a temporary network
       // failure cannot silently lose a transaction candidate.
     }
-  }
+  }));
   if (autoSavedCount > 0) {
     await notifyAutoSavedTransactions(autoSavedCount).catch(() => undefined);
   }

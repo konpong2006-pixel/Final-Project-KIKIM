@@ -1,6 +1,7 @@
 import {useState, type ReactNode} from 'react';
-import {ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
+import {AddItemSheet} from '@/components/add-item-sheet';
 import {LinearGradient} from 'expo-linear-gradient';
 
 export type UserNavigate = (page: string) => void;
@@ -51,11 +52,17 @@ export function LegacyUserTabBar({active, onNavigate}: {active?: string; onNavig
   return <LinearGradient colors={['rgba(255,255,255,.99)', '#f7f9f4']} end={{x: 1, y: 0}} start={{x: 0, y: 0}} style={styles.tabs}>{tabs.map(([icon, label, page], index) => <Pressable key={page} onPress={() => onNavigate(page)} style={({pressed}) => [styles.tab, {width: widths[index]}, pressed && styles.tabPressed]}>{index === 2 ? <LinearGradient colors={['#71936e', '#3f633a']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.plus}><MaterialIcon color="#fff" name="add" size={31} /></LinearGradient> : <><MaterialIcon color={active === page ? '#5f835f' : '#9ea59b'} name={icon} size={20} /><Text numberOfLines={1} style={[styles.tabLabel, active === page && styles.active]}>{label}</Text></>}</Pressable>)}</LinearGradient>;
 }
 
+// Exported so anything that needs to show the real tab bar layout -- the
+// help screen's "what to tap" visuals, for one -- reads the same list the
+// tab bar itself renders, instead of a hand-copied one that can drift.
+export const USER_LEFT_TABS = [['home', 'หน้าหลัก', 'index'], ['calendar_month', 'แพลนเนอร์', 'smartlife_planner']];
+export const USER_RIGHT_TABS = [['account_balance_wallet', 'การเงิน', 'smartlife_finance_day'], ['person', 'โปรไฟล์', 'smartlife_profile']];
+
 // Added for Merged Planner: a symmetrical 2-1-2 navigation with a central OCR scanner.
 export function UserTabBar({active, onNavigate}: {active?: string; onNavigate: UserNavigate}) {
   const [isBottomSheetOpen, setIsBottomSheetOpen] = useState(false);
-  const leftTabs = [['home', 'หน้าหลัก', 'index'], ['calendar_month', 'แพลนเนอร์', 'smartlife_planner']];
-  const rightTabs = [['account_balance_wallet', 'การเงิน', 'smartlife_finance_day'], ['person', 'โปรไฟล์', 'smartlife_profile']];
+  const leftTabs = USER_LEFT_TABS;
+  const rightTabs = USER_RIGHT_TABS;
   const openForm = (page: string) => { setIsBottomSheetOpen(false); onNavigate(page); };
   const renderTab = ([icon, label, page]: string[]) => <Pressable key={page} onPress={() => onNavigate(page)} style={({pressed}) => [styles.tab, pressed && styles.tabPressed]}><MaterialIcon color={active === page ? '#5f835f' : '#9ea59b'} name={icon} size={20} /><Text numberOfLines={1} style={[styles.tabLabel, active === page && styles.active]}>{label}</Text></Pressable>;
   return <>
@@ -65,20 +72,7 @@ export function UserTabBar({active, onNavigate}: {active?: string; onNavigate: U
       <Pressable accessibilityLabel="เปิดเมนูเพิ่มข้อมูล" onPress={() => setIsBottomSheetOpen(true)} style={({pressed}) => [styles.tab, pressed && styles.tabPressed]}><LinearGradient colors={['#71936e', '#3f633a']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.plus}><MaterialIcon color="#fff" name="add" size={31} /></LinearGradient></Pressable>
       {rightTabs.map(renderTab)}
     </LinearGradient>
-    <Modal animationType="fade" onRequestClose={() => setIsBottomSheetOpen(false)} transparent visible={isBottomSheetOpen}>
-      <Pressable accessibilityLabel="ปิดเมนูเพิ่มรายการ" onPress={() => setIsBottomSheetOpen(false)} style={styles.sheetBackdrop}>
-        <View onStartShouldSetResponder={() => true} style={styles.addSheet}>
-          <View style={styles.sheetHandle} />
-          <Text style={styles.sheetTitle}>เพิ่มรายการใหม่</Text>
-          <Text style={styles.sheetSubtitle}>เลือกสิ่งที่คุณต้องการบันทึก</Text>
-          <Pressable onPress={() => openForm('smartlife_scan_schedule')} style={({pressed}) => [styles.sheetOption, pressed && styles.tabPressed]}><View style={[styles.sheetIcon, {backgroundColor: '#e8ecf7'}]}><MaterialIcon color="#6572ad" name="document_scanner" size={22} /></View><View style={styles.sheetCopy}><Text style={styles.sheetOptionTitle}>Smart Scan</Text><Text style={styles.sheetOptionSub}>สแกนตารางเรียน ใบเสร็จ หรือเอกสารให้ AI อ่าน</Text></View><MaterialIcon color="#8b988b" name="chevron_right" size={22} /></Pressable>
-          <Pressable onPress={() => openForm('smartlife_add_activity')} style={({pressed}) => [styles.sheetOption, pressed && styles.tabPressed]}><View style={[styles.sheetIcon, {backgroundColor: '#e5efe2'}]}><MaterialIcon color="#52734b" name="event" size={22} /></View><View style={styles.sheetCopy}><Text style={styles.sheetOptionTitle}>กิจกรรม/ตารางใหม่</Text><Text style={styles.sheetOptionSub}>เพิ่มคลาส นัดหมาย หรือกิจกรรมที่มีเวลา</Text></View><MaterialIcon color="#8b988b" name="chevron_right" size={22} /></Pressable>
-          <Pressable onPress={() => openForm('smartlife_add_task')} style={({pressed}) => [styles.sheetOption, pressed && styles.tabPressed]}><View style={[styles.sheetIcon, {backgroundColor: '#f3e8e8'}]}><MaterialIcon color="#bb7777" name="check_box" size={22} /></View><View style={styles.sheetCopy}><Text style={styles.sheetOptionTitle}>เพิ่มงาน</Text><Text style={styles.sheetOptionSub}>งานส่ง การบ้าน Quiz หรือสิ่งที่ AI Dynamic ต้องจัดลำดับ</Text></View><MaterialIcon color="#8b988b" name="chevron_right" size={22} /></Pressable>
-          <Pressable onPress={() => openForm('smartlife_add_income')} style={({pressed}) => [styles.sheetOption, pressed && styles.tabPressed]}><View style={[styles.sheetIcon, {backgroundColor: '#eceef7'}]}><MaterialIcon color="#6572ad" name="account_balance_wallet" size={22} /></View><View style={styles.sheetCopy}><Text style={styles.sheetOptionTitle}>เพิ่มรายรับ</Text><Text style={styles.sheetOptionSub}>บันทึกเงินเข้าเอง ส่วนรายจ่ายใช้ Smart Scan หรือหน้าการเงิน</Text></View><MaterialIcon color="#8b988b" name="chevron_right" size={22} /></Pressable>
-          <Pressable onPress={() => openForm('smartlife_add_note')} style={({pressed}) => [styles.sheetOption, pressed && styles.tabPressed]}><View style={[styles.sheetIcon, {backgroundColor: '#f5e8e8'}]}><MaterialIcon color="#bb7777" name="edit_note" size={22} /></View><View style={styles.sheetCopy}><Text style={styles.sheetOptionTitle}>โน้ตใหม่</Text><Text style={styles.sheetOptionSub}>บันทึกไอเดียและเรื่องสำคัญ</Text></View><MaterialIcon color="#8b988b" name="chevron_right" size={22} /></Pressable>
-        </View>
-      </Pressable>
-    </Modal>
+    <AddItemSheet onClose={() => setIsBottomSheetOpen(false)} onNavigate={openForm} visible={isBottomSheetOpen} />
   </>;
 }
 
@@ -105,7 +99,6 @@ export const userStyles = StyleSheet.create({
 
 const styles = StyleSheet.create({
   active: {color: '#4f754b'},
-  addSheet: {backgroundColor: '#fbfcf8', borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 18, paddingBottom: 34, width: '100%'},
   avatar: {alignItems: 'center', backgroundColor: '#e8efe4', borderRadius: 22, height: 44, justifyContent: 'center', width: 44},
   avatarText: {color: '#52734b', fontFamily: 'Prompt_700Bold'},
   body: {flex: 1, padding: 18},
@@ -125,15 +118,6 @@ const styles = StyleSheet.create({
   safe: {backgroundColor: '#f0f2ec', flex: 1},
   scroll: {flexGrow: 1, paddingBottom: 12},
   shell: {backgroundColor: '#f0f2ec', flex: 1},
-  sheetBackdrop: {backgroundColor: 'rgba(20,31,20,.42)', flex: 1, justifyContent: 'flex-end'},
-  sheetCopy: {flex: 1},
-  sheetHandle: {alignSelf: 'center', backgroundColor: '#d8e0d6', borderRadius: 4, height: 4, marginBottom: 15, width: 42},
-  sheetIcon: {alignItems: 'center', borderRadius: 15, height: 44, justifyContent: 'center', width: 44},
-  sheetOption: {alignItems: 'center', backgroundColor: '#fff', borderColor: '#e8ede5', borderRadius: 16, borderWidth: 1, flexDirection: 'row', gap: 11, marginTop: 10, padding: 12},
-  sheetOptionSub: {color: '#879087', fontFamily: 'Prompt_400Regular', fontSize: 12, lineHeight: 18, marginTop: 1},
-  sheetOptionTitle: {color: '#2c341b', fontFamily: 'Prompt_700Bold', fontSize: 13},
-  sheetSubtitle: {color: '#818b7f', fontFamily: 'Prompt_400Regular', fontSize: 12, marginTop: 2},
-  sheetTitle: {color: '#29351f', fontFamily: 'Prompt_700Bold', fontSize: 17},
   subtitle: {color: '#84907f', fontFamily: 'Prompt_400Regular', fontSize: 12, marginTop: 3},
   tab: {alignItems: 'center', flex: 1, justifyContent: 'center'},
   tabLabel: {color: '#9aa39a', fontFamily: 'Prompt_500Medium', fontSize: 12, marginTop: 4, textAlign: 'center'},

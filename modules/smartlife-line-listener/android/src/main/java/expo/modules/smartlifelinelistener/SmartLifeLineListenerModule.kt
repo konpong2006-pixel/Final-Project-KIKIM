@@ -117,5 +117,11 @@ class SmartLifeLineListenerModule : Module() {
       )
       SmartLifeWidgetProvider.updateAllWidgets(context)
     }
+
+    AsyncFunction("updateSleepWidgetAsync") { statusText: String ->
+      val context = requireNotNull(appContext.reactContext)
+      SmartLifeSleepWidgetProvider.saveWidgetData(context, statusText)
+      SmartLifeSleepWidgetProvider.updateAllWidgets(context)
+    }
   }
 }

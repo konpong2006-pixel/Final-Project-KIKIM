@@ -1397,32 +1397,51 @@ export function addReceiptReview(
   ).toFixed(2));
   const reviewReasons: string[] = [];
 
-  if (total === null || total <= 0) reviewReasons.push("ไม่พบยอดชำระที่มีคำกำกับชัดเจน");
-  if (!merchant) reviewReasons.push("ไม่พบชื่อร้านค้าหรือผู้รับเงิน");
+  // Wording here has to work for a user who has never seen a "confidence
+  // score" or a field name like "grandTotal" -- each line names the plain
+  // problem and the one thing to do about it, in words a first-time or
+  // elderly user reads the same as anyone else.
+  if (total === null || total <= 0) {
+    reviewReasons.push("หาไม่เจอว่าจ่ายไปเท่าไหร่ กรุณาใส่จำนวนเงินเองก่อนบันทึก");
+  }
+  if (!merchant) {
+    reviewReasons.push("หาไม่เจอว่าจ่ายให้ร้านไหนหรือใคร กรุณาใส่ชื่อร้านค้าเองก่อนบันทึก");
+  }
   if (classification.type !== "receipt") {
-    reviewReasons.push("ชนิดเอกสารยังไม่แน่ชัดว่าเป็นเอกสารการเงิน");
+    reviewReasons.push("ระบบไม่แน่ใจว่ารูปนี้เป็นใบเสร็จหรือสลิปโอนเงินหรือเปล่า กรุณาตรวจดูอีกครั้ง");
   }
   if (ocrConfidence < 0.55) {
-    reviewReasons.push("คุณภาพข้อความจากภาพต่ำ กรุณาตรวจรูปหรือถ่ายใหม่");
+    reviewReasons.push("รูปไม่ชัด อ่านตัวหนังสือได้ยาก ลองถ่ายรูปใหม่ให้ชัดเจนขึ้น");
   }
   if (documentType === "receipt" && !items.length) {
-    reviewReasons.push("ไม่พบรายการสินค้าที่เชื่อถือได้");
+    reviewReasons.push("หารายการสินค้าในใบเสร็จนี้ไม่เจอ กรุณาตรวจสอบก่อนบันทึก");
   }
   if (
     documentType === "receipt" &&
     totalDifference !== null &&
     totalDifference > 2
   ) {
-    reviewReasons.push(`ยอดสินค้าและยอดชำระต่างกัน ${totalDifference.toFixed(2)} บาท`);
+    reviewReasons.push(
+      `ยอดรวมสินค้ากับยอดที่จ่ายจริงไม่ตรงกัน ต่างกัน ${totalDifference.toFixed(2)} บาท กรุณาตรวจสอบ`,
+    );
   }
-  const lowConfidenceFields = stringArray(parsed.lowConfidenceFields);
+  const lowConfidenceFieldLabels: Record<string, string> = {
+    grandTotal: "ยอดเงินรวม",
+    invoiceDate: "วันที่",
+    issuerName: "ชื่อร้านค้า",
+    items: "รายการสินค้า",
+  };
+  const lowConfidenceFields = stringArray(parsed.lowConfidenceFields)
+    .map((field) => lowConfidenceFieldLabels[field] ?? field);
   if (lowConfidenceFields.length) {
-    reviewReasons.push(`ข้อมูลสำคัญที่ควรตรวจสอบ: ${lowConfidenceFields.join(", ")}`);
+    reviewReasons.push(`ข้อมูลที่ควรตรวจสอบอีกครั้งให้ถูกต้อง: ${lowConfidenceFields.join(", ")}`);
   }
   if (String(parsed.provider ?? "").includes("fallback")) {
-    reviewReasons.push("iApp ไม่พร้อมใช้งาน จึงอ่านด้วยระบบสำรอง กรุณาตรวจสอบก่อนบันทึก");
+    reviewReasons.push("ระบบอ่านข้อความหลักขัดข้องชั่วคราว จึงใช้ระบบสำรองแทน กรุณาตรวจสอบข้อมูลให้ถูกต้องก่อนบันทึก");
   }
-  if (confidence < 0.75) reviewReasons.push("ความมั่นใจโดยรวมต่ำกว่า 75%");
+  if (confidence < 0.75) {
+    reviewReasons.push("ระบบไม่ค่อยมั่นใจกับข้อมูลที่อ่านได้ กรุณาตรวจสอบให้ดีก่อนบันทึก");
+  }
 
   const needsReview = reviewReasons.length > 0;
   return {

@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
   <string name="smartlife_widget_description">สรุปตาราง งาน และงบวันนี้จาก SmartLife</string>
+  <string name="smartlife_sleep_widget_description">ปุ่มบันทึกเข้านอน/ตื่นนอนจากหน้าจอหลัก</string>
 </resources>

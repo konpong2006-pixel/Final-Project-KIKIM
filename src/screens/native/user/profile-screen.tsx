@@ -4,6 +4,7 @@ import {ActivityIndicator, Modal, Pressable, StyleSheet, Text, TextInput, View} 
 import {LinearGradient} from 'expo-linear-gradient';
 
 import SleepLogCard from '@/components/sleep-log-card';
+import {useTour} from '@/providers/tour-provider';
 import {loadLegacyPageData, runLegacyDataAction} from '@/services/legacy-data';
 import {Card, LoadingBlock, MaterialIcon, UserShell, type UserNavigate} from './user-ui';
 import {showToast} from '@/components/app-toast';
@@ -18,6 +19,7 @@ const F = {r: 'Prompt_400Regular', m: 'Prompt_500Medium', s: 'Prompt_600SemiBold
 const feedbackTypes: [FeedbackType, string, string][] = [['ai', 'AI แนะนำไม่ตรง', 'auto_awesome'], ['schedule-scan', 'สแกนตารางผิด', 'document_scanner'], ['expense-category', 'หมวดรายจ่ายไม่ถูก', 'receipt_long'], ['other', 'ข้อเสนอแนะอื่น', 'chat_bubble']];
 
 export default function ProfileScreen({uid, onNavigate, onLogout}: {uid: string; onNavigate: UserNavigate; onLogout: () => Promise<void>}) {
+  const {restartTour} = useTour();
   const [seedConfirmOpen, setSeedConfirmOpen] = useState(false);
   const [profile, setProfile] = useState<Profile | null>(null); const [counts, setCounts] = useState<Counts>({}); const [feedbackType, setFeedbackType] = useState<FeedbackType>('ai'); const [feedback, setFeedback] = useState(''); const [sending, setSending] = useState(false); const [success, setSuccess] = useState(false); const [seeding, setSeeding] = useState(false); const [logoutOpen, setLogoutOpen] = useState(false); const [loggingOut, setLoggingOut] = useState(false); const [logoutError, setLogoutError] = useState('');
   const load = useCallback(async () => { const result = await loadLegacyPageData(uid, 'user/smartlife_profile') as {profile?: Profile; counts?: Counts}; setProfile(result.profile ?? {}); setCounts(result.counts ?? {}); }, [uid]);
@@ -57,6 +59,7 @@ export default function ProfileScreen({uid, onNavigate, onLogout}: {uid: string;
     }
   };
   const seedAiDynamicData = () => setSeedConfirmOpen(true);
+  const replayTour = async () => { await restartTour(); onNavigate('index'); };
 
   return <UserShell active="smartlife_profile" onNavigate={onNavigate}>
     <View style={styles.pageHead}><Pressable onPress={() => onNavigate('index')} style={({pressed}) => [styles.back, pressed && styles.pressed]}><MaterialIcon name="arrow_back_ios_new" size={18} /></Pressable><View><Text style={styles.title}>โปรไฟล์ของฉัน</Text><Text style={styles.subtitle}>บัญชี ความคิดเห็น และความเป็นส่วนตัว</Text></View></View>
@@ -65,7 +68,9 @@ export default function ProfileScreen({uid, onNavigate, onLogout}: {uid: string;
       <LinearGradient colors={['#769674', '#8ca28b', '#a1afa0']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.profileCard}><LinearGradient colors={['#392e3a', '#844a50', '#c1a895']} style={styles.avatar}><Text style={styles.avatarText}>{initials}</Text></LinearGradient><View style={{flex: 1}}><Text style={styles.name}>{profile.displayName || 'ผู้ใช้ SmartLife'}</Text><Text style={styles.email}>{profile.email || 'ยังไม่มีอีเมล'}</Text><Text style={styles.student}>รหัสนักศึกษา {profile.studentId || '-'}</Text></View><MaterialIcon color="rgba(255,255,255,.75)" name="verified" size={22} /></LinearGradient>
       <View style={styles.stats}>{[[counts.schedules ?? 0, 'กิจกรรม', 'school', C.sage], [counts.notes ?? 0, 'โน้ต', 'note_alt', C.note], [counts.transactions ?? 0, 'รายการเงิน', 'account_balance_wallet', C.finance]].map(([value, label, icon, color]) => <Card key={String(label)} style={styles.stat}><View style={[styles.statIcon, {backgroundColor: `${String(color)}22`}]}><MaterialIcon color={String(color)} name={String(icon)} size={18} /></View><Text style={styles.statValue}>{String(value)}</Text><Text style={styles.statLabel}>{String(label)}</Text></Card>)}</View>
       <SleepLogCard uid={uid} variant="baseline" />
+      <Pressable onPress={() => onNavigate('smartlife_help')} style={({pressed}) => [styles.lineSettings, pressed && styles.pressed]}><View style={styles.lineSettingsIcon}><MaterialIcon color="#fff" name="menu_book" size={21} /></View><View style={{flex: 1}}><Text style={styles.panelTitle}>คู่มือการใช้งาน</Text><Text style={styles.panelSub}>อ่านวิธีใช้แต่ละหน้าจอแบบละเอียด เข้าใจง่าย เปิดดูได้ทุกเมื่อ</Text></View><MaterialIcon color={C.sage} name="chevron_right" size={22} /></Pressable>
       <Pressable onPress={() => onNavigate('smartlife_line_settings')} style={({pressed}) => [styles.lineSettings, pressed && styles.pressed]}><View style={styles.lineSettingsIcon}><MaterialIcon color="#fff" name="notifications_active" size={21} /></View><View style={{flex: 1}}><Text style={styles.panelTitle}>อ่านแจ้งเตือนการเงิน</Text><Text style={styles.panelSub}>จัดการสิทธิ์ Android ความเป็นส่วนตัว และรายการรอตรวจ</Text></View><MaterialIcon color={C.sage} name="chevron_right" size={22} /></Pressable>
+      <Pressable onPress={() => void replayTour()} style={({pressed}) => [styles.lineSettings, pressed && styles.pressed]}><View style={styles.lineSettingsIcon}><MaterialIcon color="#fff" name="tour" size={21} /></View><View style={{flex: 1}}><Text style={styles.panelTitle}>ดูคำแนะนำการใช้งานอีกครั้ง</Text><Text style={styles.panelSub}>เปิดสปอตไลท์แนะนำจุดสำคัญของแต่ละหน้าใหม่อีกครั้ง</Text></View><MaterialIcon color={C.sage} name="chevron_right" size={22} /></Pressable>
       <Card colors={['rgba(255,255,255,.99)', '#f8faf5']} style={styles.panel}><View style={styles.panelTitleRow}><View style={styles.feedbackIcon}><MaterialIcon color={C.sage} name="forum" size={20} /></View><View style={{flex: 1}}><Text style={styles.panelTitle}>ส่ง Feedback</Text><Text style={styles.panelSub}>ช่วยบอกเราเมื่อ AI หรือตารางข้อมูลไม่ตรง</Text></View></View>
         <Text style={styles.label}>ประเภทปัญหา</Text><View style={styles.typeGrid}>{feedbackTypes.map(([type, label, icon]) => <Pressable key={type} onPress={() => setFeedbackType(type)} style={({pressed}) => [styles.typeChip, feedbackType === type && styles.typeChipActive, pressed && styles.pressed]}><MaterialIcon color={feedbackType === type ? '#fff' : C.sage} name={icon} size={15} /><Text style={[styles.typeText, feedbackType === type && styles.typeTextActive]}>{label}</Text></Pressable>)}</View>
         <Text style={styles.label}>รายละเอียด</Text><View style={styles.textAreaShell}><TextInput multiline onChangeText={(value) => {setFeedback(value); setSuccess(false);}} placeholder="อธิบายสิ่งที่พบหรือสิ่งที่อยากให้ปรับปรุง" placeholderTextColor="#9ca49a" style={styles.textArea} textAlignVertical="top" value={feedback} /></View>

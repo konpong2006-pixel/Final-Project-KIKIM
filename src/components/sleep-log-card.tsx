@@ -22,7 +22,7 @@ import {
   type StaleSleepLog,
 } from '@/services/sleep-log';
 
-const C = {pine: '#2c341b', sage: '#6f8f6d', dark: '#5f835f', night: '#5c6699', nightSoft: '#eceef7', muted: '#81887d', danger: '#c96761'};
+const C = {pine: '#2c341b', sage: '#6f8f6d', dark: '#5f835f', night: '#5a3d82', nightSoft: '#eceef7', sageSoft: '#e5efe2', muted: '#81887d', danger: '#c96761'};
 const F = {r: 'Prompt_400Regular', m: 'Prompt_500Medium', s: 'Prompt_600SemiBold', b: 'Prompt_700Bold', x: 'Prompt_800ExtraBold'};
 
 type Status = {kind: 'error' | 'info' | 'success'; text: string} | null;
@@ -230,12 +230,12 @@ export default function SleepLogCard({onLogged, uid, variant = 'full'}: {
       </View> : null}
       <View style={styles.actions}>
         <Pressable accessibilityLabel="บันทึกเวลาเข้านอน" disabled={busy || Boolean(openNight)} onPress={goToBed} style={({pressed}) => [styles.action, styles.bed, pressed && styles.pressed, (busy || Boolean(openNight)) && styles.disabled]}>
-          <MaterialIcon color="#fff" name="bedtime" size={17} />
-          <Text style={styles.actionText}>เข้านอน</Text>
+          <MaterialIcon color={C.night} name="bedtime" size={17} />
+          <Text style={[styles.actionText, {color: C.night}]}>เข้านอน</Text>
         </Pressable>
         <Pressable accessibilityLabel="บันทึกเวลาตื่นนอน" disabled={busy || !openNight} onPress={wakeUp} style={({pressed}) => [styles.action, styles.wake, pressed && styles.pressed, (busy || !openNight) && styles.disabled]}>
-          <MaterialIcon color="#fff" name="wb_sunny" size={17} />
-          <Text style={styles.actionText}>ตื่นนอน</Text>
+          <MaterialIcon color={C.dark} name="wb_sunny" size={17} />
+          <Text style={[styles.actionText, {color: C.dark}]}>ตื่นนอน</Text>
         </Pressable>
       </View>
     </> : null}
@@ -334,15 +334,15 @@ export default function SleepLogCard({onLogged, uid, variant = 'full'}: {
 }
 
 const styles = StyleSheet.create({
-  action: {alignItems: 'center', borderRadius: 13, flex: 1, flexDirection: 'row', gap: 7, justifyContent: 'center', minHeight: 46},
-  actionText: {color: '#fff', fontFamily: F.b, fontSize: 12},
+  action: {alignItems: 'center', borderRadius: 12, flex: 1, flexDirection: 'row', gap: 6, justifyContent: 'center', minHeight: 40},
+  actionText: {fontFamily: F.s, fontSize: 12},
   actions: {flexDirection: 'row', gap: 9, marginTop: 12},
   baselineBlock: {borderTopColor: 'rgba(44,52,27,.09)', borderTopWidth: 1, marginTop: 14, paddingTop: 12},
   baselineHead: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'},
   baselineLabel: {color: '#4d5948', fontFamily: F.s, fontSize: 12},
   baselineNote: {color: C.muted, fontFamily: F.r, fontSize: 12, lineHeight: 18, marginTop: 4},
   baselineValue: {color: C.pine, fontFamily: F.b, fontSize: 13, marginTop: 4},
-  bed: {backgroundColor: C.night},
+  bed: {backgroundColor: C.nightSoft},
   card: {backgroundColor: '#fff', borderColor: 'rgba(92,102,153,.18)', borderRadius: 17, borderWidth: 1, marginBottom: 15, padding: 14},
   clearLink: {color: C.danger, fontFamily: F.s, fontSize: 12, marginTop: 8},
   disabled: {opacity: .45},
@@ -372,5 +372,5 @@ const styles = StyleSheet.create({
   title: {color: C.pine, fontFamily: F.b, fontSize: 14},
   timePickerButton: {alignItems: 'center', backgroundColor: '#f8faf5', borderColor: 'rgba(44,52,27,.12)', borderRadius: 11, borderWidth: 1, flexDirection: 'row', gap: 7, minHeight: 44, paddingHorizontal: 11},
   timePickerValue: {color: C.pine, flex: 1, fontFamily: F.s, fontSize: 13},
-  wake: {backgroundColor: C.sage},
+  wake: {backgroundColor: C.sageSoft},
 });

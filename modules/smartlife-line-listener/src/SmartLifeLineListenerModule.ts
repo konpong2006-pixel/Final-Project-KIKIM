@@ -5,6 +5,7 @@ import type {
   LineListenerNativeState,
   SmartLifeHomeWidgetPayload,
   SmartLifeLineListenerModuleEvents,
+  SmartLifeSleepWidgetPayload,
 } from './SmartLifeLineListener.types';
 
 declare class SmartLifeLineListenerModule extends NativeModule<SmartLifeLineListenerModuleEvents> {
@@ -25,7 +26,8 @@ declare class SmartLifeLineListenerModule extends NativeModule<SmartLifeLineList
     budgetLabel: string,
     updatedAtLabel: string,
   ): Promise<void>;
+  updateSleepWidgetAsync(statusText: string): Promise<void>;
 }
 
 export default requireNativeModule<SmartLifeLineListenerModule>('SmartLifeLineListener');
-export type {SmartLifeHomeWidgetPayload};
+export type {SmartLifeHomeWidgetPayload, SmartLifeSleepWidgetPayload};

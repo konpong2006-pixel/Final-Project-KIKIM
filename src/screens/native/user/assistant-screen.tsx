@@ -7,6 +7,8 @@ import {ActivityIndicator, Animated, KeyboardAvoidingView, Modal, NativeModules,
 import {LinearGradient} from 'expo-linear-gradient';
 
 import {AsyncActionOverlay, type AsyncActionStatus} from '@/components/async-action-ui';
+import {useTourTarget} from '@/hooks/use-tour-target';
+import {useTour} from '@/providers/tour-provider';
 import {appCheckErrorMessage, isAppCheckError} from '@/lib/app-check';
 import {explicitMutationClause, isReadOnlyOrAdviceRequest} from '@/services/assistant-action-intent';
 import {buildAssistantReply, confirmAssistantAction, recordAssistantTelemetry, type AssistantReply} from '@/services/assistant-tools';
@@ -926,6 +928,12 @@ const shortcutPrompts: Record<string, string> = {
 };
 
 export default function AssistantScreen({uid, onNavigate}: {page: string; uid: string; onNavigate: UserNavigate}) {
+  const {maybeStartTour} = useTour();
+  const {ref: newChatRef, onLayout: newChatOnLayout} = useTourTarget('assistant', 'new-chat');
+  const {ref: composerRef, onLayout: composerOnLayout} = useTourTarget('assistant', 'composer');
+  useEffect(() => {
+    maybeStartTour('assistant');
+  }, [maybeStartTour]);
   const autoScrollPendingRef = useRef(true);
   const chatScrollRef = useRef<ScrollView>(null);
   const cloudWriteQueueRef = useRef<Promise<unknown>>(Promise.resolve());
@@ -2014,35 +2022,33 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
           contentContainerStyle={local.chatContent}
         >
           <View style={local.topBar}>
-            <Pressable onPress={() => onNavigate('index')} style={local.circleButton}>
-              <MaterialIcon color="#26321f" name="chevron_left" size={22} />
-            </Pressable>
             <View style={local.topTitle}>
-              <Text style={local.miniBrand}>SmartLife</Text>
               <View style={local.titleRow}>
                 <Text style={local.screenTitle}>AI Assistant</Text>
                 {temporaryChat ? <View style={local.temporaryBadge}><MaterialIcon color="#5d8059" name="timer" size={12} /><Text style={local.temporaryBadgeText}>ชั่วคราว</Text></View> : null}
               </View>
             </View>
             <View style={local.topActions}>
-              <Pressable accessibilityLabel="เริ่มแชทใหม่" disabled={busy || !historyReady} onPress={() => setNewChatMenuOpen(true)} style={[local.circleButton, (busy || !historyReady) && local.disabled]}>
-                <MaterialIcon color="#26321f" name="add_comment" size={19} />
-              </Pressable>
               <Pressable accessibilityLabel="ย้อนดูประวัติแชท" onPress={openChatHistory} style={local.circleButton}>
                 <MaterialIcon color="#26321f" name="history" size={20} />
+              </Pressable>
+              <Pressable accessibilityLabel="เริ่มแชทใหม่" disabled={busy || !historyReady} onLayout={newChatOnLayout} onPress={() => setNewChatMenuOpen(true)} ref={newChatRef} style={[(busy || !historyReady) ? local.newChatPillDisabled : local.newChatPill]}>
+                <MaterialIcon color="#ffffff" name="add_comment" size={16} />
+                <Text style={local.newChatPillText}>แชทใหม่</Text>
               </Pressable>
             </View>
           </View>
 
           {/* Refactored UI: clean greeting banner for the initial assistant state. */}
-          <LinearGradient colors={['#749279', '#87a48d']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={local.heroCard}>
+          <LinearGradient colors={['#5f8460', '#749279']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={[local.heroCard, {marginTop: 10}]}>
             <View style={local.heroCopy}>
-              <Text style={local.heroTitle}>วันนี้อยากให้ช่วยอะไรดีให้ดีขึ้น?</Text>
-              <Text style={local.heroText}>ถามเรื่องตารางเรียน งานที่ต้องส่ง งบวันนี้ หรือให้ช่วยแปลงข้อความเป็นรายการบันทึกได้เลย</Text>
+              <Text style={local.heroTitle}>วันนี้ให้ช่วยอะไรดี?</Text>
+              <Text style={local.heroText}>ตาราง · งาน · เงิน · บันทึก — ถามได้เลย</Text>
             </View>
-            <MaterialIcon color="rgba(255,255,255,.72)" name="kid_star" size={48} />
+            <MaterialIcon color="rgba(255,255,255,.72)" name="auto_awesome" size={44} />
           </LinearGradient>
 
+          <Text style={local.shortcutSectionLabel}>ลองถาม AI ว่า...</Text>
           <View style={local.shortcutGrid}>
             {shortcuts.map(([icon, title, subtitle, target]) => (
               <Pressable disabled={busy} key={title} onPress={() => {
@@ -2053,11 +2059,12 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
                 }
                 void sendMessage(shortcutPrompts[target] ?? title);
               }} style={[local.shortcutCard, target === ADAPTIVE_AI_SHORTCUT && local.shortcutCardAdaptive, busy && local.disabled]}>
-                <View style={local.shortcutIcon}><MaterialIcon color="#64835f" name={icon} size={17} /></View>
+                <View style={local.shortcutIcon}><MaterialIcon color="#64835f" name={icon} size={20} /></View>
                 <View style={{flex: 1}}>
                   <Text style={local.shortcutTitle}>{title}</Text>
-                  <Text numberOfLines={1} style={local.shortcutSubtitle}>{subtitle}</Text>
+                  <Text style={local.shortcutSubtitle}>{subtitle}</Text>
                 </View>
+                <MaterialIcon color="#b5c4b0" name="chevron_right" size={18} />
               </Pressable>
             ))}
           </View>
@@ -2181,19 +2188,19 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
               )}
             </View>
           </LinearGradient> : null}
-          <View style={local.composer}>
+          <View onLayout={composerOnLayout} ref={composerRef} style={local.composer}>
             <Pressable accessibilityLabel="เปิดคำถามลัดและเมนูเพิ่มข้อมูล" disabled={busy} onPress={() => {
               if (quickAddOpen) setQuickAddCategory(null);
               setQuickAddOpen((value) => !value);
             }} style={[local.attachButton, quickAddOpen && local.attachButtonActive, busy && local.disabled]}>
-              <MaterialIcon color={quickAddOpen ? '#ffffff' : '#5d8059'} name={quickAddOpen ? 'close' : 'add'} size={24} />
+              <MaterialIcon color={quickAddOpen ? '#ffffff' : '#7a8a76'} name={quickAddOpen ? 'close' : 'add'} size={24} />
             </Pressable>
             <TextInput
               multiline
               onChangeText={setInput}
               onFocus={() => requestAnimationFrame(() => chatScrollRef.current?.scrollToEnd({animated: true}))}
               onSubmitEditing={() => sendMessage()}
-              placeholder="เช่น วันนี้มีเรียนอะไร / จ่ายกาแฟ 65 บาท / จดโน้ต..."
+              placeholder="ถาม AI หรือพูดกับไมค์..."
               placeholderTextColor="#8d9689"
               returnKeyType="send"
               style={local.input}
@@ -2315,7 +2322,7 @@ const local = StyleSheet.create({
   actionHeader: {alignItems: 'center', flexDirection: 'row', gap: 10},
   actionIcon: {alignItems: 'center', backgroundColor: '#e8f1e5', borderRadius: 18, height: 36, justifyContent: 'center', width: 36},
   assistantBubble: {backgroundColor: '#ffffff', borderColor: '#e4eadf', borderTopLeftRadius: 8, borderWidth: 1, boxShadow: '0 5px 14px rgba(45,58,49,.08)'},
-  attachButton: {alignItems: 'center', backgroundColor: '#edf5ec', borderRadius: 22, height: 42, justifyContent: 'center', width: 42},
+  attachButton: {alignItems: 'center', backgroundColor: '#f0f2ee', borderRadius: 22, height: 42, justifyContent: 'center', width: 42},
   attachButtonActive: {backgroundColor: '#5d8059'},
   bubble: {borderRadius: 24, maxWidth: '88%', paddingHorizontal: 15, paddingVertical: 12},
   bubbleText: {color: '#2d3a31', fontFamily: 'Prompt_400Regular', fontSize: 14, lineHeight: 21},
@@ -2408,6 +2415,9 @@ const local = StyleSheet.create({
   messageRow: {alignItems: 'flex-start'},
   messageRowUser: {alignItems: 'flex-end'},
   miniBrand: {color: '#668d65', fontFamily: 'Prompt_700Bold', fontSize: 12, lineHeight: 18},
+  newChatPill: {alignItems: 'center', backgroundColor: '#4f7a52', borderRadius: 20, flexDirection: 'row', gap: 5, paddingHorizontal: 14, paddingVertical: 8},
+  newChatPillDisabled: {alignItems: 'center', backgroundColor: '#4f7a52', borderRadius: 20, flexDirection: 'row', gap: 5, opacity: 0.45, paddingHorizontal: 14, paddingVertical: 8},
+  newChatPillText: {color: '#ffffff', fontFamily: 'Prompt_700Bold', fontSize: 13},
   modalClose: {alignItems: 'center', backgroundColor: '#eef2eb', borderRadius: 16, height: 34, justifyContent: 'center', width: 34},
   modalHandle: {alignSelf: 'center', backgroundColor: '#d4ddd0', borderRadius: 99, height: 4, marginBottom: 14, width: 42},
   modalHeaderRow: {alignItems: 'center', flexDirection: 'row', gap: 10},
@@ -2448,19 +2458,20 @@ const local = StyleSheet.create({
   scrollToBottomButton: {alignItems: 'center', backgroundColor: '#ffffff', borderColor: '#dce6d8', borderRadius: 22, borderWidth: 1, bottom: 94, boxShadow: '0 5px 16px rgba(45,58,49,.18)', height: 44, justifyContent: 'center', position: 'absolute', right: 24, width: 44, zIndex: 19},
   secondaryButton: {alignItems: 'center', backgroundColor: '#eef1eb', borderRadius: 14, justifyContent: 'center', marginTop: 15, minHeight: 50, paddingHorizontal: 15},
   secondaryButtonText: {color: '#66735f', fontFamily: 'Prompt_700Bold', fontSize: 14},
-  sendButton: {alignItems: 'center', backgroundColor: '#749279', borderRadius: 22, height: 42, justifyContent: 'center', width: 42},
+  sendButton: {alignItems: 'center', backgroundColor: '#4f7a52', borderRadius: 23, height: 46, justifyContent: 'center', width: 46},
   // Refactored UI: a single seamless surface fills the entire screen without an outer frame.
   shell: {backgroundColor: '#f4f7f4', flex: 1},
-  shortcutCard: {alignItems: 'center', backgroundColor: '#ffffff', borderRadius: 24, flexDirection: 'row', gap: 9, minHeight: 74, padding: 12, width: '48.5%'},
+  shortcutCard: {alignItems: 'center', backgroundColor: '#ffffff', borderRadius: 18, flexDirection: 'row', gap: 12, minHeight: 60, padding: 12, width: '100%'},
   shortcutCardAdaptive: {backgroundColor: '#eef6ea', borderColor: '#bfd2b9', borderWidth: 1},
-  shortcutGrid: {flexDirection: 'row', flexWrap: 'wrap', gap: 9},
+  shortcutGrid: {gap: 8},
+  shortcutSectionLabel: {color: '#7a8777', fontFamily: 'Prompt_700Bold', fontSize: 12, marginBottom: 8, marginTop: 16},
   shortcutEditorCard: {backgroundColor: '#f7faf5', borderColor: '#e2e9de', borderRadius: 16, borderWidth: 1, gap: 8, padding: 11},
   shortcutEditorHeader: {alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between'},
   shortcutEditorInput: {backgroundColor: '#ffffff', borderColor: '#dfe7db', borderRadius: 12, borderWidth: 1, color: '#2d3a31', fontFamily: 'Prompt_400Regular', fontSize: 12, minHeight: 42, paddingHorizontal: 11, paddingVertical: 8},
   shortcutEditorList: {gap: 10, paddingBottom: 8},
   shortcutEditorNumber: {color: '#4d634a', fontFamily: 'Prompt_700Bold', fontSize: 12},
   shortcutEditorPrompt: {minHeight: 66, textAlignVertical: 'top'},
-  shortcutIcon: {alignItems: 'center', backgroundColor: '#eef5ed', borderRadius: 10, height: 31, justifyContent: 'center', width: 31},
+  shortcutIcon: {alignItems: 'center', backgroundColor: '#eef5ed', borderRadius: 12, height: 36, justifyContent: 'center', width: 36},
   shortcutSubtitle: {color: '#8a9585', fontFamily: 'Prompt_400Regular', fontSize: 12, marginTop: 2},
   shortcutTitle: {color: '#26321f', fontFamily: 'Prompt_800ExtraBold', fontSize: 12},
   statusConfirmed: {backgroundColor: '#e8f1e5'},
@@ -2487,7 +2498,7 @@ const local = StyleSheet.create({
   topBar: {alignItems: 'center', flexDirection: 'row', gap: 9},
   topActions: {alignItems: 'center', flexDirection: 'row', gap: 6},
   topTitle: {flex: 1},
-  userBubble: {backgroundColor: '#749279', borderBottomRightRadius: 8},
+  userBubble: {backgroundColor: '#4f7a52', borderBottomRightRadius: 8, boxShadow: '0 4px 10px rgba(45,58,49,.14)'},
   userBubbleText: {color: '#ffffff'},
   voiceButton: {alignItems: 'center', backgroundColor: '#edf5ec', borderRadius: 22, height: 42, justifyContent: 'center', width: 42},
   voiceButtonActive: {backgroundColor: '#5d8059'},

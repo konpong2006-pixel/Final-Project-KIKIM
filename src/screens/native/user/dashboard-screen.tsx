@@ -1,6 +1,6 @@
 /* eslint-disable react-hooks/set-state-in-effect */
-import {useCallback, useEffect, useMemo, useState} from 'react';
-import {ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {forwardRef, useCallback, useEffect, useMemo, useState} from 'react';
+import {ActivityIndicator, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 import AiActivityRecommendationCard from '@/components/ai-activity-recommendation-card';
 import SleepLogCard from '@/components/sleep-log-card';
@@ -18,7 +18,9 @@ import {aggregateSpending, type SpendingTransactionInput} from '@/services/spend
 import {updateAndroidHomeWidget} from '@/services/android-home-widget';
 import {MaterialIcon, UserGradientBackdrop, UserTabBar} from './user-ui';
 import {useCurrentClock} from '@/hooks/use-current-clock';
+import {useTourTarget} from '@/hooks/use-tour-target';
 import {bangkokGreeting} from '@/lib/ux-time';
+import {useTour} from '@/providers/tour-provider';
 import {showToast} from '@/components/app-toast';
 
 /**
@@ -34,7 +36,7 @@ function dateOf(value: unknown) {
 type Props = {onNavigate: (page: string) => void; uid: string};
 type Item = Record<string, unknown>;
 
-const colors = {pine: '#2c341b', sage: '#6f8f6d', sageDark: '#5f835f', sageSoft: '#dfe7dc', mist: '#f4f5ef', paper: '#ffffff', muted: '#8b9085', finance: '#9297bb', financeSoft: '#eceef7', note: '#bb9293', noteSoft: '#f3e8e8'};
+const colors = {pine: '#2c341b', sage: '#6f8f6d', sageDark: '#5f835f', sageSoft: '#dfe7dc', mist: '#f4f5ef', paper: '#ffffff', muted: '#8b9085', finance: '#9297bb', financeSoft: '#eceef7', note: '#bb9293', noteSoft: '#f3e8e8', night: '#5a3d82'};
 const showDevTools = __DEV__ || process.env.EXPO_PUBLIC_SMARTLIFE_SHOW_DEV_TOOLS === 'true';
 
 function time(value: unknown) { const date = new Date(String(value ?? '')); return Number.isNaN(date.getTime()) ? '-' : new Intl.DateTimeFormat('th-TH', {hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Bangkok'}).format(date); }
@@ -43,17 +45,52 @@ function dayKey(date: Date) { return new Intl.DateTimeFormat('en-CA', {day: '2-d
 function shortDateLabel(date: Date) { return new Intl.DateTimeFormat('th-TH', {timeZone: 'Asia/Bangkok', weekday: 'short'}).format(date); }
 function dayNumber(date: Date) { return new Intl.DateTimeFormat('th-TH', {day: 'numeric', timeZone: 'Asia/Bangkok'}).format(date); }
 
-function SoftPress({children, onPress, style}: {children: React.ReactNode; onPress: () => void; style?: object}) {
-  return <Pressable onPress={onPress} style={({pressed}) => [style, pressed && styles.pressed]}>{children}</Pressable>;
-}
+const SoftPress = forwardRef<View, {children: React.ReactNode; onLayout?: () => void; onPress: () => void; style?: object}>(
+  function SoftPress({children, onLayout, onPress, style}, ref) {
+    return <Pressable onLayout={onLayout} onPress={onPress} ref={ref} style={({pressed}) => [style, pressed && styles.pressed]}>{children}</Pressable>;
+  },
+);
 
 function StatCard({icon, value, label, tint = colors.sageSoft}: {icon: string; value: string | number; label: string; tint?: string}) {
   return <View style={styles.statCard}><View style={[styles.statIcon, {backgroundColor: tint}]}><MaterialIcon color={colors.sageDark} name={icon} size={18} /></View><Text adjustsFontSizeToFit minimumFontScale={.7} numberOfLines={1} style={styles.statValue}>{value}</Text><Text style={styles.statLabel}>{label}</Text></View>;
 }
 
+const QUICK_ACTIONS = [
+  {bg: '#f3e8e8', fg: '#bb7777', icon: 'check_box', label: 'เพิ่มงาน', page: 'smartlife_add_task'},
+  {bg: '#e3f0ef', fg: '#3f8a82', icon: 'location_on', label: 'นัดหมาย', page: 'smartlife_add_appointment'},
+  {bg: '#e5efe2', fg: '#52734b', icon: 'document_scanner', label: 'สแกน', page: 'smartlife_scan_schedule'},
+  {bg: '#eceef7', fg: '#6572ad', icon: 'edit_note', label: 'โน้ต', page: 'smartlife_add_note'},
+];
+
+/**
+ * A first-time (and repeat) visitor with nothing pending had no obvious place
+ * to start -- every card on this screen was informational, not an action.
+ * This row is the answer to "where do I even tap": four unmissable buttons
+ * for the things people open the app to do most often.
+ */
+function QuickActions({onNavigate}: {onNavigate: (page: string) => void}) {
+  return <View style={styles.quickActionsPanel}>
+    {QUICK_ACTIONS.map((action) => <Pressable key={action.page} onPress={() => onNavigate(action.page)} style={({pressed}) => [styles.quickAction, pressed && styles.pressed]}>
+      <View style={[styles.quickActionIcon, {backgroundColor: action.bg}]}><MaterialIcon color={action.fg} name={action.icon} size={22} /></View>
+      <Text style={styles.quickActionLabel}>{action.label}</Text>
+    </Pressable>)}
+  </View>;
+}
+
 export default function DashboardScreen({onNavigate, uid}: Props) {
   const clockNow = useCurrentClock();
+  const {maybeStartTour} = useTour();
+  const {ref: bellRef, onLayout: bellOnLayout} = useTourTarget('dashboard', 'bell');
+  const {ref: aiCardRef, onLayout: aiCardOnLayout} = useTourTarget('dashboard', 'ai-card');
+  const {ref: weeklySpendingRef, onLayout: weeklySpendingOnLayout} = useTourTarget('dashboard', 'weekly-spending');
+  useEffect(() => {
+    maybeStartTour('dashboard');
+    // maybeStartTour is a no-op once the tab has been seen, and its identity
+    // changes when the "seen" flags finish loading from storage, so this
+    // re-fires exactly once more if the first mount raced that load.
+  }, [maybeStartTour]);
   const [data, setData] = useState<Item | null>(null);
+  const [sleepSheetOpen, setSleepSheetOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [seeding, setSeeding] = useState(false);
   const [completingId, setCompletingId] = useState('');
@@ -196,56 +233,76 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
     <ScrollView contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={colors.sage} />} showsVerticalScrollIndicator={false}>
       <View style={styles.topRow}>
         <SoftPress onPress={() => onNavigate('smartlife_profile')} style={styles.profileRow}><View style={styles.avatar}><View style={styles.avatarGlow} /><Text style={styles.avatarText}>{string(profile, 'displayName', 'SL').slice(0, 2).toUpperCase()}</Text></View><View style={styles.greeting}><Text numberOfLines={1} style={styles.hello}>{bangkokGreeting(new Date(clockNow))}</Text><Text ellipsizeMode="tail" numberOfLines={1} style={styles.name}>{string(profile, 'displayName', 'เพื่อน')}</Text></View></SoftPress>
-        <SoftPress onPress={() => onNavigate('smartlife_notifications')} style={styles.bell}><MaterialIcon name="notifications" size={24} />{unread > 0 ? <View style={styles.unread}><Text style={styles.unreadText}>{unread > 9 ? '9+' : unread}</Text></View> : null}</SoftPress>
+        <View style={styles.topRowActions}>
+          {/* A full card (even a softened one) at the top of the screen still
+              reads as "the most important thing here" by position alone. A
+              small persistent icon next to the bell is found the same way the
+              bell is -- always on screen, nothing to scroll past -- without
+              claiming the screen's most prominent slot for a twice-a-day habit. */}
+          <SoftPress onPress={() => setSleepSheetOpen(true)} style={styles.sleepButton}><MaterialIcon color={colors.night} name="bedtime" size={22} /></SoftPress>
+          <SoftPress onLayout={bellOnLayout} onPress={() => onNavigate('smartlife_notifications')} ref={bellRef} style={styles.bell}><MaterialIcon name="notifications" size={24} />{unread > 0 ? <View style={styles.unread}><Text style={styles.unreadText}>{unread > 9 ? '9+' : unread}</Text></View> : null}</SoftPress>
+        </View>
       </View>
 
       {!data ? <View style={styles.loading}><ActivityIndicator color={colors.sage} size="large" /><Text style={styles.muted}>กำลังโหลดข้อมูลจาก Firebase</Text></View> : <>
-        <SoftPress onPress={() => onNavigate('smartlife_ai_assistant')} style={styles.aiCard}><LinearGradient colors={['#769674', '#8fa69a', '#a8b7aa']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={StyleSheet.absoluteFill} />
+        <SoftPress onLayout={aiCardOnLayout} onPress={() => onNavigate('smartlife_ai_assistant')} ref={aiCardRef} style={styles.aiCard}><LinearGradient colors={['#769674', '#8fa69a', '#a8b7aa']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={StyleSheet.absoluteFill} />
           <View style={styles.aiTop}><View style={styles.aiHeading}><MaterialIcon color="#fff" name="smart_toy" size={21} /><Text style={styles.aiTitle}>AI Assistant</Text></View><View style={styles.mic}><MaterialIcon name="mic" size={21} /></View></View>
           <View style={styles.prompt}><Text numberOfLines={1} style={styles.promptText}>“วันนี้ฉันมีเรียนกี่โมง?”</Text><MaterialIcon color="#fff" name="chevron_right" size={22} /></View>
-          <View style={styles.quickAnswer}><Text style={styles.quickQuestion}>“เหลือเงินกินข้าวเท่าไหร่?”</Text><Text style={styles.quickValue}>{allowanceAnswer}</Text></View>
+          <View style={styles.quickAnswer}><Text style={styles.quickQuestion}>“เหลือเงินกินข้าวเท่าไหร่?”</Text><View style={styles.quickAnswerRight}><Text style={styles.quickValue}>{allowanceAnswer}</Text><MaterialIcon color={colors.pine} name="chevron_right" size={16} /></View></View>
         </SoftPress>
         <View style={{marginBottom: 15}}><AiActivityRecommendationCard onNavigate={onNavigate} uid={uid} /></View>
-        <SleepLogCard onLogged={() => { void load(); }} uid={uid} variant="log" />
-
-        {showDevTools && pending.length === 0 && transactions.length === 0 ? <Pressable disabled={seeding} onPress={seedAiDynamicData} style={({pressed}) => [styles.seedCard, pressed && styles.pressed, seeding && {opacity: .6}]}><View style={styles.seedIcon}><MaterialIcon color={colors.sageDark} name="database" size={20} /></View><View style={{flex: 1}}><Text style={styles.seedTitle}>เติมข้อมูลทดสอบ AI Dynamic</Text><Text style={styles.seedSub}>เพิ่มตาราง งาน โน้ต และการเงินเข้า Firebase ของบัญชีนี้</Text></View><Text style={styles.seedAction}>{seeding ? 'กำลังเพิ่ม...' : 'เพิ่มเลย'}</Text></Pressable> : null}
 
         <View style={[styles.priorityCard, {overflow: 'hidden'}]}><LinearGradient colors={['rgba(255,255,255,.98)', '#eef4ea']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={StyleSheet.absoluteFill} />
           <View style={styles.priorityHeader}><View style={styles.priorityTitleRow}><MaterialIcon color={colors.sageDark} name="auto_awesome" size={18} /><Text style={styles.priorityTitle}>AI จัดลำดับวันนี้</Text></View><View style={styles.dynamicBadge}><Text style={styles.dynamicText}>Dynamic</Text></View></View>
           <Text style={styles.priorityCaption}>ระบบดันสอบและงานด่วนขึ้นก่อนตามบริบทของวัน</Text>
           {urgent.length ? urgent.map((item, index) => <View key={string(item, 'id', String(index))} style={styles.priorityItem}><View style={[styles.rank, index === 1 && styles.rankSoft]}><Text style={styles.rankText}>{index + 1}</Text></View><View style={styles.priorityCopy}><Text numberOfLines={1} style={styles.priorityItemTitle}>{string(item, 'title')}</Text><Text style={styles.priorityItemSub}>{time(item.startAt)} · {string(item, 'type', 'งานสำคัญ')} · คะแนน {priorityScore(item)}</Text><View style={styles.reasonWrap}>{priorityReasons(item).map((reason) => <View key={reason} style={styles.reasonChip}><Text style={styles.reasonText}>{reason}</Text></View>)}</View></View><View style={styles.priorityActions}><View style={styles.urgency}><Text style={styles.urgencyText}>{index === 0 ? 'ด่วน' : 'สำคัญ'}</Text></View><Pressable accessibilityLabel={`ทำ ${string(item, 'title')} ให้เสร็จ`} disabled={Boolean(completingId)} onPress={() => void markComplete(item)} style={({pressed}) => [styles.doneButton, pressed && styles.pressed]}>{completingId === string(item, 'id', '') ? <ActivityIndicator color="#fff" size="small" /> : <MaterialIcon color="#fff" name="check" size={15} />}<Text style={styles.doneText}>เสร็จ</Text></Pressable></View></View>) : <View style={styles.priorityItem}><View style={styles.rank}><MaterialIcon color="#fff" name="check" size={15} /></View><View style={styles.priorityCopy}><Text style={styles.priorityItemTitle}>วันนี้ไม่มีงานด่วน</Text><Text style={styles.priorityItemSub}>AI จะอัปเดตเมื่อมีรายการใหม่</Text></View></View>}
-          <View style={styles.collapsed}><MaterialIcon color="#7e8979" name="inventory_2" size={15} /><Text style={styles.collapsedText}>ข้อมูลรองถูกย่อไว้ชั่วคราว: งบอาหาร โน้ตทั่วไป และรายการไม่เร่งด่วน</Text></View>
         </View>
+
+        <QuickActions onNavigate={onNavigate} />
+
+        {showDevTools && pending.length === 0 && transactions.length === 0 ? <Pressable disabled={seeding} onPress={seedAiDynamicData} style={({pressed}) => [styles.seedCard, pressed && styles.pressed, seeding && {opacity: .6}]}><View style={styles.seedIcon}><MaterialIcon color="#8a611c" name="database" size={20} /></View><View style={{flex: 1}}><View style={styles.seedHeadingRow}><Text style={styles.seedTitle}>เติมข้อมูลทดสอบ AI Dynamic</Text><View style={styles.devTag}><Text style={styles.devTagText}>DEV</Text></View></View><Text style={styles.seedSub}>เพิ่มตาราง งาน โน้ต และการเงินเข้า Firebase ของบัญชีนี้</Text></View><Text style={styles.seedAction}>{seeding ? 'กำลังเพิ่ม...' : 'เพิ่มเลย'}</Text></Pressable> : null}
 
         <View style={styles.stats}><StatCard icon="calendar_today" label="คลาสเรียน" value={schedules.length} /><StatCard icon="task_alt" label="งานที่ต้องทำ" tint={colors.noteSoft} value={pending.length} /><StatCard icon="account_balance_wallet" label={allowance ? 'งบวันนี้' : 'ยังไม่ได้ตั้งงบ'} tint={colors.financeSoft} value={allowanceValue} /></View>
 
         <View style={styles.sectionHeading}><Text style={styles.sectionTitle}>ตารางวันนี้</Text><SoftPress onPress={() => onNavigate('smartlife_calendar_day')}><Text style={styles.seeAll}>ดูทั้งหมด</Text></SoftPress></View>
         <View style={styles.scheduleCard}>{schedules.length ? schedules.slice(0, 3).map((item, index) => <View key={string(item, 'id', String(index))} style={[styles.classRow, index > 0 && styles.classBorder]}><View style={styles.timePill}><Text style={styles.classTime}>{time(item.startAt)}</Text></View><View style={[styles.courseLine, {backgroundColor: string(item, 'color', index % 2 ? colors.finance : colors.sage)}]} /><View style={styles.courseCopy}><Text style={styles.courseTitle}>{string(item, 'title')}</Text><View style={styles.roomRow}><MaterialIcon color="#899284" name="location_on" size={14} /><Text style={styles.roomText}>{string(item, 'location', string(item, 'courseCode'))}</Text></View></View></View>) : <View style={styles.empty}><MaterialIcon color="#a4ada0" name="event_available" size={30} /><Text style={styles.emptyText}>วันนี้ยังไม่มีคลาสเรียน</Text></View>}</View>
 
-        <Text style={styles.sectionTitle}>โฟกัสวันนี้</Text>
         <View style={styles.focusGrid}>
-          <SoftPress onPress={() => onNavigate('smartlife_add_task')} style={styles.focusCard}><View style={styles.panelHeading}><MaterialIcon color={colors.note} name="check_box" size={17} /><Text style={styles.panelTitle}>โฟกัสวันนี้</Text></View>{pending.length ? pending.slice(0, 2).map((item, index) => <View key={string(item, 'id', String(index))} style={styles.taskRow}><View style={styles.taskCheck}><MaterialIcon color="#fff" name="check" size={11} /></View><View style={{flex: 1}}><Text numberOfLines={1} style={styles.taskTitle}>{string(item, 'title')}</Text><Text style={styles.taskTime}>{time(item.startAt)}</Text></View></View>) : <Text style={styles.panelEmpty}>ยังไม่มีงานที่ต้องทำ</Text>}</SoftPress>
           <SoftPress onPress={() => onNavigate('smartlife_finance_day')} style={styles.focusCard}><View style={styles.panelHeading}><MaterialIcon color={colors.finance} name="account_balance_wallet" size={17} /><Text style={styles.panelTitle}>งบใช้ได้วันนี้</Text></View><View style={styles.budgetLine}><Text style={styles.budgetValue}>{allowanceValue}</Text><Text style={styles.budgetUnit}>{allowance ? '/ วันนี้' : 'ยังไม่ได้ตั้งงบ'}</Text></View><View style={styles.progress}><View style={[styles.progressFill, {width: `${monthBudgetLeftPercent}%`}]} /></View><View style={styles.tagWrap}>{transactions.filter((item) => item.type === 'expense').slice(0, 3).map((item, index) => <View key={string(item, 'id', String(index))} style={styles.tag}><Text numberOfLines={1} style={styles.tagText}>{string(item, 'category', 'ทั่วไป')} {money(Number(item.amount ?? 0))}</Text></View>)}</View></SoftPress>
         </View>
 
         {notes[0] ? <SoftPress onPress={() => onNavigate('smartlife_notes_study')} style={styles.noteLink}><View style={styles.noteIcon}><MaterialIcon color={colors.note} name="note_alt" size={20} /></View><View style={{flex: 1}}><Text style={styles.noteEyebrow}>โน้ตที่เชื่อมกับตารางวันนี้</Text><Text numberOfLines={1} style={styles.noteTitle}>{string(notes[0], 'title')}</Text></View><MaterialIcon color={colors.sageDark} name="chevron_right" size={23} /></SoftPress> : null}
 
         <View style={styles.weeklySpendingCard}>
-          <View style={styles.weeklySpendingHead}><View><Text style={styles.weeklySpendingEyebrow}>สรุปการใช้เงิน</Text><Text style={styles.weeklySpendingTitle}>รายจ่ายสัปดาห์นี้</Text></View><Pressable accessibilityLabel="ดูรายละเอียดรายจ่ายรายสัปดาห์" onPress={() => onNavigate('smartlife_finance_week')} style={styles.weeklySpendingLink}><Text style={styles.weeklySpendingLinkText}>ดูทั้งหมด</Text><MaterialIcon color={colors.sageDark} name="chevron_right" size={18} /></Pressable></View>
+          <View style={styles.weeklySpendingHead}><View><Text style={styles.weeklySpendingEyebrow}>สรุปการใช้เงิน</Text><Text style={styles.weeklySpendingTitle}>รายจ่ายสัปดาห์นี้</Text></View><Pressable accessibilityLabel="ดูรายละเอียดรายจ่ายรายสัปดาห์" onLayout={weeklySpendingOnLayout} onPress={() => onNavigate('smartlife_finance_week')} ref={weeklySpendingRef} style={styles.weeklySpendingLink}><Text style={styles.weeklySpendingLinkText}>ดูทั้งหมด</Text><MaterialIcon color={colors.sageDark} name="chevron_right" size={18} /></Pressable></View>
           <SpendingDonut byCategory={weeklySpending.byCategory} compact total={weeklySpending.total} />
         </View>
       </>}
     </ScrollView>
     <UserTabBar active="index" onNavigate={onNavigate} />
+    <Modal animationType="slide" onRequestClose={() => setSleepSheetOpen(false)} transparent visible={sleepSheetOpen}>
+      <Pressable accessibilityLabel="ปิดบันทึกการนอน" onPress={() => setSleepSheetOpen(false)} style={styles.sleepBackdrop}>
+        <View onStartShouldSetResponder={() => true} style={styles.sleepSheet}>
+          <View style={styles.sleepHandle} />
+          <SleepLogCard onLogged={() => { void load(); }} uid={uid} variant="log" />
+        </View>
+      </Pressable>
+    </Modal>
   </View></ResponsiveSafeArea>;
 }
 
 const shadow = {shadowColor: colors.pine, shadowOffset: {height: 10, width: 0}, shadowOpacity: .08, shadowRadius: 22};
 const font = {regular: 'Prompt_400Regular', medium: 'Prompt_500Medium', semibold: 'Prompt_600SemiBold', bold: 'Prompt_700Bold', extra: 'Prompt_800ExtraBold'};
 const styles = StyleSheet.create({
+  devTag: {backgroundColor: '#f4b23e', borderRadius: 6, marginLeft: 6, paddingHorizontal: 6, paddingVertical: 1},
+  devTagText: {color: '#5a3d06', fontFamily: font.extra, fontSize: 9, letterSpacing: .5},
   seedAction: {color: colors.sageDark, fontFamily: font.bold, fontSize: 12},
-  seedCard: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderColor: 'rgba(111,143,109,.18)', borderRadius: 17, borderWidth: 1, flexDirection: 'row', gap: 10, marginBottom: 15, padding: 13},
-  seedIcon: {alignItems: 'center', backgroundColor: colors.sageSoft, borderRadius: 13, height: 40, justifyContent: 'center', width: 40},
+  // Dashed amber border (instead of the app's usual solid sage) plus the DEV
+  // tag next to the title so this can't be mistaken for a real feature card
+  // during a demo -- it only renders when EXPO_PUBLIC_SMARTLIFE_SHOW_DEV_TOOLS is on.
+  seedCard: {...shadow, alignItems: 'center', backgroundColor: '#fffbf0', borderColor: '#e8b95c', borderRadius: 17, borderStyle: 'dashed', borderWidth: 1.5, flexDirection: 'row', gap: 10, marginBottom: 15, padding: 13},
+  seedHeadingRow: {alignItems: 'center', flexDirection: 'row'},
+  seedIcon: {alignItems: 'center', backgroundColor: '#fbe8c4', borderRadius: 13, height: 40, justifyContent: 'center', width: 40},
   seedSub: {color: colors.muted, fontFamily: font.regular, fontSize: 12, marginTop: 1},
   seedTitle: {color: colors.pine, fontFamily: font.bold, fontSize: 12},
   aiCard: {...shadow, backgroundColor: '#88a188', borderRadius: 18, marginBottom: 15, minHeight: 142, overflow: 'hidden', padding: 16},
@@ -259,6 +316,10 @@ const styles = StyleSheet.create({
   // pushed out of the row: a long display name may only eat the space left
   // over, not the one control in the header.
   bell: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 25, flexGrow: 0, flexShrink: 0, height: 50, justifyContent: 'center', width: 50},
+  sleepBackdrop: {backgroundColor: 'rgba(20,31,20,.42)', flex: 1, justifyContent: 'flex-end'},
+  sleepButton: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 21, flexGrow: 0, flexShrink: 0, height: 42, justifyContent: 'center', width: 42},
+  sleepHandle: {alignSelf: 'center', backgroundColor: '#d8e0d6', borderRadius: 4, height: 4, marginBottom: 4, width: 42},
+  sleepSheet: {backgroundColor: '#f4f7f4', borderTopLeftRadius: 26, borderTopRightRadius: 26, padding: 16, paddingBottom: 30, width: '100%'},
   budgetLine: {alignItems: 'baseline', flexDirection: 'row', marginTop: 11},
   budgetUnit: {color: colors.muted, fontFamily: font.regular, fontSize: 12, marginLeft: 4},
   budgetValue: {color: colors.pine, fontFamily: font.extra, fontSize: 24},
@@ -288,7 +349,6 @@ const styles = StyleSheet.create({
   noteIcon: {alignItems: 'center', backgroundColor: colors.noteSoft, borderRadius: 12, height: 39, justifyContent: 'center', width: 39},
   noteLink: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 17, flexDirection: 'row', gap: 11, marginBottom: 4, padding: 13},
   noteTitle: {color: colors.pine, fontFamily: font.semibold, fontSize: 12, marginTop: 1},
-  panelEmpty: {color: colors.muted, fontFamily: font.regular, fontSize: 12, marginTop: 16},
   panelHeading: {alignItems: 'center', flexDirection: 'row', gap: 6},
   panelTitle: {color: colors.pine, fontFamily: font.bold, fontSize: 12},
   pressed: {opacity: .85, transform: [{scale: .985}]},
@@ -311,7 +371,12 @@ const styles = StyleSheet.create({
   profileRow: {alignItems: 'center', flex: 1, flexDirection: 'row', gap: 12, minWidth: 0},
   prompt: {alignItems: 'center', backgroundColor: 'rgba(72,105,72,.24)', borderColor: 'rgba(44,52,27,.08)', borderRadius: 14, borderWidth: 1, flexDirection: 'row', height: 41, justifyContent: 'space-between', marginTop: 10, paddingHorizontal: 13},
   promptText: {color: '#fff', flex: 1, fontFamily: font.regular, fontSize: 12},
+  quickAction: {alignItems: 'center', borderRadius: 14, flex: 1, gap: 6, paddingVertical: 10},
+  quickActionIcon: {...shadow, alignItems: 'center', backgroundColor: '#fff', borderRadius: 22, height: 46, justifyContent: 'center', width: 46},
+  quickActionLabel: {color: colors.pine, fontFamily: font.semibold, fontSize: 11},
+  quickActionsPanel: {...shadow, backgroundColor: '#fff', borderRadius: 18, flexDirection: 'row', gap: 4, marginBottom: 15, padding: 10},
   quickAnswer: {alignItems: 'center', backgroundColor: 'rgba(255,255,255,.45)', borderRadius: 11, flexDirection: 'row', justifyContent: 'space-between', marginTop: 7, paddingHorizontal: 11, paddingVertical: 7},
+  quickAnswerRight: {alignItems: 'center', flexDirection: 'row', gap: 2},
   quickQuestion: {color: colors.pine, fontFamily: font.regular, fontSize: 12},
   quickValue: {color: colors.pine, fontFamily: font.bold, fontSize: 12},
   rank: {alignItems: 'center', backgroundColor: colors.pine, borderRadius: 9, height: 26, justifyContent: 'center', width: 26},
@@ -336,12 +401,9 @@ const styles = StyleSheet.create({
   tag: {backgroundColor: colors.financeSoft, borderRadius: 99, maxWidth: '100%', paddingHorizontal: 7, paddingVertical: 3},
   tagText: {color: '#73799f', fontFamily: font.medium, fontSize: 12},
   tagWrap: {flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 9},
-  taskCheck: {alignItems: 'center', backgroundColor: colors.note, borderRadius: 7, height: 20, justifyContent: 'center', width: 20},
-  taskRow: {alignItems: 'center', flexDirection: 'row', gap: 7, marginTop: 11},
-  taskTime: {color: colors.muted, fontFamily: font.regular, fontSize: 12},
-  taskTitle: {color: colors.pine, fontFamily: font.semibold, fontSize: 12},
   timePill: {alignItems: 'center', backgroundColor: '#edf3ea', borderRadius: 10, minWidth: 48, paddingHorizontal: 7, paddingVertical: 6},
   topRow: {alignItems: 'center', flexDirection: 'row', gap: 12, justifyContent: 'space-between', marginBottom: 15},
+  topRowActions: {alignItems: 'center', flexDirection: 'row', gap: 9},
   unread: {alignItems: 'center', backgroundColor: '#f35659', borderColor: '#fff', borderRadius: 8, borderWidth: 2, height: 16, justifyContent: 'center', minWidth: 16, position: 'absolute', right: 4, top: 4},
   unreadText: {color: '#fff', fontFamily: font.bold, fontSize: 12},
   urgency: {backgroundColor: '#fff', borderRadius: 99, paddingHorizontal: 8, paddingVertical: 4},

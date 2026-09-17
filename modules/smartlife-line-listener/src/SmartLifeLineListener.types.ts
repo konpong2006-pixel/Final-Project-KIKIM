@@ -35,3 +35,7 @@ export type SmartLifeHomeWidgetPayload = {
   subheadline: string;
   updatedAtLabel: string;
 };
+
+export type SmartLifeSleepWidgetPayload = {
+  statusText: string;
+};

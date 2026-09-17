@@ -17,7 +17,7 @@ iApp OCR หรือ Google Cloud Vision API key แยก เพราะ API 
 หรือเชื่อมโทรศัพท์ Android ที่เปิด USB debugging ไว้ จากนั้นเปิด **CMD** แล้วรัน:
 
 ```cmd
-git clone https://github.com/faloxsgz5-oss/Final-Project.git && cd Final-Project && setup-smartlife.cmd -RunAndroid
+git clone https://github.com/natgamol/Final-Project.git && cd Final-Project && setup-smartlife.cmd -RunAndroid
 ```
 
 ตัวติดตั้งจะทำงานต่อไปนี้ให้อัตโนมัติ:
@@ -36,7 +36,7 @@ git clone https://github.com/faloxsgz5-oss/Final-Project.git && cd Final-Project
 ## ถ้าต้องการติดตั้งก่อน แต่ยังไม่เปิด Android
 
 ```cmd
-git clone https://github.com/faloxsgz5-oss/Final-Project.git && cd Final-Project && setup-smartlife.cmd
+git clone https://github.com/natgamol/Final-Project.git && cd Final-Project && setup-smartlife.cmd
 ```
 
 เมื่อติดตั้งเสร็จแล้ว เปิด Emulator/ต่อโทรศัพท์ และรัน:
@@ -56,7 +56,7 @@ npm start
 เปิด CMD ในโฟลเดอร์ `Final-Project` แล้วรัน:
 
 ```cmd
-git pull origin master && setup-smartlife.cmd
+git pull origin main && setup-smartlife.cmd
 ```
 
 จากนั้นรัน `npm start` หรือ `npm run android` ตามต้องการ

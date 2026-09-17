@@ -4,7 +4,7 @@
 
 ## สรุป branch ที่ต้องใช้
 
-- repo เพื่อน: `https://github.com/faloxsgz5-oss/Final-Project.git`
+- repo ที่ทำงานต่อ: `https://github.com/natgamol/Final-Project.git` (branch หลักคือ `main`)
 - repo KIM ที่เก็บ branch ส่งมอบ: `https://github.com/konpong2006-pixel/Final-Project-KIKIM.git`
 - branch ส่งมอบ: `codex/merge-kim-updates-into-friend`
 - ตรวจ commit ล่าสุดด้วย `git log -1 --oneline kim/codex/merge-kim-updates-into-friend`
@@ -13,12 +13,15 @@
 > มี commit ใหม่ที่แก้ไฟล์เดียวกันหลายจุด จึงไม่ควรเลือก `ours` หรือ `theirs` ทั้งชุด
 > ให้ merge บน branch ใหม่และตรวจ conflict เป็นรายฟีเจอร์ตามขั้นตอนด้านล่าง
 
+> หมายเหตุปัจจุบัน: repo นี้ย้ายมาใช้ branch หลักชื่อ `main` แล้ว คำสั่งด้านล่างจึง
+> อ้างอิง `main` แทนชื่อ branch เดิมในบันทึกด้านบน
+
 ## วิธีที่ง่ายที่สุด: clone แล้ว checkout branch ส่งมอบจาก repo KIM
 
 เปิด CMD หรือ PowerShell แล้วรัน:
 
 ```powershell
-git clone https://github.com/faloxsgz5-oss/Final-Project.git
+git clone https://github.com/natgamol/Final-Project.git
 cd Final-Project
 git remote add kim https://github.com/konpong2006-pixel/Final-Project-KIKIM.git
 git fetch kim codex/merge-kim-updates-into-friend
@@ -37,8 +40,8 @@ npm run test:line-import
 ให้สร้าง branch สำหรับรวมงานจาก branch ล่าสุดของเพื่อนก่อน:
 
 ```powershell
-git switch agent/sync-complete-smartlife-system
-git pull --ff-only origin agent/sync-complete-smartlife-system
+git switch main
+git pull --ff-only origin main
 git switch -c merge-kim-updates
 git remote get-url kim 2>$null; if ($LASTEXITCODE -ne 0) { git remote add kim https://github.com/konpong2006-pixel/Final-Project-KIKIM.git }
 git fetch kim codex/merge-kim-updates-into-friend

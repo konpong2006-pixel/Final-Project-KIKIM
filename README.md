@@ -14,7 +14,7 @@ keys.
 Run this one line in CMD:
 
 ```cmd
-git clone https://github.com/faloxsgz5-oss/Final-Project.git && cd Final-Project && setup-smartlife.cmd -RunAndroid
+git clone https://github.com/natgamol/Final-Project.git && cd Final-Project && setup-smartlife.cmd -RunAndroid
 ```
 
 The setup command automatically:
@@ -38,7 +38,7 @@ If the repository is already installed and the working tree has no personal
 changes, open CMD in `Final-Project` and run:
 
 ```cmd
-git switch master && git pull origin master && setup-smartlife.cmd
+git switch main && git pull origin main && setup-smartlife.cmd
 ```
 
 Then use `npm start` with an installed Development Build, `npm run
@@ -80,7 +80,7 @@ Google Login and voice input use native modules. Test those features with a Smar
 ## Setup without launching Android
 
 ```bash
-git clone https://github.com/faloxsgz5-oss/Final-Project.git && cd Final-Project && setup-smartlife.cmd
+git clone https://github.com/natgamol/Final-Project.git && cd Final-Project && setup-smartlife.cmd
 ```
 
 Without `-RunAndroid`, the script prepares and verifies the project, then prints
@@ -208,8 +208,8 @@ docs/                    Detailed setup and architecture notes
 Create a separate branch for each task:
 
 ```bash
-git switch master
-git pull origin master
+git switch main
+git pull origin main
 git switch -c feature/short-description
 ```
 
@@ -221,7 +221,7 @@ git commit -m "feat: describe the completed work"
 git push -u origin feature/short-description
 ```
 
-Open a Pull Request into `master`. Avoid committing directly to `master`, and do not share passwords, API secrets, private keys, or personal `.env.local` files in GitHub issues or chat.
+Open a Pull Request into `main`. Avoid committing directly to `main`, and do not share passwords, API secrets, private keys, or personal `.env.local` files in GitHub issues or chat.
 
 ## Additional documentation
 
@@ -233,4 +233,4 @@ Open a Pull Request into `master`. Avoid committing directly to `master`, and do
 
 ## Repository
 
-<https://github.com/faloxsgz5-oss/Final-Project>
+<https://github.com/natgamol/Final-Project>

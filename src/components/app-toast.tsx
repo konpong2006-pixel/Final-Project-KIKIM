@@ -1,7 +1,8 @@
 import {useEffect, useState} from 'react';
-import {Animated, Easing, Platform, Pressable, StyleSheet, Text, View} from 'react-native';
+import {Animated, Easing, Platform, StyleSheet, Text, View} from 'react-native';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 
+import {Touchable} from '@/components/touchable';
 import {MaterialIcon} from '@/screens/native/user/user-ui';
 
 /**
@@ -75,6 +76,7 @@ export default function ToastHost() {
   // Held as lazily-initialised state, not a ref: the value is read during
   // render to build the animated style, which the compiler forbids for refs.
   const [progress] = useState(() => new Animated.Value(0));
+  const [iconBounce] = useState(() => new Animated.Value(0));
 
   useEffect(() => {
     listeners.add(setToast);
@@ -89,7 +91,12 @@ export default function ToastHost() {
     // warning and a fall back to JS anyway.
     const useNativeDriver = Platform.OS !== 'web';
     progress.setValue(0);
-    Animated.timing(progress, {duration: 190, easing: Easing.out(Easing.quad), toValue: 1, useNativeDriver}).start();
+    iconBounce.setValue(0);
+    Animated.parallel([
+      Animated.timing(progress, {duration: 210, easing: Easing.out(Easing.cubic), toValue: 1, useNativeDriver}),
+      Animated.spring(iconBounce, {damping: 9, mass: 0.6, stiffness: 220, toValue: 1, useNativeDriver}),
+    ]).start();
+
     const timer = setTimeout(() => {
       Animated.timing(progress, {duration: 190, easing: Easing.in(Easing.quad), toValue: 0, useNativeDriver}).start(({finished}) => {
         // Only clear if this is still the toast that was showing, so a newer
@@ -98,7 +105,7 @@ export default function ToastHost() {
       });
     }, VISIBLE_MS);
     return () => clearTimeout(timer);
-  }, [progress, toast]);
+  }, [iconBounce, progress, toast]);
 
   if (!toast) return null;
   const tone = TONES[toast.tone];
@@ -107,23 +114,28 @@ export default function ToastHost() {
       <Animated.View
         style={[styles.animated, {
           opacity: progress,
-          transform: [{translateY: progress.interpolate({inputRange: [0, 1], outputRange: [-18, 0]})}],
+          transform: [
+            {translateY: progress.interpolate({inputRange: [0, 1], outputRange: [-20, 0]})},
+            {scale: progress.interpolate({inputRange: [0, 1], outputRange: [0.93, 1]})},
+          ],
         }]}
       >
         <View accessibilityRole="alert" style={[styles.card, {backgroundColor: tone.background, borderColor: tone.border}]}>
-          <MaterialIcon color={tone.accent} name={tone.icon} size={21} />
+          <Animated.View style={{transform: [{scale: iconBounce}]}}>
+            <MaterialIcon color={tone.accent} name={tone.icon} size={22} />
+          </Animated.View>
           <View style={styles.copy}>
             <Text style={[styles.title, {color: tone.accent}]}>{toast.title}</Text>
             {toast.message ? <Text numberOfLines={3} style={styles.message}>{toast.message}</Text> : null}
           </View>
           {toast.action ? (
-            <Pressable accessibilityLabel={toast.action.label} onPress={() => { toast.action?.onPress(); dismissToast(); }} style={styles.actionButton}>
+            <Touchable accessibilityLabel={toast.action.label} onPress={() => { toast.action?.onPress(); dismissToast(); }} style={styles.actionButton}>
               <Text style={[styles.actionText, {color: tone.accent}]}>{toast.action.label}</Text>
-            </Pressable>
+            </Touchable>
           ) : null}
-          <Pressable accessibilityLabel={`ปิดข้อความ ${toast.title}`} hitSlop={10} onPress={dismissToast}>
+          <Touchable accessibilityLabel={`ปิดข้อความ ${toast.title}`} hitSlop={10} onPress={dismissToast}>
             <MaterialIcon color="#97a094" name="close" size={17} />
-          </Pressable>
+          </Touchable>
         </View>
       </Animated.View>
     </View>

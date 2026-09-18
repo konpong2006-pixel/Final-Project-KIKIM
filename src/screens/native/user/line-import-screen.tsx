@@ -3,11 +3,11 @@ import ConfirmDialog from '@/components/confirm-dialog';
 import {thailandDateKey, thailandTimeKey, thailandWallClockToDate} from '@/lib/thailand-time';
 import NativeDateTimePicker from '@/components/date-time-picker';
 import {showToast} from '@/components/app-toast';
+import {Touchable} from '@/components/touchable';
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
   ActivityIndicator,
   Platform,
-  Pressable,
   StyleSheet,
   Text,
   TextInput,
@@ -168,9 +168,9 @@ function Header({
   title: string;
 }) {
   return <View style={styles.header}>
-    <Pressable accessibilityLabel="ย้อนกลับ" onPress={onBack} style={styles.back}>
+    <Touchable accessibilityLabel="ย้อนกลับ" onPress={onBack} style={styles.back}>
       <MaterialIcon name="arrow_back_ios_new" size={18} />
-    </Pressable>
+    </Touchable>
     <View style={{flex: 1}}>
       <Text style={styles.eyebrow}>SmartLife Finance</Text>
       <Text style={styles.title}>{title}</Text>
@@ -239,9 +239,9 @@ function EditableDraftCard({
     <Text style={styles.infoText}>รอตรวจสอบก่อนบันทึก: {draft.warnings[0] || (draft.needsReview ? 'ข้อมูลยังต้องยืนยัน' : 'ตรวจข้อมูลและรายการซ้ำก่อนยืนยัน')}</Text>
     <Text style={styles.label}>เงินเข้า หรือ เงินออก</Text>
     <View style={styles.segmented}>
-      {(['income', 'expense'] as const).map((type) => <Pressable key={type} onPress={() => update('type', type)} style={[styles.segment, draft.type === type && styles.segmentActive]}>
+      {(['income', 'expense'] as const).map((type) => <Touchable key={type} onPress={() => update('type', type)} style={[styles.segment, draft.type === type && styles.segmentActive]}>
         <Text style={[styles.segmentText, draft.type === type && styles.segmentTextActive]}>{type === 'income' ? 'เงินเข้า' : 'เงินออก'}</Text>
-      </Pressable>)}
+      </Touchable>)}
     </View>
 
     <Text style={styles.label}>จำนวนเงิน</Text>
@@ -252,14 +252,14 @@ function EditableDraftCard({
     <TextInput onChangeText={(value) => update('category', value)} placeholder="เช่น อาหาร, เดินทาง, รายได้" placeholderTextColor="#9aa39a" style={styles.input} value={draft.category} />
     <Text style={styles.label}>วันที่และเวลา</Text>
     <View style={styles.dateRow}>
-      <Pressable onPress={() => setPicker('date')} style={styles.dateButton}>
+      <Touchable onPress={() => setPicker('date')} style={styles.dateButton}>
         <MaterialIcon color={C.sage} name="calendar_month" size={18} />
         <Text style={styles.dateText}>{thaiDate(draft.occurredAt)}</Text>
-      </Pressable>
-      <Pressable onPress={() => setPicker('time')} style={styles.dateButton}>
+      </Touchable>
+      <Touchable onPress={() => setPicker('time')} style={styles.dateButton}>
         <MaterialIcon color={C.sage} name="schedule" size={18} />
         <Text style={styles.dateText}>{thaiTime(draft.occurredAt)}</Text>
-      </Pressable>
+      </Touchable>
     </View>
     {picker ? <NativeDateTimePicker
       accentColor={C.sage}
@@ -279,8 +279,8 @@ function EditableDraftCard({
       <View style={{flex: 1}}>{draft.warnings.map((warning) => <Text key={warning} style={styles.warningText}>• {warning}</Text>)}</View>
     </View> : null}
     <View style={styles.actionRow}>
-      {onReject ? <Pressable disabled={disabled} onPress={onReject} style={styles.rejectButton}><Text style={styles.rejectText}>ไม่ใช่รายการเงิน</Text></Pressable> : null}
-      <Pressable
+      {onReject ? <Touchable disabled={disabled} onPress={onReject} style={styles.rejectButton}><Text style={styles.rejectText}>ไม่ใช่รายการเงิน</Text></Touchable> : null}
+      <Touchable
         disabled={disabled}
         onPress={() => {
           if (!draft.amount || !draft.merchant.trim()) {
@@ -293,7 +293,7 @@ function EditableDraftCard({
       >
         {disabled ? <ActivityIndicator color="#fff" /> : <MaterialIcon color="#fff" name="check" size={18} />}
         <Text style={styles.confirmText}>{actionLabel}</Text>
-      </Pressable>
+      </Touchable>
     </View>
     <Text style={styles.confirmHint}>ระบบจะบันทึกลงการเงินจริงต่อเมื่อคุณกดปุ่มนี้เท่านั้น</Text>
   </Card>;
@@ -407,10 +407,10 @@ function ManualImport({onNavigate, uid}: {onNavigate: UserNavigate; uid: string}
           <Text style={styles.infoText}>{autoReady ? `มีคิวในเครื่อง ${nativeState.queueCount} รายการ รายการที่ข้อมูลครบและผ่านการตรวจจะบันทึกอัตโนมัติ ส่วนที่ไม่ชัดหรืออาจซ้ำจะรอให้ตรวจ` : 'Android ต้องให้สิทธิ์ Notification Access หนึ่งครั้ง หลังจากนั้นผู้ใช้ไม่ต้องคัดลอกข้อความเอง'}</Text>
         </View>
       </View>
-      <Pressable onPress={() => onNavigate(autoReady ? 'smartlife_line_pending' : 'smartlife_line_settings')} style={styles.autoButton}>
+      <Touchable onPress={() => onNavigate(autoReady ? 'smartlife_line_pending' : 'smartlife_line_settings')} style={styles.autoButton}>
         <MaterialIcon color="#fff" name={autoReady ? 'fact_check' : 'settings'} size={18} />
         <Text style={styles.analyzeText}>{autoReady ? 'ดูรายการที่ระบบรับมา' : 'ตั้งค่าอ่านแจ้งเตือนการเงิน'}</Text>
-      </Pressable>
+      </Touchable>
     </Card>
 
     <Text style={styles.label}>ทางเลือกสำรอง: วางข้อความเองเมื่อจำเป็น</Text>
@@ -423,13 +423,13 @@ function ManualImport({onNavigate, uid}: {onNavigate: UserNavigate; uid: string}
       textAlignVertical="top"
       value={rawText}
     />
-    <Pressable disabled={analyzing} onPress={() => analyze()} style={[styles.analyzeButton, analyzing && styles.disabled]}>
+    <Touchable disabled={analyzing} onPress={() => analyze()} style={[styles.analyzeButton, analyzing && styles.disabled]}>
       {analyzing ? <ActivityIndicator color="#fff" /> : <MaterialIcon color="#fff" name="manage_search" size={20} />}
       <Text style={styles.analyzeText}>{analyzing ? 'กำลังแยกรายการ...' : 'วิเคราะห์ข้อความสำรอง'}</Text>
-    </Pressable>
+    </Touchable>
     <View style={styles.quickLinks}>
-      <Pressable onPress={() => onNavigate('smartlife_line_pending')} style={styles.quickLink}><MaterialIcon color={C.violet} name="fact_check" size={19} /><Text style={styles.quickLinkText}>รายการรอตรวจ</Text></Pressable>
-      <Pressable onPress={() => onNavigate('smartlife_line_settings')} style={styles.quickLink}><MaterialIcon color={C.violet} name="settings" size={19} /><Text style={styles.quickLinkText}>ตั้งค่าการเชื่อมต่อ</Text></Pressable>
+      <Touchable onPress={() => onNavigate('smartlife_line_pending')} style={styles.quickLink}><MaterialIcon color={C.violet} name="fact_check" size={19} /><Text style={styles.quickLinkText}>รายการรอตรวจ</Text></Touchable>
+      <Touchable onPress={() => onNavigate('smartlife_line_settings')} style={styles.quickLink}><MaterialIcon color={C.violet} name="settings" size={19} /><Text style={styles.quickLinkText}>ตั้งค่าการเชื่อมต่อ</Text></Touchable>
     </View>
     {drafts.map((draft) => <EditableDraftCard actionLabel="ยืนยันและบันทึก" disabled={saving === draft.fingerprint} draft={draft} key={draft.fingerprint} onConfirm={confirm} />)}
   </UserShell>;
@@ -588,14 +588,14 @@ function PendingReview({onNavigate, uid}: {onNavigate: UserNavigate; uid: string
     />
     <Header onBack={() => onNavigate('smartlife_line_import')} subtitle="รายการที่ข้อมูลไม่ครบ มีข้อควรตรวจ หรืออาจซ้ำ แม้คะแนนอ่านสูงก็อาจต้องยืนยัน" title="รายการที่ต้องตรวจ" />
     {!loading && !loadError && items.length > 1 ? <View style={styles.bulkRow}>
-      <Pressable disabled={bulkWorking} onPress={() => void confirmAll()} style={[styles.bulkButton, styles.bulkConfirm, bulkWorking && styles.disabled]}>
+      <Touchable disabled={bulkWorking} onPress={() => void confirmAll()} style={[styles.bulkButton, styles.bulkConfirm, bulkWorking && styles.disabled]}>
         {bulkWorking ? <ActivityIndicator color="#fff" size="small" /> : <MaterialIcon color="#fff" name="done_all" size={17} />}
         <Text style={styles.bulkConfirmText}>ยืนยันทั้งหมด ({items.length})</Text>
-      </Pressable>
-      <Pressable disabled={bulkWorking} onPress={() => setRejecting('all')} style={[styles.bulkButton, styles.bulkSkip, bulkWorking && styles.disabled]}>
+      </Touchable>
+      <Touchable disabled={bulkWorking} onPress={() => setRejecting('all')} style={[styles.bulkButton, styles.bulkSkip, bulkWorking && styles.disabled]}>
         <MaterialIcon color={C.danger} name="playlist_remove" size={17} />
         <Text style={styles.bulkSkipText}>ข้ามทั้งหมด</Text>
-      </Pressable>
+      </Touchable>
     </View> : null}
     <Card colors={['#eef1fa', '#f7f8fd']} style={styles.privacyCard}>
       <View style={styles.infoRow}><MaterialIcon color={C.violet} name="verified_user" size={22} /><View style={{flex: 1}}><Text style={styles.infoTitle}>เก็บชั่วคราวไม่เกิน 7 วัน</Text><Text style={styles.infoText}>ยืนยันแล้วข้อความดิบจะถูกลบทันที หากไม่ทำอะไรระบบจะลบอัตโนมัติเมื่อครบกำหนด</Text></View></View>
@@ -605,10 +605,10 @@ function PendingReview({onNavigate, uid}: {onNavigate: UserNavigate; uid: string
       <MaterialIcon color={C.danger} name="cloud_off" size={34} />
       <Text style={styles.emptyTitle}>โหลดรายการไม่สำเร็จ</Text>
       <Text style={styles.infoText}>{loadError}</Text>
-      <Pressable onPress={() => setReloadKey((value) => value + 1)} style={styles.retryButton}>
+      <Touchable onPress={() => setReloadKey((value) => value + 1)} style={styles.retryButton}>
         <MaterialIcon color="#fff" name="refresh" size={17} />
         <Text style={styles.retryText}>ลองโหลดใหม่</Text>
-      </Pressable>
+      </Touchable>
     </Card> : null}
     {!loading && !loadError && !items.length ? <Card style={styles.emptyCard}><MaterialIcon color={C.sage} name="task_alt" size={34} /><Text style={styles.emptyTitle}>ไม่มีรายการที่ต้องตรวจ</Text><Text style={styles.infoText}>รายการจากแจ้งเตือนที่ข้อมูลครบและผ่านการตรวจจะบันทึกอัตโนมัติ ดูได้ที่หน้าการเงิน</Text></Card> : null}
     {items.map((item) => <EditableDraftCard
@@ -682,20 +682,20 @@ function ListenerSettings({onNavigate, uid}: {onNavigate: UserNavigate; uid: str
       </Card>
 
       <Text style={styles.sectionTitle}>เลือกวิธีนำเข้า</Text>
-      <Pressable onPress={() => isAuto ? disableAuto() : undefined} style={[styles.tierCard, !isAuto && styles.tierActive]}>
+      <Touchable onPress={() => isAuto ? disableAuto() : undefined} style={[styles.tierCard, !isAuto && styles.tierActive]}>
         <View style={styles.tierIcon}><MaterialIcon color={C.sage} name="content_paste" size={22} /></View><View style={{flex: 1}}><Text style={styles.tierTitle}>วางหรือแชร์เอง</Text><Text style={styles.tierText}>ปลอดภัยที่สุดและเป็นค่าเริ่มต้น ใช้ได้ทั้ง Android และ iOS</Text></View>{!isAuto ? <MaterialIcon color={C.sage} name="check_circle" size={22} /> : null}
-      </Pressable>
-      {Platform.OS === 'android' ? <Pressable onPress={isAuto ? undefined : enableAuto} style={[styles.tierCard, isAuto && styles.tierActive]}>
+      </Touchable>
+      {Platform.OS === 'android' ? <Touchable onPress={isAuto ? undefined : enableAuto} style={[styles.tierCard, isAuto && styles.tierActive]}>
         <View style={[styles.tierIcon, {backgroundColor: C.violetSoft}]}><MaterialIcon color={C.violet} name="notification_add" size={22} /></View><View style={{flex: 1}}><Text style={styles.tierTitle}>อ่านแจ้งเตือนการเงินอัตโนมัติ</Text><Text style={styles.tierText}>บันทึกอัตโนมัติเมื่อข้อมูลครบและผ่านการตรวจ รายการไม่ชัดหรืออาจซ้ำจะรอให้ตรวจ</Text></View>{isAuto ? <MaterialIcon color={C.sage} name="check_circle" size={22} /> : null}
-      </Pressable> : null}
+      </Touchable> : null}
 
       {Platform.OS === 'android' && isAuto ? <Card style={styles.permissionCard}>
         <Text style={styles.infoTitle}>ขั้นตอนที่ Android ต้องให้คุณกดเอง</Text>
         <Text style={styles.infoText}>1. เปิดสิทธิ์ “การเข้าถึงการแจ้งเตือน” ให้ SmartLife{'\n'}2. ให้ LINE และแอปธนาคารที่รองรับแสดงรายละเอียดในการแจ้งเตือน{'\n'}3. รายการที่ข้อมูลครบและผ่านการตรวจจะบันทึกอัตโนมัติ ส่วนที่ไม่ชัดหรืออาจซ้ำจะรอให้ตรวจ{'\n'}4. ปิดการจำกัดแบตเตอรี่ หากเครื่องหยุดแอปเบื้องหลัง</Text>
-        <Pressable disabled={working} onPress={() => openLineNotificationAccessSettings().catch(() => undefined)} style={styles.secondaryButton}><Text style={styles.secondaryText}>เปิดหน้าสิทธิ์ Android</Text></Pressable>
+        <Touchable disabled={working} onPress={() => openLineNotificationAccessSettings().catch(() => undefined)} style={styles.secondaryButton}><Text style={styles.secondaryText}>เปิดหน้าสิทธิ์ Android</Text></Touchable>
         <View style={styles.smallActionRow}>
-          <Pressable onPress={() => requestLineListenerReconnect().then(refresh)} style={styles.smallButton}><Text style={styles.smallButtonText}>เชื่อมต่อใหม่</Text></Pressable>
-          <Pressable onPress={() => syncLineAutoImport(uid).then(refresh)} style={styles.smallButton}><Text style={styles.smallButtonText}>ตรวจคิวตอนนี้</Text></Pressable>
+          <Touchable onPress={() => requestLineListenerReconnect().then(refresh)} style={styles.smallButton}><Text style={styles.smallButtonText}>เชื่อมต่อใหม่</Text></Touchable>
+          <Touchable onPress={() => syncLineAutoImport(uid).then(refresh)} style={styles.smallButton}><Text style={styles.smallButtonText}>ตรวจคิวตอนนี้</Text></Touchable>
         </View>
       </Card> : null}
 
@@ -703,7 +703,7 @@ function ListenerSettings({onNavigate, uid}: {onNavigate: UserNavigate; uid: str
         <Text style={styles.infoTitle}>ความเป็นส่วนตัวและข้อจำกัด</Text>
         <Text style={styles.infoText}>• รับเฉพาะแจ้งเตือน LINE และแอปธนาคารที่รองรับ{'\n'}• ไม่เปิดอ่านแชตย้อนหลัง รูปในแชต หรือข้อมูลภายในบัญชีธนาคาร{'\n'}• หากแจ้งเตือนซ่อนจำนวนเงิน จะไม่สามารถบันทึกยอดอัตโนมัติได้{'\n'}• ข้อมูลไม่ครบหรือมีข้อควรตรวจจะรอให้คุณยืนยัน{'\n'}• AI fallback รับเฉพาะข้อความที่ปิดเลขบัญชีแล้ว</Text>
       </Card>
-      <Pressable onPress={() => onNavigate('smartlife_line_import')} style={styles.analyzeButton}><MaterialIcon color="#fff" name="add_card" size={20} /><Text style={styles.analyzeText}>ไปหน้านำเข้ารายการ</Text></Pressable>
+      <Touchable onPress={() => onNavigate('smartlife_line_import')} style={styles.analyzeButton}><MaterialIcon color="#fff" name="add_card" size={20} /><Text style={styles.analyzeText}>ไปหน้านำเข้ารายการ</Text></Touchable>
     </>}
     <ConfirmDialog
       cancelLabel="ยังไม่เปิด"

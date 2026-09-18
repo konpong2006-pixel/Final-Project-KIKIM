@@ -31,14 +31,8 @@ export default function LoadingAndSuccessModal({
   title,
   visible,
 }: {
-  /**
-   * Shown as a way out while loading. Pass it only for work the caller can
-   * genuinely walk away from -- a modal with no exit is what left people
-   * staring at a spinner with nothing to press.
-   */
   onCancel?: () => void;
   phase: FeedbackPhase;
-  /** Counts the seconds while loading, so a long wait reads as slow, not stuck. */
   showElapsed?: boolean;
   subtitle: string;
   title: string;
@@ -47,6 +41,8 @@ export default function LoadingAndSuccessModal({
   const [fade] = useState(() => new Animated.Value(0));
   const [pop] = useState(() => new Animated.Value(.72));
   const [rotate] = useState(() => new Animated.Value(0));
+  const [pulse] = useState(() => new Animated.Value(1));
+  const [progressWidth] = useState(() => new Animated.Value(0.2));
 
   useEffect(() => {
     if (!visible) {
@@ -55,11 +51,16 @@ export default function LoadingAndSuccessModal({
     }
 
     let spinnerLoop: Animated.CompositeAnimation | null = null;
+    let pulseLoop: Animated.CompositeAnimation | null = null;
+    let progressLoop: Animated.CompositeAnimation | null = null;
+
     Animated.timing(fade, {duration: 220, easing: Easing.out(Easing.cubic), toValue: 1, useNativeDriver: true}).start();
+
     if (phase === 'loading') {
       pop.setValue(.9);
       rotate.setValue(0);
       Animated.spring(pop, {damping: 14, mass: .8, stiffness: 170, toValue: 1, useNativeDriver: true}).start();
+
       spinnerLoop = Animated.loop(Animated.timing(rotate, {
         duration: 980,
         easing: Easing.linear,
@@ -67,18 +68,40 @@ export default function LoadingAndSuccessModal({
         useNativeDriver: true,
       }));
       spinnerLoop.start();
+
+      pulseLoop = Animated.loop(Animated.sequence([
+        Animated.timing(pulse, {duration: 700, easing: Easing.inOut(Easing.quad), toValue: 1.08, useNativeDriver: true}),
+        Animated.timing(pulse, {duration: 700, easing: Easing.inOut(Easing.quad), toValue: 0.95, useNativeDriver: true}),
+      ]));
+      pulseLoop.start();
+
+      progressLoop = Animated.loop(Animated.sequence([
+        Animated.timing(progressWidth, {duration: 1200, easing: Easing.inOut(Easing.quad), toValue: 0.85, useNativeDriver: false}),
+        Animated.timing(progressWidth, {duration: 1000, easing: Easing.inOut(Easing.quad), toValue: 0.35, useNativeDriver: false}),
+      ]));
+      progressLoop.start();
     } else {
-      pop.setValue(.45);
+      pulse.setValue(1);
+      Animated.timing(progressWidth, {duration: 250, easing: Easing.out(Easing.quad), toValue: 1, useNativeDriver: false}).start();
+      pop.setValue(.4);
       Animated.sequence([
-        Animated.spring(pop, {damping: 8, mass: .7, stiffness: 210, toValue: 1.08, useNativeDriver: true}),
+        Animated.spring(pop, {damping: 8, mass: .7, stiffness: 220, toValue: 1.12, useNativeDriver: true}),
         Animated.spring(pop, {damping: 12, mass: .6, stiffness: 180, toValue: 1, useNativeDriver: true}),
       ]).start();
     }
 
-    return () => spinnerLoop?.stop();
-  }, [fade, phase, pop, rotate, visible]);
+    return () => {
+      spinnerLoop?.stop();
+      pulseLoop?.stop();
+      progressLoop?.stop();
+    };
+  }, [fade, phase, pop, progressWidth, pulse, rotate, visible]);
 
   const spin = rotate.interpolate({inputRange: [0, 1], outputRange: ['0deg', '360deg']});
+  const dynamicWidth = progressWidth.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0%', '100%'],
+  });
 
   return <Modal animationType="none" statusBarTranslucent transparent visible={visible}>
     <Animated.View accessibilityLabel={`${title}. ${subtitle}`} accessibilityLiveRegion="polite" accessibilityViewIsModal style={[styles.overlay, {opacity: fade}]}>
@@ -88,14 +111,22 @@ export default function LoadingAndSuccessModal({
           <View style={styles.glow} />
           {phase === 'loading' ? <View style={styles.spinnerTrack}>
             <Animated.View style={[styles.spinnerArc, {transform: [{rotate: spin}]}]} />
-            <View style={styles.spinnerCore}><Text style={styles.spinnerMark}>SL</Text></View>
-          </View> : <LinearGradient colors={['#89aa82', '#547a50']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.checkCircle}>
-            <Text style={styles.check}>✓</Text>
-          </LinearGradient>}
+            <Animated.View style={[styles.spinnerCore, {transform: [{scale: pulse}]}]}>
+              <Text style={styles.spinnerMark}>SL</Text>
+            </Animated.View>
+          </View> : <Animated.View style={{transform: [{scale: pop}]}}>
+            <LinearGradient colors={['#89aa82', '#547a50']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.checkCircle}>
+              <Text style={styles.check}>✓</Text>
+            </LinearGradient>
+          </Animated.View>}
           <Text style={styles.title}>{title}</Text>
           <Text style={styles.subtitle}>{subtitle}</Text>
           {showElapsed && phase === 'loading' ? <ElapsedSeconds /> : null}
-          <View style={styles.progressTrack}><LinearGradient colors={phase === 'success' ? ['#71956d', '#9297bb'] : ['#9297bb', '#71956d', '#c1cda9']} end={{x: 1, y: 0}} start={{x: 0, y: 0}} style={[styles.progressFill, phase === 'success' && styles.progressComplete]} /></View>
+          <View style={styles.progressTrack}>
+            <Animated.View style={[styles.progressFillContainer, {width: dynamicWidth}]}>
+              <LinearGradient colors={phase === 'success' ? ['#71956d', '#9297bb'] : ['#9297bb', '#71956d', '#c1cda9']} end={{x: 1, y: 0}} start={{x: 0, y: 0}} style={StyleSheet.absoluteFill} />
+            </Animated.View>
+          </View>
           {onCancel && phase === 'loading' ? <Pressable accessibilityLabel="ยกเลิก" accessibilityRole="button" onPress={onCancel} style={({pressed}) => [styles.cancel, pressed && styles.cancelPressed]}>
             <Text style={styles.cancelText}>ยกเลิก</Text>
           </Pressable> : null}
@@ -118,6 +149,7 @@ const styles = StyleSheet.create({
   panelGradient: {alignItems: 'center', minHeight: 282, overflow: 'hidden', padding: 28},
   progressComplete: {width: '100%'},
   progressFill: {borderRadius: 4, height: '100%', width: '68%'},
+  progressFillContainer: {borderRadius: 4, height: '100%', overflow: 'hidden'},
   progressTrack: {backgroundColor: 'rgba(44,52,27,.09)', borderRadius: 4, height: 6, marginTop: 22, overflow: 'hidden', width: '100%'},
   spinnerArc: {borderColor: '#789a75', borderLeftColor: '#9297bb', borderRadius: 40, borderRightColor: 'rgba(120,154,117,.18)', borderWidth: 6, height: 78, position: 'absolute', width: 78},
   spinnerCore: {alignItems: 'center', backgroundColor: 'rgba(255,255,255,.88)', borderRadius: 25, height: 50, justifyContent: 'center', width: 50},

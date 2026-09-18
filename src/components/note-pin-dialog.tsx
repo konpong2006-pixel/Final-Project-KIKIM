@@ -1,6 +1,7 @@
 import {useState} from 'react';
-import {ActivityIndicator, Modal, Pressable, StyleSheet, Text, TextInput, View} from 'react-native';
+import {ActivityIndicator, Modal, StyleSheet, Text, TextInput, View} from 'react-native';
 
+import {Touchable} from '@/components/touchable';
 import {MaterialIcon} from '@/screens/native/user/user-ui';
 
 /**
@@ -58,7 +59,7 @@ function PinForm({
   const ready = pin.trim().length > 0 && (mode === 'unlock' || confirmPin.trim().length > 0);
 
   return <Modal animationType="fade" onRequestClose={busy ? undefined : onCancel} statusBarTranslucent transparent visible>
-    <Pressable accessibilityLabel="ปิดหน้าต่างรหัส" onPress={busy ? undefined : onCancel} style={styles.overlay}>
+    <Touchable accessibilityLabel="ปิดหน้าต่างรหัส" onPress={busy ? undefined : onCancel} style={styles.overlay}>
       <View accessibilityRole="alert" onStartShouldSetResponder={() => true} style={styles.card}>
         <View style={styles.icon}><MaterialIcon color="#557653" name={mode === 'set' ? 'lock_reset' : 'lock'} size={28} /></View>
         <Text style={styles.title}>{mode === 'set' ? 'ตั้งรหัสล็อกโน้ต' : 'ใส่รหัสเพื่อเปิดโน้ต'}</Text>
@@ -93,16 +94,16 @@ function PinForm({
         {shown ? <Text style={styles.error}>{shown}</Text> : null}
 
         <View style={styles.actions}>
-          <Pressable accessibilityLabel={mode === 'set' ? 'บันทึกรหัส' : 'ปลดล็อก'} accessibilityRole="button" disabled={busy || !ready} onPress={submit} style={[styles.confirm, (busy || !ready) && styles.disabled]}>
+          <Touchable accessibilityLabel={mode === 'set' ? 'บันทึกรหัส' : 'ปลดล็อก'} accessibilityRole="button" disabled={busy || !ready} onPress={submit} style={[styles.confirm, (busy || !ready) && styles.disabled]}>
             {busy ? <ActivityIndicator color="#fff" size="small" /> : <MaterialIcon color="#fff" name={mode === 'set' ? 'check' : 'lock_open'} size={18} />}
             <Text style={styles.confirmText}>{mode === 'set' ? 'บันทึกรหัส' : 'ปลดล็อก'}</Text>
-          </Pressable>
-          <Pressable accessibilityLabel="ยกเลิก" accessibilityRole="button" disabled={busy} onPress={onCancel} style={[styles.cancel, busy && styles.disabled]}>
+          </Touchable>
+          <Touchable accessibilityLabel="ยกเลิก" accessibilityRole="button" disabled={busy} onPress={onCancel} style={[styles.cancel, busy && styles.disabled]}>
             <Text style={styles.cancelText}>ยกเลิก</Text>
-          </Pressable>
+          </Touchable>
         </View>
       </View>
-    </Pressable>
+    </Touchable>
   </Modal>;
 }
 

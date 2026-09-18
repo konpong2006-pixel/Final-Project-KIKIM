@@ -1,8 +1,9 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import {useCallback, useEffect, useMemo, useState} from 'react';
-import {ActivityIndicator, Pressable, StyleSheet, Text, View} from 'react-native';
+import {ActivityIndicator, StyleSheet, Text, View} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
 
+import {Touchable} from '@/components/touchable';
 import {aiRecommendations, notifications} from '@/services/firestore';
 import {loadLegacyPageData} from '@/services/legacy-data';
 import {loadMonthlyBudget} from '@/services/monthly-budget';
@@ -75,16 +76,16 @@ function toneFor(kind: Notification['kind']) {
 function Header({onNavigate, meta, onMarkAllRead, markingAll}: {markingAll: boolean; meta: typeof pageMeta[Page]; onMarkAllRead: () => void; onNavigate: UserNavigate}) {
   return (
     <View style={styles.header}>
-      <Pressable onPress={() => onNavigate('smartlife_ai_assistant')} style={styles.headerButton}>
+      <Touchable onPress={() => onNavigate('smartlife_ai_assistant')} style={styles.headerButton}>
         <MaterialIcon color="#26321f" name="chevron_left" size={22} />
-      </Pressable>
+      </Touchable>
       <View style={styles.headerTitle}>
         <Text style={styles.eyebrow}>{meta.eyebrow}</Text>
         <Text style={styles.title}>{meta.title}</Text>
       </View>
-      <Pressable accessibilityLabel="อ่านทั้งหมด" disabled={markingAll} onPress={onMarkAllRead} style={styles.headerButton}>
+      <Touchable accessibilityLabel="อ่านทั้งหมด" disabled={markingAll} onPress={onMarkAllRead} style={styles.headerButton}>
         <MaterialIcon color="#26321f" name="done_all" size={20} />
-      </Pressable>
+      </Touchable>
     </View>
   );
 }
@@ -175,9 +176,9 @@ function Tabs({page, onNavigate}: {onNavigate: UserNavigate; page: Page}) {
       {tabs.map((tab) => {
         const active = tab.page === page;
         return (
-          <Pressable key={tab.page} onPress={() => onNavigate(tab.page)} style={[styles.tab, active && styles.tabActive]}>
+          <Touchable key={tab.page} onPress={() => onNavigate(tab.page)} style={[styles.tab, active && styles.tabActive]}>
             <Text style={[styles.tabText, active && styles.tabTextActive]}>{tab.label}</Text>
-          </Pressable>
+          </Touchable>
         );
       })}
     </View>
@@ -204,7 +205,7 @@ function FeedCard({item, onPress}: {item: FeedItem; onPress: () => void}) {
   const tone = toneFor(item.kind);
   const urgent = item.severity === 'urgent';
   return (
-    <Pressable onPress={onPress} style={[styles.itemCard, {borderColor: urgent ? '#f2d7d2' : '#e7ece2'}]}>
+    <Touchable onPress={onPress} style={[styles.itemCard, {borderColor: urgent ? '#f2d7d2' : '#e7ece2'}]}>
       <View style={[styles.itemIcon, {backgroundColor: tone.bg}]}>
         <MaterialIcon color={tone.fg} name={tone.icon} size={18} />
       </View>
@@ -218,7 +219,7 @@ function FeedCard({item, onPress}: {item: FeedItem; onPress: () => void}) {
           {item.unread ? <Chip tone="purple">ใหม่</Chip> : null}
         </View>
       </View>
-    </Pressable>
+    </Touchable>
   );
 }
 

@@ -1,6 +1,7 @@
 import {createElement, useMemo, useState} from 'react';
-import {Modal, Pressable, StyleSheet, Text, View} from 'react-native';
+import {Modal, StyleSheet, Text, View} from 'react-native';
 
+import {Touchable} from '@/components/touchable';
 import type {DateTimePickerProps, PlainDateTimeFieldProps} from './date-time-picker';
 
 /**
@@ -122,14 +123,14 @@ export default function DateTimePicker({maximumDate, minimumDate, mode = 'date',
         value={draft}
       />
       <View style={styles.actions}>
-        <Pressable onPress={dismiss} style={styles.secondary}><Text style={styles.secondaryText}>ยกเลิก</Text></Pressable>
-        <Pressable disabled={!draft} onPress={confirm} style={[styles.primary, !draft && styles.primaryDisabled]}><Text style={styles.primaryText}>ตกลง</Text></Pressable>
+        <Touchable onPress={dismiss} style={styles.secondary}><Text style={styles.secondaryText}>ยกเลิก</Text></Touchable>
+        <Touchable disabled={!draft} onPress={confirm} style={[styles.primary, !draft && styles.primaryDisabled]}><Text style={styles.primaryText}>ตกลง</Text></Touchable>
       </View>
     </View>,
   );
 
   return <Modal animationType="fade" onRequestClose={dismiss} transparent visible>
-    <Pressable onPress={dismiss} style={styles.backdrop}>{sheet}</Pressable>
+    <Touchable onPress={dismiss} style={styles.backdrop}>{sheet}</Touchable>
   </Modal>;
 }
 

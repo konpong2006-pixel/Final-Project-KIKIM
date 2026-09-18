@@ -70,7 +70,7 @@ function authErrorMessage(error: unknown) {
 }
 
 export default function LegacyPageRoute() {
-  const params = useLocalSearchParams<{ id?: string; page: string; section: string }>();
+  const params = useLocalSearchParams<{ autoAsk?: string; autoListen?: string; id?: string; page: string; section: string }>();
   const router = useRouter();
   const {initializing, role, signOut, user} = useAuth();
   const section = String(params.section ?? '').toLowerCase();
@@ -234,7 +234,7 @@ export default function LegacyPageRoute() {
   if (section === 'user' && user && ['smartlife_schedule_finance_sync', 'smartlife_schedule_finance_sync_week', 'smartlife_schedule_finance_sync_month'].includes(page)) return <ScheduleFinanceScreen page={page as 'smartlife_schedule_finance_sync' | 'smartlife_schedule_finance_sync_week' | 'smartlife_schedule_finance_sync_month'} uid={user.uid} onNavigate={(target) => router.push(`/user/${target}` as Href)} />;
   if (section === 'user' && user && page === 'smartlife_line_bank') return <LineImportScreen page="smartlife_line_import" uid={user.uid} onNavigate={(target) => router.push(`/user/${target}` as Href)} />;
   if (section === 'user' && user && ['smartlife_onboarding', 'smartlife_onboarding_step_2', 'smartlife_onboarding_step_3', 'smartlife_s25', 'smartlife_ui_board_earthy_theme_1_'].includes(page)) return <OnboardingScreen page={page} onNavigate={(target) => router.push(`/user/${target}` as Href)} />;
-  if (section === 'user' && user && page.includes('ai_')) return <AssistantScreen page={page} uid={user.uid} onNavigate={(target) => router.push(`/user/${target}` as Href)} />;
+  if (section === 'user' && user && page.includes('ai_')) return <AssistantScreen autoAsk={typeof params.autoAsk === 'string' ? params.autoAsk : undefined} autoListen={params.autoListen === '1'} page={page} uid={user.uid} onNavigate={(target) => router.push(`/user/${target}` as Href)} />;
   if (section === 'user' && user && page === 'smartlife_calendar') return <CalendarScreen page="smartlife_calendar_day" uid={user.uid} onNavigate={(target) => router.push(`/user/${target}` as Href)} />;
   if (section === 'user' && user && page === 'smartlife_finance') return <FinanceScreen page="smartlife_finance_day" uid={user.uid} onNavigate={(target) => router.push(`/user/${target}` as Href)} />;
   if (section === 'user' && user) return <MiscScreen page={page} onNavigate={(target) => router.push(`/user/${target}` as Href)} />;

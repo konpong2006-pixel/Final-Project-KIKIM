@@ -1,9 +1,10 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
+import {ActivityIndicator, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
 
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
+import {Touchable} from '@/components/touchable';
 import {calculateFinanceBudgetInsight} from '@/services/dynamic-insights';
 import {loadLegacyPageData} from '@/services/legacy-data';
 import {currentMonthKey, loadMonthlyBudget, parseBudgetAmount, saveMonthlyBudget, type MonthlyBudget} from '@/services/monthly-budget';
@@ -173,12 +174,12 @@ export default function MonthlyBudgetScreen({onNavigate, uid}: Props) {
 
   return <ResponsiveSafeArea style={styles.safe}><View style={styles.screen}><UserGradientBackdrop />
     <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-      <View style={styles.header}><Pressable accessibilityLabel="กลับหน้าการเงิน" onPress={() => onNavigate('smartlife_finance_month')} style={styles.back}><MaterialIcon color={C.ink} name="chevron_left" size={27} /></Pressable><View style={styles.headerCopy}><Text style={styles.eyebrow}>แผนการเงินของฉัน</Text><Text style={styles.title}>กำหนดงบรายเดือน</Text></View><View style={styles.headerIcon}><MaterialIcon color="#fff" name="savings" size={20} /></View></View>
+      <View style={styles.header}><Touchable accessibilityLabel="กลับหน้าการเงิน" onPress={() => onNavigate('smartlife_finance_month')} style={styles.back}><MaterialIcon color={C.ink} name="chevron_left" size={27} /></Touchable><View style={styles.headerCopy}><Text style={styles.eyebrow}>แผนการเงินของฉัน</Text><Text style={styles.title}>กำหนดงบรายเดือน</Text></View><View style={styles.headerIcon}><MaterialIcon color="#fff" name="savings" size={20} /></View></View>
       {loading ? <View style={styles.loading}><ActivityIndicator color={C.sage} size="large" /><Text style={styles.loadingText}>กำลังเตรียมข้อมูลการเงิน</Text></View> : <>
         {dataError ? <View style={styles.errorBanner}>
           <MaterialIcon color={C.red} name="cloud_off" size={19} />
           <View style={{flex: 1}}><Text style={styles.errorTitle}>โหลดรายการเดือนนี้ไม่สำเร็จ</Text><Text style={styles.errorText}>ยอดรายรับและยอดใช้จ่ายจึงยังไม่แสดง ตรวจอินเทอร์เน็ตแล้วกดโหลดใหม่ ระหว่างนี้ยังกำหนดงบเองและบันทึกได้ตามปกติ</Text></View>
-          <Pressable accessibilityLabel="โหลดข้อมูลใหม่" accessibilityRole="button" onPress={() => { load().catch(() => setLoading(false)); }} style={styles.retryButton}><Text style={styles.retryText}>โหลดใหม่</Text></Pressable>
+          <Touchable accessibilityLabel="โหลดข้อมูลใหม่" accessibilityRole="button" onPress={() => { load().catch(() => setLoading(false)); }} style={styles.retryButton}><Text style={styles.retryText}>โหลดใหม่</Text></Touchable>
         </View> : null}
 
         {saved && saved.synced === false ? <View style={styles.noticeBanner}>
@@ -230,10 +231,10 @@ export default function MonthlyBudgetScreen({onNavigate, uid}: Props) {
               be a second press on the already-selected "AI แนะนำ" tab, which
               looks like a no-op and left people believing the save had failed. */}
           {!dataError && recommendation > 0 ? <>
-            <Pressable accessibilityRole="button" disabled={recommendationApplied} onPress={applyRecommendation} style={[styles.applyButton, recommendationApplied && styles.applyButtonDone]}>
+            <Touchable accessibilityRole="button" disabled={recommendationApplied} onPress={applyRecommendation} style={[styles.applyButton, recommendationApplied && styles.applyButtonDone]}>
               <MaterialIcon color={recommendationApplied ? C.sage : '#fff'} name={recommendationApplied ? 'check_circle' : 'auto_awesome'} size={18} />
               <Text style={[styles.applyText, recommendationApplied && styles.applyTextDone]}>{recommendationApplied ? 'ใช้ลิมิตนี้อยู่ • กดบันทึกเพื่อยืนยัน' : `ใช้ลิมิตนี้ ${money(recommendation)}`}</Text>
-            </Pressable>
+            </Touchable>
             <Text style={styles.inputHint}>{recommendationApplied
               ? 'กด บันทึกงบเดือนนี้ ด้านล่างเพื่อให้ลิมิตนี้มีผลกับหน้าการเงินและผู้ช่วย AI'
               : `ตอนนี้ใช้ลิมิต ${selectedAmount > 0 ? money(selectedAmount) : 'ยังไม่ได้ตั้ง'} อยู่ การดูคำแนะนำนี้ยังไม่เปลี่ยนลิมิตจนกว่าจะกดปุ่มด้านบนแล้วบันทึก`}</Text>
@@ -244,14 +245,14 @@ export default function MonthlyBudgetScreen({onNavigate, uid}: Props) {
         {successMessage ? <View style={styles.formSuccessBox}><MaterialIcon color={C.sage} name="check_circle" size={17} /><Text style={styles.formSuccessText}>{successMessage}</Text></View> : null}
         {unsavedChange && !successMessage ? <Text style={styles.unsavedHint}>ยังไม่ได้บันทึก — ลิมิตที่ใช้อยู่จริงคือ {money(saved?.amount ?? 0)}</Text> : null}
 
-        <Pressable accessibilityRole="button" disabled={saving} onPress={save} style={[styles.saveShell, saving && styles.disabled]}><LinearGradient colors={['#2b3916', '#1e2b0f']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.save}>{saving ? <ActivityIndicator color="#fff" size="small" /> : <MaterialIcon color="#fff" name="check" size={19} />}<Text style={styles.saveText}>{saving ? 'กำลังบันทึก...' : 'บันทึกงบเดือนนี้'}</Text></LinearGradient></Pressable>
+        <Touchable accessibilityRole="button" disabled={saving} onPress={save} style={[styles.saveShell, saving && styles.disabled]}><LinearGradient colors={['#2b3916', '#1e2b0f']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.save}>{saving ? <ActivityIndicator color="#fff" size="small" /> : <MaterialIcon color="#fff" name="check" size={19} />}<Text style={styles.saveText}>{saving ? 'กำลังบันทึก...' : 'บันทึกงบเดือนนี้'}</Text></LinearGradient></Touchable>
       </>}
     </ScrollView><UserTabBar active="smartlife_finance_day" onNavigate={onNavigate} />
   </View></ResponsiveSafeArea>;
 }
 
 function HeroStat({label, value}: {label: string; value: string}) { return <View style={styles.heroStat}><Text style={styles.heroStatLabel}>{label}</Text><Text style={styles.heroStatValue}>{value}</Text></View>; }
-function ModeButton({active, icon, label, onPress}: {active: boolean; icon: string; label: string; onPress: () => void}) { return <Pressable accessibilityRole="button" onPress={onPress} style={[styles.modeButton, active && styles.modeButtonActive]}><MaterialIcon color={active ? '#fff' : C.muted} name={icon} size={17} /><Text style={[styles.modeText, active && styles.modeTextActive]}>{label}</Text></Pressable>; }
+function ModeButton({active, icon, label, onPress}: {active: boolean; icon: string; label: string; onPress: () => void}) { return <Touchable accessibilityRole="button" onPress={onPress} style={[styles.modeButton, active && styles.modeButtonActive]}><MaterialIcon color={active ? '#fff' : C.muted} name={icon} size={17} /><Text style={[styles.modeText, active && styles.modeTextActive]}>{label}</Text></Touchable>; }
 function BudgetSplit({amount, color, label, percent}: {amount: number; color: string; label: string; percent: number}) { return <View style={styles.split}><View style={styles.splitTop}><Text style={styles.splitLabel}>{label}</Text><Text style={styles.splitAmount}>{money(amount)}</Text></View><View style={styles.splitTrack}><View style={[styles.splitFill, {backgroundColor: color, width: `${percent}%`}]} /></View></View>; }
 
 const shadow = {shadowColor: '#29351f', shadowOffset: {height: 8, width: 0}, shadowOpacity: .07, shadowRadius: 18};

@@ -1,7 +1,8 @@
 import {useMemo, useState} from 'react';
-import {type GestureResponderEvent, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {type GestureResponderEvent, ScrollView, StyleSheet, Text, View} from 'react-native';
 
 import {aggregateSpending, type SpendingCategoryPoint, type SpendingPeriod, type SpendingTransactionInput} from '@/services/spending-analytics';
+import {Touchable} from '@/components/touchable';
 import {MaterialIcon} from '@/screens/native/user/user-ui';
 
 const colors = ['#628762', '#707cae', '#c77b70', '#d3a957', '#77999c', '#9b78a3', '#8d9274', '#bd8760'];
@@ -63,7 +64,7 @@ export function SpendingCharts({period, referenceDate, transactions}: Props) {
                 month: 'numeric',
                 timeZone: 'Asia/Bangkok',
               }).format(point.date);
-              return <Pressable
+              return <Touchable
                 accessibilityLabel={`${point.label} ${money(point.amount)}`}
                 key={point.key}
                 onHoverIn={() => setSelectedDayKey(point.key)}
@@ -75,7 +76,7 @@ export function SpendingCharts({period, referenceDate, transactions}: Props) {
                 </View>
                 <Text style={[styles.axisLabel, selected && styles.axisLabelSelected]}>{point.shortLabel}</Text>
                 <Text style={[styles.axisDateLabel, selected && styles.axisLabelSelected]}>{numericDate}</Text>
-              </Pressable>;
+              </Touchable>;
             })}
           </ScrollView>
         </View>
@@ -121,11 +122,11 @@ export function SpendingDonut({byCategory, compact = false, total}: {byCategory:
   if (!total || !byCategory.length) return <View style={styles.donutEmpty}><MaterialIcon color="#7b8f79" name="donut_large" size={28} /><View style={{flex: 1}}><Text style={styles.emptyTitle}>ยังไม่มีรายจ่ายสัปดาห์นี้</Text><Text style={styles.emptyTextInline}>เพิ่มรายจ่ายแล้วสัดส่วนแต่ละหมวดจะแสดงที่นี่</Text></View></View>;
 
   return <View style={styles.donutLayout}>
-    <Pressable accessibilityLabel={`แผนภาพรายจ่าย รวม ${money(total)}`} onPress={selectSlice} style={[styles.donut, compact && styles.donutCompact]}>
+    <Touchable accessibilityLabel={`แผนภาพรายจ่าย รวม ${money(total)}`} onPress={selectSlice} style={[styles.donut, compact && styles.donutCompact]}>
       {spokes.map((spoke, index) => <View key={index} pointerEvents="none" style={[styles.spokeFrame, compact && styles.spokeFrameCompact, {transform: [{rotate: `${index * 360 / SPOKE_COUNT}deg`}]}]}><View style={[styles.spoke, compact && styles.spokeCompact, {backgroundColor: spoke.color}]} /></View>)}
       <View pointerEvents="none" style={[styles.donutCenter, compact && styles.donutCenterCompact]}><Text numberOfLines={1} style={styles.donutCenterLabel}>{selected?.category}</Text><Text adjustsFontSizeToFit minimumFontScale={.75} numberOfLines={1} style={styles.donutCenterAmount}>{money(selected?.amount ?? 0)}</Text><Text style={styles.donutCenterPercent}>{Math.round(selected?.percentage ?? 0)}%</Text></View>
-    </Pressable>
-    <View style={styles.legend}>{byCategory.map((point, index) => <Pressable accessibilityLabel={`${point.category} ${money(point.amount)}`} key={point.category} onHoverIn={() => setSelectedCategory(point.category)} onPress={() => setSelectedCategory(point.category)} style={[styles.legendRow, point.category === selected?.category && styles.legendRowSelected]}><View style={[styles.categoryDot, {backgroundColor: colors[index % colors.length]}]} /><View style={styles.legendCopy}><Text numberOfLines={1} style={styles.categoryName}>{point.category}</Text><Text style={styles.legendPercent}>{Math.round(point.percentage)}%</Text></View><Text style={styles.categoryAmount}>{money(point.amount)}</Text></Pressable>)}</View>
+    </Touchable>
+    <View style={styles.legend}>{byCategory.map((point, index) => <Touchable accessibilityLabel={`${point.category} ${money(point.amount)}`} key={point.category} onHoverIn={() => setSelectedCategory(point.category)} onPress={() => setSelectedCategory(point.category)} style={[styles.legendRow, point.category === selected?.category && styles.legendRowSelected]}><View style={[styles.categoryDot, {backgroundColor: colors[index % colors.length]}]} /><View style={styles.legendCopy}><Text numberOfLines={1} style={styles.categoryName}>{point.category}</Text><Text style={styles.legendPercent}>{Math.round(point.percentage)}%</Text></View><Text style={styles.categoryAmount}>{money(point.amount)}</Text></Touchable>)}</View>
   </View>;
 }
 

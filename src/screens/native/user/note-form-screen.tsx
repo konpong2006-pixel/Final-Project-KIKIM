@@ -1,7 +1,8 @@
 import {useEffect, useMemo, useState} from 'react';
-import {ActivityIndicator, Platform, Pressable, StyleSheet, Text, TextInput, View} from 'react-native';
+import {ActivityIndicator, Platform, StyleSheet, Text, TextInput, View} from 'react-native';
 import {LinearGradient} from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
+import {Touchable} from '@/components/touchable';
 
 import ConfirmDialog from '@/components/confirm-dialog';
 import NotePickerDialog from '@/components/note-picker-dialog';
@@ -247,8 +248,8 @@ export default function NoteFormScreen({noteId, uid, onNavigate}: {noteId?: stri
       <View style={styles.loadingState}>
         <MaterialIcon color="#628660" name="lock" size={34} />
         <Text style={styles.loadingText}>โน้ตนี้ถูกล็อกไว้</Text>
-        <Pressable accessibilityLabel="ใส่รหัสเพื่อเปิด" onPress={() => setPinMode('unlock')} style={styles.backToNotes}><Text style={styles.backToNotesText}>ใส่รหัสเพื่อเปิด</Text></Pressable>
-        <Pressable accessibilityLabel="กลับไปหน้าโน้ต" onPress={() => onNavigate('smartlife_planner_notes')}><Text style={styles.loadingText}>กลับไปหน้าโน้ต</Text></Pressable>
+        <Touchable accessibilityLabel="ใส่รหัสเพื่อเปิด" onPress={() => setPinMode('unlock')} style={styles.backToNotes}><Text style={styles.backToNotesText}>ใส่รหัสเพื่อเปิด</Text></Touchable>
+        <Touchable accessibilityLabel="กลับไปหน้าโน้ต" onPress={() => onNavigate('smartlife_planner_notes')}><Text style={styles.loadingText}>กลับไปหน้าโน้ต</Text></Touchable>
       </View>
       <NotePinDialog busy={pinBusy} error={pinError} mode="unlock" onCancel={() => setPinMode(null)} onSubmit={(pin) => void submitPin(pin)} visible={pinMode === 'unlock'} />
     </UserShell>;
@@ -265,7 +266,7 @@ export default function NoteFormScreen({noteId, uid, onNavigate}: {noteId?: stri
       <View style={styles.loadingState}>
         <MaterialIcon color="#8d968b" name="search_off" size={34} />
         <Text style={styles.loadingText}>ไม่พบโน้ตนี้ อาจถูกลบไปแล้ว</Text>
-        <Pressable onPress={() => onNavigate('smartlife_planner_notes')} style={styles.backToNotes}><Text style={styles.backToNotesText}>กลับไปหน้าโน้ต</Text></Pressable>
+        <Touchable onPress={() => onNavigate('smartlife_planner_notes')} style={styles.backToNotes}><Text style={styles.backToNotesText}>กลับไปหน้าโน้ต</Text></Touchable>
       </View>
     </UserShell>;
   }
@@ -273,20 +274,20 @@ export default function NoteFormScreen({noteId, uid, onNavigate}: {noteId?: stri
   return <UserShell active="smartlife_notes" onNavigate={onNavigate}>
     <View style={styles.page}>
       {/* Refactored UI: note creation supports a manual form and a review-before-save AI suggestion view. */}
-      <View style={styles.header}><Pressable accessibilityLabel="ปิด" onPress={() => onNavigate('smartlife_planner_notes')} style={styles.headerButton}><MaterialIcon color="#364033" name="close" size={24} /></Pressable><View style={styles.headerCopy}><Text style={styles.eyebrow}>SMARTLIFE NOTES</Text><Text style={styles.title}>{editing ? 'แก้ไขโน้ต' : mode === 'ai' ? 'AI แนะนำโน้ต' : 'โน้ตใหม่'}</Text></View>
-      {editing ? <Pressable accessibilityLabel="ลบโน้ต" onPress={() => setDeleteOpen(true)} style={styles.headerButton}><MaterialIcon color="#a95758" name="delete" size={22} /></Pressable> : null}<Pressable accessibilityLabel="บันทึกโน้ต" disabled={saving || !title.trim()} onPress={save} style={[styles.noteDone, (saving || !title.trim()) && styles.disabled]}>{saving ? <ActivityIndicator color="#fff" size="small" /> : <MaterialIcon color="#fff" name="check" size={23} />}</Pressable></View>
-      {editing ? null : <View style={styles.noteModeToggle}><Pressable onPress={() => setMode('manual')} style={[styles.mode, mode === 'manual' && styles.noteModeActive]}><MaterialIcon color={mode === 'manual' ? '#fff' : '#758274'} name="edit_note" size={17} /><Text style={[styles.modeText, mode === 'manual' && styles.modeTextActive]}>เขียนโน้ต</Text></Pressable><Pressable onPress={() => setMode('ai')} style={[styles.mode, mode === 'ai' && styles.noteModeActive]}><MaterialIcon color={mode === 'ai' ? '#fff' : '#758274'} name="auto_awesome" size={17} /><Text style={[styles.modeText, mode === 'ai' && styles.modeTextActive]}>AI แนะนำ</Text></Pressable></View>}
+      <View style={styles.header}><Touchable accessibilityLabel="ปิด" onPress={() => onNavigate('smartlife_planner_notes')} style={styles.headerButton}><MaterialIcon color="#364033" name="close" size={24} /></Touchable><View style={styles.headerCopy}><Text style={styles.eyebrow}>SMARTLIFE NOTES</Text><Text style={styles.title}>{editing ? 'แก้ไขโน้ต' : mode === 'ai' ? 'AI แนะนำโน้ต' : 'โน้ตใหม่'}</Text></View>
+      {editing ? <Touchable accessibilityLabel="ลบโน้ต" onPress={() => setDeleteOpen(true)} style={styles.headerButton}><MaterialIcon color="#a95758" name="delete" size={22} /></Touchable> : null}<Touchable accessibilityLabel="บันทึกโน้ต" disabled={saving || !title.trim()} onPress={save} style={[styles.noteDone, (saving || !title.trim()) && styles.disabled]}>{saving ? <ActivityIndicator color="#fff" size="small" /> : <MaterialIcon color="#fff" name="check" size={23} />}</Touchable></View>
+      {editing ? null : <View style={styles.noteModeToggle}><Touchable onPress={() => setMode('manual')} style={[styles.mode, mode === 'manual' && styles.noteModeActive]}><MaterialIcon color={mode === 'manual' ? '#fff' : '#758274'} name="edit_note" size={17} /><Text style={[styles.modeText, mode === 'manual' && styles.modeTextActive]}>เขียนโน้ต</Text></Touchable><Touchable onPress={() => setMode('ai')} style={[styles.mode, mode === 'ai' && styles.noteModeActive]}><MaterialIcon color={mode === 'ai' ? '#fff' : '#758274'} name="auto_awesome" size={17} /><Text style={[styles.modeText, mode === 'ai' && styles.modeTextActive]}>AI แนะนำ</Text></Touchable></View>}
       {mode === 'ai' ? <AiSuggestionList loading={loadingAiSuggestions} onUse={applySuggestion} suggestions={aiSuggestions} /> : <>
-        {editing ? null : <View style={styles.aiTeaser}><LinearGradient colors={['#c88d91', '#d7a8aa']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={StyleSheet.absoluteFill} /><Text style={styles.aiTeaserTitle}>✦ &nbsp;AI แนะนำโน้ตได้</Text><Text style={styles.aiTeaserText}>ดูจากตารางเรียน งาน และโน้ตเดิมใน Firebase เพื่อช่วยเรียบโน้ตได้เร็วขึ้น</Text><View style={styles.teaserRows}>{loadingAiSuggestions ? <ActivityIndicator color="#fff" /> : aiSuggestions.slice(0, 2).map((suggestion) => <Pressable key={suggestion.title} onPress={() => applySuggestion(suggestion)} style={styles.teaserRow}><View style={styles.teaserIcon}><MaterialIcon color="#fff" name="description" size={16} /></View><View style={{flex: 1}}><Text style={styles.teaserTitle}>{suggestion.title}</Text><Text style={styles.teaserSub}>{suggestion.detail}</Text></View><MaterialIcon color="#fff" name="chevron_right" size={18} /></Pressable>)}</View></View>}
+        {editing ? null : <View style={styles.aiTeaser}><LinearGradient colors={['#c88d91', '#d7a8aa']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={StyleSheet.absoluteFill} /><Text style={styles.aiTeaserTitle}>✦ &nbsp;AI แนะนำโน้ตได้</Text><Text style={styles.aiTeaserText}>ดูจากตารางเรียน งาน และโน้ตเดิมใน Firebase เพื่อช่วยเรียบโน้ตได้เร็วขึ้น</Text><View style={styles.teaserRows}>{loadingAiSuggestions ? <ActivityIndicator color="#fff" /> : aiSuggestions.slice(0, 2).map((suggestion) => <Touchable key={suggestion.title} onPress={() => applySuggestion(suggestion)} style={styles.teaserRow}><View style={styles.teaserIcon}><MaterialIcon color="#fff" name="description" size={16} /></View><View style={{flex: 1}}><Text style={styles.teaserTitle}>{suggestion.title}</Text><Text style={styles.teaserSub}>{suggestion.detail}</Text></View><MaterialIcon color="#fff" name="chevron_right" size={18} /></Touchable>)}</View></View>}
         <View style={styles.formCard}><Text style={styles.label}>ชื่อโน้ต</Text><TextInput onChangeText={setTitle} placeholder="เช่น สรุปบทที่ 4" placeholderTextColor="#8d968b" style={styles.input} value={title} />
-          <Text style={styles.label}>หมวดหมู่</Text><View style={styles.categoryRow}>{categories.map((item) => <Pressable key={item.value} onPress={() => setCategory(item.value)} style={[styles.category, category === item.value && {backgroundColor: color}]}><Text style={[styles.categoryText, category === item.value && styles.categoryTextActive]}>{item.label}</Text></Pressable>)}</View>
-          <Text style={styles.label}>ความสำคัญ</Text><View style={styles.priorityRow}>{priorities.map((item) => <Pressable accessibilityLabel={`เลือกความสำคัญ ${item.label}`} accessibilityRole="button" accessibilityState={{selected: priority === item.value}} key={item.value} onPress={() => setPriority(item.value)} style={[styles.notePriority, priority === item.value && styles.notePriorityActive]}><MaterialIcon color={priority === item.value ? '#fff' : '#bd8185'} name={item.icon} size={16} /><Text style={[styles.notePriorityText, priority === item.value && styles.priorityTextActive]}>{item.label}</Text></Pressable>)}</View>
+          <Text style={styles.label}>หมวดหมู่</Text><View style={styles.categoryRow}>{categories.map((item) => <Touchable key={item.value} onPress={() => setCategory(item.value)} style={[styles.category, category === item.value && {backgroundColor: color}]}><Text style={[styles.categoryText, category === item.value && styles.categoryTextActive]}>{item.label}</Text></Touchable>)}</View>
+          <Text style={styles.label}>ความสำคัญ</Text><View style={styles.priorityRow}>{priorities.map((item) => <Touchable accessibilityLabel={`เลือกความสำคัญ ${item.label}`} accessibilityRole="button" accessibilityState={{selected: priority === item.value}} key={item.value} onPress={() => setPriority(item.value)} style={[styles.notePriority, priority === item.value && styles.notePriorityActive]}><MaterialIcon color={priority === item.value ? '#fff' : '#bd8185'} name={item.icon} size={16} /><Text style={[styles.notePriorityText, priority === item.value && styles.priorityTextActive]}>{item.label}</Text></Touchable>)}</View>
           <View style={styles.bodyHead}>
             <Text style={styles.label}>รายละเอียด</Text>
-            <Pressable accessibilityLabel="สแกนเอกสารเข้าโน้ต" disabled={scanning} onPress={() => void scanIntoNote()} style={[styles.scanButton, scanning && styles.disabled]}>
+            <Touchable accessibilityLabel="สแกนเอกสารเข้าโน้ต" disabled={scanning} onPress={() => void scanIntoNote()} style={[styles.scanButton, scanning && styles.disabled]}>
               {scanning ? <ActivityIndicator color="#5f875f" size="small" /> : <MaterialIcon color="#5f875f" name="document_scanner" size={16} />}
               <Text style={styles.scanButtonText}>{scanning ? 'กำลังสแกน...' : 'สแกนเข้าโน้ต'}</Text>
-            </Pressable>
+            </Touchable>
           </View>
           <TextInput multiline onChangeText={setContent} placeholder={'หัวข้อที่ต้องสรุป:\n- Recursion คืออะไร\n- Stack ทำงานอย่างไร\n- ตัวอย่างโจทย์ที่ควรฝึกก่อนควิซ'} placeholderTextColor="#748074" style={styles.content} textAlignVertical="top" value={content} />
 
@@ -304,13 +305,13 @@ export default function NoteFormScreen({noteId, uid, onNavigate}: {noteId?: stri
 
           <Text style={styles.label}>โฟลเดอร์</Text>
           <View style={styles.categoryRow}>
-            <Pressable accessibilityLabel="ไม่ใส่โฟลเดอร์" onPress={() => setFolderId('')} style={[styles.category, !folderId && {backgroundColor: color}]}>
+            <Touchable accessibilityLabel="ไม่ใส่โฟลเดอร์" onPress={() => setFolderId('')} style={[styles.category, !folderId && {backgroundColor: color}]}>
               <Text style={[styles.categoryText, !folderId && styles.categoryTextActive]}>ไม่ระบุ</Text>
-            </Pressable>
+            </Touchable>
             {folders.map((folder) => (
-              <Pressable accessibilityLabel={`โฟลเดอร์ ${folder.name}`} key={folder.id} onPress={() => setFolderId(folder.id)} style={[styles.category, folderId === folder.id && {backgroundColor: color}]}>
+              <Touchable accessibilityLabel={`โฟลเดอร์ ${folder.name}`} key={folder.id} onPress={() => setFolderId(folder.id)} style={[styles.category, folderId === folder.id && {backgroundColor: color}]}>
                 <Text style={[styles.categoryText, folderId === folder.id && styles.categoryTextActive]}>{folder.name}</Text>
-              </Pressable>
+              </Touchable>
             ))}
           </View>
 
@@ -325,13 +326,13 @@ export default function NoteFormScreen({noteId, uid, onNavigate}: {noteId?: stri
               style={styles.tagInput}
               value={tagDraft}
             />
-            <Pressable accessibilityLabel="เพิ่มแท็ก" onPress={addTag} style={styles.tagAdd}><MaterialIcon color="#fff" name="add" size={18} /></Pressable>
+            <Touchable accessibilityLabel="เพิ่มแท็ก" onPress={addTag} style={styles.tagAdd}><MaterialIcon color="#fff" name="add" size={18} /></Touchable>
           </View>
           {tags.length ? <View style={styles.categoryRow}>{tags.map((tag) => (
-            <Pressable accessibilityLabel={`ลบแท็ก ${tag}`} key={tag} onPress={() => setTags(tags.filter((item) => item !== tag))} style={styles.tagChip}>
+            <Touchable accessibilityLabel={`ลบแท็ก ${tag}`} key={tag} onPress={() => setTags(tags.filter((item) => item !== tag))} style={styles.tagChip}>
               <Text style={styles.tagChipText}>#{tag}</Text>
               <MaterialIcon color="#5f795d" name="close" size={13} />
-            </Pressable>
+            </Touchable>
           ))}</View> : null}
 
           <Text style={styles.label}>เชื่อมกับโน้ตอื่น</Text>
@@ -339,30 +340,30 @@ export default function NoteFormScreen({noteId, uid, onNavigate}: {noteId?: stri
             const linked = allNotes.find((item) => item.id === id);
             return <View key={id} style={styles.linkRow}>
               <MaterialIcon color="#628660" name="link" size={16} />
-              <Pressable accessibilityLabel={`เปิดโน้ตที่เชื่อม ${linked ? String(linked.title ?? '') : id}`} onPress={() => onNavigate(`smartlife_add_note?id=${encodeURIComponent(id)}`)} style={{flex: 1}}>
+              <Touchable accessibilityLabel={`เปิดโน้ตที่เชื่อม ${linked ? String(linked.title ?? '') : id}`} onPress={() => onNavigate(`smartlife_add_note?id=${encodeURIComponent(id)}`)} style={{flex: 1}}>
                 <Text numberOfLines={1} style={styles.linkText}>{linked ? String(linked.title ?? '') : 'โน้ตที่ถูกลบไปแล้ว'}</Text>
-              </Pressable>
-              <Pressable accessibilityLabel={`ยกเลิกการเชื่อม ${linked ? String(linked.title ?? '') : id}`} onPress={() => setLinkedNoteIds(linkedNoteIds.filter((item) => item !== id))}>
+              </Touchable>
+              <Touchable accessibilityLabel={`ยกเลิกการเชื่อม ${linked ? String(linked.title ?? '') : id}`} onPress={() => setLinkedNoteIds(linkedNoteIds.filter((item) => item !== id))}>
                 <MaterialIcon color="#b58184" name="link_off" size={16} />
-              </Pressable>
+              </Touchable>
             </View>;
           }) : null}
-          <Pressable accessibilityLabel="เลือกโน้ตที่จะเชื่อม" onPress={() => setPickerOpen(true)} style={styles.linkAdd}>
+          <Touchable accessibilityLabel="เลือกโน้ตที่จะเชื่อม" onPress={() => setPickerOpen(true)} style={styles.linkAdd}>
             <MaterialIcon color="#5f875f" name="add_link" size={17} />
             <Text style={styles.linkAddText}>เชื่อมโน้ตอื่น</Text>
-          </Pressable>
+          </Touchable>
 
           <View style={styles.toggleRow}>
-            <Pressable accessibilityLabel="ปักหมุดโน้ต" accessibilityRole="switch" accessibilityState={{checked: pinned}} onPress={() => setPinned(!pinned)} style={[styles.toggle, pinned && styles.toggleActive]}>
+            <Touchable accessibilityLabel="ปักหมุดโน้ต" accessibilityRole="switch" accessibilityState={{checked: pinned}} onPress={() => setPinned(!pinned)} style={[styles.toggle, pinned && styles.toggleActive]}>
               <MaterialIcon color={pinned ? '#fff' : '#758274'} name="push_pin" size={16} />
               <Text style={[styles.toggleText, pinned && styles.toggleTextActive]}>ปักหมุด</Text>
-            </Pressable>
-            <Pressable accessibilityLabel="ล็อกโน้ตด้วยรหัส" accessibilityRole="switch" accessibilityState={{checked: locked}} onPress={() => void toggleLock()} style={[styles.toggle, locked && styles.toggleActive]}>
+            </Touchable>
+            <Touchable accessibilityLabel="ล็อกโน้ตด้วยรหัส" accessibilityRole="switch" accessibilityState={{checked: locked}} onPress={() => void toggleLock()} style={[styles.toggle, locked && styles.toggleActive]}>
               <MaterialIcon color={locked ? '#fff' : '#758274'} name={locked ? 'lock' : 'lock_open'} size={16} />
               <Text style={[styles.toggleText, locked && styles.toggleTextActive]}>{locked ? 'ล็อกอยู่' : 'ล็อกโน้ต'}</Text>
-            </Pressable>
+            </Touchable>
           </View>
-        </View><Pressable disabled={saving || !title.trim()} onPress={save} style={[styles.saveShell, (saving || !title.trim()) && styles.disabled]}><LinearGradient colors={['#c48a8e', '#b97b7f']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.save}>{saving ? <ActivityIndicator color="#fff" /> : <MaterialIcon color="#fff" name="check" size={19} />}<Text style={styles.saveText}>{saving ? 'กำลังบันทึก...' : 'บันทึกโน้ต'}</Text></LinearGradient></Pressable>
+        </View><Touchable disabled={saving || !title.trim()} onPress={save} style={[styles.saveShell, (saving || !title.trim()) && styles.disabled]}><LinearGradient colors={['#c48a8e', '#b97b7f']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.save}>{saving ? <ActivityIndicator color="#fff" /> : <MaterialIcon color="#fff" name="check" size={19} />}<Text style={styles.saveText}>{saving ? 'กำลังบันทึก...' : 'บันทึกโน้ต'}</Text></LinearGradient></Touchable>
       </>}
       <NotePickerDialog
         excludeId={noteId}
@@ -411,7 +412,7 @@ function AiSuggestionList({loading, onUse, suggestions}: {loading: boolean; onUs
       <View style={styles.suggestionHead}><View style={styles.noteSuggestionIcon}><MaterialIcon color="#c48a8e" name="description" size={18} /></View><View style={{flex: 1}}><Text style={styles.suggestionTitle}>{suggestion.title}</Text><Text style={styles.suggestionSub}>{suggestion.detail}</Text></View><View style={styles.noteScoreBadge}><Text style={styles.noteScoreBadgeText}>{recommendationLevel(suggestion.score)}</Text></View></View>
       <Text style={styles.suggestionContent}>{suggestion.content}</Text>
       <View style={styles.reasonRow}>{suggestion.reasons.slice(0, 3).map((reason) => <View key={reason} style={styles.noteReasonChip}><Text style={styles.noteReasonChipText}>{reason}</Text></View>)}</View>
-      <Pressable onPress={() => onUse(suggestion)} style={styles.noteUseButton}><MaterialIcon color="#fff" name="check" size={17} /><Text style={styles.useButtonText}>ใช้คำแนะนำนี้</Text></Pressable>
+      <Touchable onPress={() => onUse(suggestion)} style={styles.noteUseButton}><MaterialIcon color="#fff" name="check" size={17} /><Text style={styles.useButtonText}>ใช้คำแนะนำนี้</Text></Touchable>
     </View>)}
   </View>;
 }

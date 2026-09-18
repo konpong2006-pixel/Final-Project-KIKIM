@@ -246,8 +246,17 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
 
       {!data ? <View style={styles.loading}><ActivityIndicator color={colors.sage} size="large" /><Text style={styles.muted}>กำลังโหลดข้อมูลจาก Firebase</Text></View> : <>
         <SoftPress onLayout={aiCardOnLayout} onPress={() => onNavigate('smartlife_ai_assistant')} ref={aiCardRef} style={styles.aiCard}><LinearGradient colors={['#769674', '#8fa69a', '#a8b7aa']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={StyleSheet.absoluteFill} />
-          <View style={styles.aiTop}><View style={styles.aiHeading}><MaterialIcon color="#fff" name="smart_toy" size={21} /><Text style={styles.aiTitle}>AI Assistant</Text></View><View style={styles.mic}><MaterialIcon name="mic" size={21} /></View></View>
-          <View style={styles.prompt}><Text numberOfLines={1} style={styles.promptText}>“วันนี้ฉันมีเรียนกี่โมง?”</Text><MaterialIcon color="#fff" name="chevron_right" size={22} /></View>
+          <View style={styles.aiTop}><View style={styles.aiHeading}><MaterialIcon color="#fff" name="smart_toy" size={21} /><Text style={styles.aiTitle}>AI Assistant</Text></View>
+            {/* Its own tap target: opens the assistant and starts listening right
+              away, instead of landing on a blank chat the user then has to tap
+              the mic in again to actually use. */}
+            <Pressable accessibilityLabel="พูดกับ AI ผู้ช่วยด้วยเสียง" onPress={() => onNavigate('smartlife_ai_assistant?autoListen=1')} style={({pressed}) => [styles.mic, pressed && styles.pressed]}>
+              <MaterialIcon name="mic" size={21} />
+            </Pressable>
+          </View>
+          <Pressable onPress={() => onNavigate(`smartlife_ai_assistant?autoAsk=${encodeURIComponent('วันนี้ฉันมีเรียนกี่โมง?')}`)} style={({pressed}) => [styles.prompt, pressed && styles.pressed]}>
+            <Text numberOfLines={1} style={styles.promptText}>“วันนี้ฉันมีเรียนกี่โมง?”</Text><MaterialIcon color="#fff" name="chevron_right" size={22} />
+          </Pressable>
           <View style={styles.quickAnswer}><Text style={styles.quickQuestion}>“เหลือเงินกินข้าวเท่าไหร่?”</Text><View style={styles.quickAnswerRight}><Text style={styles.quickValue}>{allowanceAnswer}</Text><MaterialIcon color={colors.pine} name="chevron_right" size={16} /></View></View>
         </SoftPress>
         <View style={{marginBottom: 15}}><AiActivityRecommendationCard onNavigate={onNavigate} uid={uid} /></View>

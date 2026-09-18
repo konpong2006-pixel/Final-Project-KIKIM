@@ -1,5 +1,6 @@
-import {ActivityIndicator, Modal, Pressable, StyleSheet, Text, View} from 'react-native';
+import {ActivityIndicator, Modal, StyleSheet, Text, View} from 'react-native';
 
+import {Touchable} from '@/components/touchable';
 import {MaterialIcon} from '@/screens/native/user/user-ui';
 
 /**
@@ -51,7 +52,7 @@ export default function ConfirmDialog({
   return <Modal animationType="fade" onRequestClose={busy ? undefined : onCancel} statusBarTranslucent transparent visible={visible}>
     {/* Tapping the backdrop cancels; `onStartShouldSetResponder` keeps a tap
         inside the card from bubbling out to it. */}
-    <Pressable accessibilityLabel="ปิดหน้าต่างยืนยัน" onPress={busy ? undefined : onCancel} style={styles.overlay}>
+    <Touchable accessibilityLabel="ปิดหน้าต่างยืนยัน" onPress={busy ? undefined : onCancel} style={styles.overlay}>
       <View accessibilityRole="alert" onStartShouldSetResponder={() => true} style={styles.card}>
         <View style={[styles.icon, danger ? styles.iconDanger : styles.iconNeutral]}>
           <MaterialIcon color={danger ? '#b85f60' : '#557653'} name={icon} size={30} />
@@ -59,20 +60,20 @@ export default function ConfirmDialog({
         <Text style={styles.title}>{title}</Text>
         {message ? <Text style={styles.message}>{message}</Text> : null}
         <View style={[styles.actions, stacked && styles.actionsStacked]}>
-          <Pressable accessibilityLabel={confirmLabel} accessibilityRole="button" disabled={busy} onPress={onConfirm} style={[styles.confirm, stacked && styles.full, danger ? styles.confirmDanger : styles.confirmNeutral, busy && styles.disabled]}>
+          <Touchable accessibilityLabel={confirmLabel} accessibilityRole="button" disabled={busy} onPress={onConfirm} style={[styles.confirm, stacked && styles.full, danger ? styles.confirmDanger : styles.confirmNeutral, busy && styles.disabled]}>
             {busy ? <ActivityIndicator color="#fff" size="small" /> : <MaterialIcon color="#fff" name={icon} size={18} />}
             <Text style={styles.confirmText}>{confirmLabel}</Text>
-          </Pressable>
-          {extraAction ? <Pressable accessibilityLabel={extraAction.label} accessibilityRole="button" disabled={busy} onPress={extraAction.onPress} style={[styles.extra, styles.full, busy && styles.disabled]}>
+          </Touchable>
+          {extraAction ? <Touchable accessibilityLabel={extraAction.label} accessibilityRole="button" disabled={busy} onPress={extraAction.onPress} style={[styles.extra, styles.full, busy && styles.disabled]}>
             <MaterialIcon color="#4e694c" name={extraAction.icon ?? 'edit_note'} size={18} />
             <Text style={styles.extraText}>{extraAction.label}</Text>
-          </Pressable> : null}
-          <Pressable accessibilityLabel={cancelLabel} accessibilityRole="button" disabled={busy} onPress={onCancel} style={[styles.cancel, stacked && styles.full, busy && styles.disabled]}>
+          </Touchable> : null}
+          <Touchable accessibilityLabel={cancelLabel} accessibilityRole="button" disabled={busy} onPress={onCancel} style={[styles.cancel, stacked && styles.full, busy && styles.disabled]}>
             <Text style={styles.cancelText}>{cancelLabel}</Text>
-          </Pressable>
+          </Touchable>
         </View>
       </View>
-    </Pressable>
+    </Touchable>
   </Modal>;
 }
 

@@ -1,8 +1,12 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {ActivityIndicator, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, useWindowDimensions, View, } from 'react-native';
+import {ActivityIndicator, LayoutAnimation, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, UIManager, useWindowDimensions, View, } from 'react-native';
 import {CalendarList, CalendarProvider, WeekCalendar, type DateData} from 'react-native-calendars';
 import {Timestamp} from 'firebase/firestore';
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 
 import {registerThaiCalendarLocale, THAI_MONTH_NAMES} from '@/lib/calendar-locale';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
@@ -327,6 +331,7 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
     if (!event?.id) return;
     setDeleting(null);
     const failed = () => { load().catch(() => undefined); setDeleteError(true); };
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     if (event.entityType === 'schedule') {
       const courseCode = seriesKey(event);
       const seriesId = typeof event.seriesId === 'string' && event.seriesId.trim() ? event.seriesId : undefined;
@@ -342,6 +347,7 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
     if (!event.id || event.entityType !== 'activity' || completingId) return;
     const id = event.id;
     setCompletingId(id);
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     setEvents((current) => current.filter((item) => item.id !== id));
     try {
       await activities.update(uid, id, {status: 'completed'});

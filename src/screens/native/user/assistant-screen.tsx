@@ -937,7 +937,7 @@ const shortcutPrompts: Record<string, string> = {
   smartlife_notifications_urgent: 'มีงานค้างอะไรบ้าง',
 };
 
-export default function AssistantScreen({uid, onNavigate}: {page: string; uid: string; onNavigate: UserNavigate}) {
+export default function AssistantScreen({autoAsk, autoListen, uid, onNavigate}: {autoAsk?: string; autoListen?: boolean; page: string; uid: string; onNavigate: UserNavigate}) {
   const {maybeStartTour} = useTour();
   const {ref: newChatRef, onLayout: newChatOnLayout} = useTourTarget('assistant', 'new-chat');
   const {ref: composerRef, onLayout: composerOnLayout} = useTourTarget('assistant', 'composer');
@@ -1866,6 +1866,20 @@ export default function AssistantScreen({uid, onNavigate}: {page: string; uid: s
     }
     startVoiceInput().catch(() => setListening(false));
   };
+
+  // The dashboard's mic icon and its "วันนี้ฉันมีเรียนกี่โมง?" prompt row used
+  // to just open a blank chat -- the user still had to tap the mic or retype
+  // the question here. `historyReady` gates this because `sendMessage` itself
+  // silently no-ops before it (chat state has to load first), so it has to be
+  // the effect's own dependency, not a one-time mount check.
+  const autoActionRanRef = useRef(false);
+  useEffect(() => {
+    if (autoActionRanRef.current || !historyReady || (!autoAsk && !autoListen)) return;
+    autoActionRanRef.current = true;
+    if (autoAsk) void sendMessage(autoAsk);
+    else toggleVoiceInput();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoAsk, autoListen, historyReady]);
 
   const pickImportFile = async () => {
     if (busy) return;

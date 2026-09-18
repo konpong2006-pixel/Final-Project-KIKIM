@@ -1,10 +1,13 @@
-/* eslint-disable react-hooks/set-state-in-effect */
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
+import {ActivityIndicator, LayoutAnimation, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, UIManager, View} from 'react-native';
 import Animated, {useAnimatedStyle, useSharedValue, withDelay, withSpring, withTiming} from 'react-native-reanimated';
 import {Timestamp} from 'firebase/firestore';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 import AiActivityRecommendationCard from '@/components/ai-activity-recommendation-card';
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 
 import {loadLegacyPageData} from '@/services/legacy-data';
 import {noteFolders as folderStore, notes as notesStore} from '@/services/firestore';
@@ -80,10 +83,15 @@ export default function NotesScreen({onNavigate, page, planner, uid}: Props) {
     if (id) onNavigate(`smartlife_add_note?id=${encodeURIComponent(id)}`);
   }, [onNavigate]);
 
+  const animateLayout = useCallback(() => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+  }, []);
+
   const markComplete = useCallback(async (note: Item) => {
     const id = str(note, 'id', '');
     if (!id || completingId) return;
     setCompletingId(id);
+    animateLayout();
     setData((current) => current ? {...current, notes: list(current.notes).map((item) => str(item, 'id', '') === id ? {...item, completedAt: new Date().toISOString(), status: 'completed'} : item)} : current);
     try {
       await notesStore.update(uid, id, {completedAt: Timestamp.fromDate(new Date()), status: 'completed'});
@@ -93,7 +101,7 @@ export default function NotesScreen({onNavigate, page, planner, uid}: Props) {
     } finally {
       setCompletingId('');
     }
-  }, [completingId, load, uid]);
+  }, [animateLayout, completingId, load, uid]);
 
   return <ResponsiveSafeArea style={styles.safe}><View style={styles.screen}><UserGradientBackdrop />
     <ScrollView contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={C.sage} />} showsVerticalScrollIndicator={false}>
@@ -106,28 +114,28 @@ export default function NotesScreen({onNavigate, page, planner, uid}: Props) {
         <MaterialIcon color="#8b948a" name="search" size={18} />
         <TextInput
           accessibilityLabel="ค้นหาโน้ต"
-          onChangeText={setSearch}
+          onChangeText={(text) => { animateLayout(); setSearch(text); }}
           placeholder="ค้นหาชื่อ เนื้อหา หรือแท็ก"
           placeholderTextColor="#9aa59a"
           style={styles.searchInput}
           value={search}
         />
-        {search ? <Pressable accessibilityLabel="ล้างคำค้นหา" onPress={() => setSearch('')}><MaterialIcon color="#8b948a" name="close" size={18} /></Pressable> : null}
+        {search ? <Pressable accessibilityLabel="ล้างคำค้นหา" onPress={() => { animateLayout(); setSearch(''); }}><MaterialIcon color="#8b948a" name="close" size={18} /></Pressable> : null}
       </View>
       {folders.length ? <View style={styles.folderRow}>
-        <Pressable accessibilityLabel="โฟลเดอร์ทั้งหมด" onPress={() => setFolderId('')} style={[styles.folderChip, !folderId && styles.folderChipActive]}>
+        <Pressable accessibilityLabel="โฟลเดอร์ทั้งหมด" onPress={() => { animateLayout(); setFolderId(''); }} style={[styles.folderChip, !folderId && styles.folderChipActive]}>
           <Text style={[styles.folderChipText, !folderId && styles.folderChipTextActive]}>ทุกโฟลเดอร์</Text>
         </Pressable>
         {folders.map((folder) => (
-          <Pressable accessibilityLabel={`กรองโฟลเดอร์ ${folder.name}`} key={folder.id} onPress={() => setFolderId(folder.id === folderId ? '' : folder.id)} style={[styles.folderChip, folderId === folder.id && styles.folderChipActive]}>
+          <Pressable accessibilityLabel={`กรองโฟลเดอร์ ${folder.name}`} key={folder.id} onPress={() => { animateLayout(); setFolderId(folder.id === folderId ? '' : folder.id); }} style={[styles.folderChip, folderId === folder.id && styles.folderChipActive]}>
             <MaterialIcon color={folderId === folder.id ? '#fff' : '#6d786c'} name="folder" size={14} />
             <Text style={[styles.folderChipText, folderId === folder.id && styles.folderChipTextActive]}>{folder.name}</Text>
           </Pressable>
         ))}
       </View> : null}
-      <View style={styles.tabs}>{tabs.map((tab) => <Pressable key={tab.page} onPress={() => planner ? setPlannerFilter(tab.value) : onNavigate(tab.page)} style={[styles.tab, active.page === tab.page && styles.tabActive]}><Text style={[styles.tabText, active.page === tab.page && styles.tabTextActive]}>{tab.label}</Text></Pressable>)}</View>
+      <View style={styles.tabs}>{tabs.map((tab) => <Pressable key={tab.page} onPress={() => { animateLayout(); if (planner) setPlannerFilter(tab.value); else onNavigate(tab.page); }} style={[styles.tab, active.page === tab.page && styles.tabActive]}><Text style={[styles.tabText, active.page === tab.page && styles.tabTextActive]}>{tab.label}</Text></Pressable>)}</View>
       <View style={styles.metrics}><Metric label={active.value === 'all' ? 'กำลังทำ' : `โน้ต${active.label}`} value={notes.length} /><Metric color={C.pink} label="เสร็จแล้ว" value={completeCount} /><Metric label="ปักหมุด" value={importantCount} /></View>
-      <View style={styles.sectionHead}><Text style={styles.sectionTitle}>{active.value === 'all' ? 'โน้ตล่าสุด' : `โน้ต${active.label}`}</Text><Pressable onPress={() => planner ? setPlannerFilter('all') : onNavigate('smartlife_notes')}><Text style={styles.allLink}>ดูทั้งหมด</Text></Pressable></View>
+      <View style={styles.sectionHead}><Text style={styles.sectionTitle}>{active.value === 'all' ? 'โน้ตล่าสุด' : `โน้ต${active.label}`}</Text><Pressable onPress={() => { animateLayout(); if (planner) setPlannerFilter('all'); else onNavigate('smartlife_notes'); }}><Text style={styles.allLink}>ดูทั้งหมด</Text></Pressable></View>
       {!data ? <View style={styles.loading}><ActivityIndicator color={C.sage} size="large" /><Text style={styles.loadingText}>กำลังโหลดโน้ตจาก Firebase</Text></View> : <View style={styles.noteList}>{notes.length ? notes.map((note, index) => <NoteRow busy={completingId === str(note, 'id', '')} category={categoryOf(note, active.value)} index={index} item={note} key={str(note, 'id', String(index))} onComplete={() => void markComplete(note)} onOpen={() => openNote(note)} />) : <View style={styles.empty}><MaterialIcon color="#9aa59a" name={search || folderId ? 'search_off' : 'task_alt'} size={34} /><Text style={styles.emptyText}>{search || folderId ? 'ไม่พบโน้ตที่ตรงกับที่ค้นหา' : 'ไม่มีโน้ตที่ค้างอยู่ในหมวดนี้'}</Text></View>}</View>}
     </ScrollView><UserTabBar active={planner ? 'smartlife_planner' : 'smartlife_notes'} onNavigate={onNavigate} />
   </View></ResponsiveSafeArea>;

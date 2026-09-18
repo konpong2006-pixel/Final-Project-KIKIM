@@ -1,6 +1,7 @@
-import {ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {ActivityIndicator, Modal, ScrollView, StyleSheet, Text, View} from 'react-native';
 
 import type {ScheduleConflict} from '@/services/firestore';
+import {Touchable} from '@/components/touchable';
 import {MaterialIcon} from '@/screens/native/user/user-ui';
 
 function timeRange(startAt: string, endAt: string, timeZone: string) {
@@ -50,8 +51,8 @@ export default function ScheduleConflictDialog({
         </ScrollView>
         <Text style={styles.note}>กิจกรรมพร้อมกันทำได้ เช่น ฟังพอดแคสต์ระหว่างเดินทาง แต่ต้องยืนยันอีกครั้งก่อนบันทึก</Text>
         <View style={styles.actions}>
-          <Pressable accessibilityLabel="กลับไปแก้เวลา" disabled={saving} onPress={onEdit} style={[styles.editButton, saving && styles.disabled]}><MaterialIcon color="#557653" name="edit_calendar" size={18} /><Text style={styles.editText}>กลับไปแก้เวลา</Text></Pressable>
-          <Pressable accessibilityLabel="ยืนยันบันทึกรายการซ้อนกัน" disabled={saving} onPress={onConfirm} style={[styles.confirmButton, saving && styles.disabled]}>{saving ? <ActivityIndicator color="#fff" size="small" /> : <MaterialIcon color="#fff" name="warning" size={18} />}<Text style={styles.confirmText}>{saving ? 'กำลังบันทึก…' : 'บันทึกซ้อนกัน'}</Text></Pressable>
+          <Touchable accessibilityLabel="กลับไปแก้เวลา" disabled={saving} onPress={onEdit} style={[styles.editButton, saving && styles.disabled]}><MaterialIcon color="#557653" name="edit_calendar" size={18} /><Text style={styles.editText}>กลับไปแก้เวลา</Text></Touchable>
+          <Touchable accessibilityLabel="ยืนยันบันทึกรายการซ้อนกัน" disabled={saving} onPress={onConfirm} style={[styles.confirmButton, saving && styles.disabled]}>{saving ? <ActivityIndicator color="#fff" size="small" /> : <MaterialIcon color="#fff" name="warning" size={18} />}<Text style={styles.confirmText}>{saving ? 'กำลังบันทึก…' : 'บันทึกซ้อนกัน'}</Text></Touchable>
         </View>
       </View>
     </View>

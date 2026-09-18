@@ -1,9 +1,10 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {ActivityIndicator, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {ActivityIndicator, Modal, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {router, useLocalSearchParams} from 'expo-router';
 import {financeDate} from '@/lib/ux-time';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
+import {Touchable} from '@/components/touchable';
 import {SpendingCharts} from '@/components/spending-charts';
 import ConfirmDialog from '@/components/confirm-dialog';
 
@@ -189,77 +190,77 @@ export default function FinanceScreen({onNavigate, page, uid}: Props) {
   return <ResponsiveSafeArea style={styles.safe}><View style={styles.screen}><UserGradientBackdrop />
     <ScrollView ref={scrollViewRef} contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={C.sage} />} showsVerticalScrollIndicator={false}>
       {/* Refactored UI: finance overview follows the period-and-filter dashboard shown in the new design. */}
-      <View style={styles.header}><View><Text style={styles.eyebrow}>{filter === 'income' ? `รายรับ${periodText(periodPage)}` : filter === 'expense' ? `รายจ่าย${periodText(periodPage)}` : `สรุป${periodText(periodPage)}`}</Text><Text style={styles.title}>การเงิน</Text></View><Pressable accessibilityLabel={headerAction.label} onPress={() => onNavigate(headerAction.page)} style={styles.receiptButton}><MaterialIcon color="#fff" name={headerAction.icon} size={22} /></Pressable></View>
-      <View onLayout={periodTabsOnLayout} ref={periodTabsRef} style={styles.periodBar}>{periods.map((item) => <Pressable key={item.page} onPress={() => { selectRange(periodForPage(item.page), referenceDate); }} style={[styles.periodItem, periodPage === item.page && styles.periodActive]}><Text style={[styles.periodText, periodPage === item.page && styles.periodTextActive]}>{item.label}</Text></Pressable>)}</View>
+      <View style={styles.header}><View><Text style={styles.eyebrow}>{filter === 'income' ? `รายรับ${periodText(periodPage)}` : filter === 'expense' ? `รายจ่าย${periodText(periodPage)}` : `สรุป${periodText(periodPage)}`}</Text><Text style={styles.title}>การเงิน</Text></View><Touchable accessibilityLabel={headerAction.label} onPress={() => onNavigate(headerAction.page)} style={styles.receiptButton}><MaterialIcon color="#fff" name={headerAction.icon} size={22} /></Touchable></View>
+      <View onLayout={periodTabsOnLayout} ref={periodTabsRef} style={styles.periodBar}>{periods.map((item) => <Touchable key={item.page} onPress={() => { selectRange(periodForPage(item.page), referenceDate); }} style={[styles.periodItem, periodPage === item.page && styles.periodActive]}><Text style={[styles.periodText, periodPage === item.page && styles.periodTextActive]}>{item.label}</Text></Touchable>)}</View>
       <View onLayout={rangeBarOnLayout} ref={rangeBarRef} style={styles.rangeBar}>
-        <Pressable accessibilityLabel="Previous period" onPress={() => selectRange(period, shiftPeriod(referenceDate, period, -1))} style={styles.rangeButton}>
+        <Touchable accessibilityLabel="Previous period" onPress={() => selectRange(period, shiftPeriod(referenceDate, period, -1))} style={styles.rangeButton}>
           <MaterialIcon color={C.ink} name="chevron_left" size={22} />
-        </Pressable>
-        <Pressable accessibilityLabel="Return to current period" onPress={() => selectRange(period, new Date())} style={styles.rangeLabel}>
+        </Touchable>
+        <Touchable accessibilityLabel="Return to current period" onPress={() => selectRange(period, new Date())} style={styles.rangeLabel}>
           <Text style={styles.rangeHint}>D / W / M</Text>
           <Text style={styles.rangeToday}>{selectedRangeLabel(periodPage, referenceDate)}</Text>
-        </Pressable>
-        <Pressable accessibilityLabel="Next period" onPress={() => selectRange(period, shiftPeriod(referenceDate, period, 1))} style={styles.rangeButton}>
+        </Touchable>
+        <Touchable accessibilityLabel="Next period" onPress={() => selectRange(period, shiftPeriod(referenceDate, period, 1))} style={styles.rangeButton}>
           <MaterialIcon color={C.ink} name="chevron_right" size={22} />
-        </Pressable>
+        </Touchable>
       </View>
-      <View style={styles.filterBar}>{(['all', 'income', 'expense'] as Filter[]).map((item) => <Pressable key={item} onPress={() => selectRange(period, referenceDate, item)} style={[styles.filterItem, filter === item && styles.filterActive]}><Text style={[styles.filterText, filter === item && styles.filterTextActive]}>{item === 'all' ? 'ภาพรวม' : item === 'income' ? 'รายรับ' : 'รายจ่าย'}</Text></Pressable>)}</View>
-      {loadError ? <View style={styles.loading}><Text style={styles.loadingText}>โหลดข้อมูลไม่สำเร็จ จึงยังสรุปยอดไม่ได้ ไม่ใช่ยอดเป็นศูนย์</Text><Pressable accessibilityRole="button" onPress={() => void load()} style={styles.sheetCancel}><Text style={styles.sheetCancelText}>ลองอีกครั้ง</Text></Pressable></View> : !data ? <View style={styles.loading}><ActivityIndicator color={C.sage} size="large" /><Text style={styles.loadingText}>กำลังโหลดข้อมูลจาก Firebase</Text></View> : <>
+      <View style={styles.filterBar}>{(['all', 'income', 'expense'] as Filter[]).map((item) => <Touchable key={item} onPress={() => selectRange(period, referenceDate, item)} style={[styles.filterItem, filter === item && styles.filterActive]}><Text style={[styles.filterText, filter === item && styles.filterTextActive]}>{item === 'all' ? 'ภาพรวม' : item === 'income' ? 'รายรับ' : 'รายจ่าย'}</Text></Touchable>)}</View>
+      {loadError ? <View style={styles.loading}><Text style={styles.loadingText}>โหลดข้อมูลไม่สำเร็จ จึงยังสรุปยอดไม่ได้ ไม่ใช่ยอดเป็นศูนย์</Text><Touchable accessibilityRole="button" onPress={() => void load()} style={styles.sheetCancel}><Text style={styles.sheetCancelText}>ลองอีกครั้ง</Text></Touchable></View> : !data ? <View style={styles.loading}><ActivityIndicator color={C.sage} size="large" /><Text style={styles.loadingText}>กำลังโหลดข้อมูลจาก Firebase</Text></View> : <>
         <View style={styles.balanceCard}><View style={styles.balanceCircle} /><View style={styles.balanceTop}><View><View style={styles.balanceLabelRow}><MaterialIcon color={C.accent} name="credit_card" size={14} /><Text style={styles.balanceLabel}>{mainLabel}</Text></View><Text style={styles.balanceAmount}>{money(mainAmount)}</Text><Text style={styles.balancePeriod}>/ {periodText(periodPage)}</Text></View></View><View style={styles.progress}><View style={[styles.progressFill, {width: `${Math.min(expense / Math.max(income, expense, 1) * 100, 100)}%`}]} /></View><View style={styles.categoryTags}>{categoryTotals.length ? categoryTotals.map(([category, amount]) => <View key={category} style={styles.categoryTag}><Text style={styles.categoryTagText}>{category} {money(amount)}</Text></View>) : <View style={styles.categoryTag}><Text style={styles.categoryTagText}>ยังไม่มีค่าใช้จ่าย</Text></View>}</View></View>
-        {budgetLine ? <Pressable onPress={() => onNavigate('smartlife_monthly_budget')} style={[styles.budgetStrip, budgetLine.over && styles.budgetStripOver]}>
+        {budgetLine ? <Touchable onPress={() => onNavigate('smartlife_monthly_budget')} style={[styles.budgetStrip, budgetLine.over && styles.budgetStripOver]}>
           <View style={[styles.budgetStripIcon, budgetLine.over && styles.budgetStripIconOver]}><MaterialIcon color={budgetLine.over ? C.red : C.sage} name={budgetLine.over ? 'error' : 'savings'} size={17} /></View>
           <View style={{flex: 1}}><Text style={[styles.budgetStripTitle, budgetLine.over && styles.budgetStripTitleOver]}>{budgetLine.title}</Text><Text style={styles.budgetStripDetail}>{budgetLine.detail}</Text></View>
           <MaterialIcon color={C.muted} name="chevron_right" size={20} />
-        </Pressable> : null}
+        </Touchable> : null}
         <View style={styles.summaryRow}>{filter === 'income' ? <><Summary amount={income} icon="north" label="รับแล้ว" tone="income" /><Summary amount={Math.max(0, income - shown.reduce((sum, item) => sum + Number(item.amount ?? 0), 0))} icon="schedule" label="รอรับ" tone="neutral" /></> : filter === 'expense' ? <><Summary amount={expense} icon="south" label="ใช้ไปแล้ว" tone="expense" /><Summary amount={Math.max(0, balance)} icon="schedule" label="เหลือ" tone="neutral" /></> : <><Summary amount={income} icon="north" label="รายรับ" tone="income" /><Summary amount={expense} icon="south" label="รายจ่าย" tone="expense" /></>}</View>
 
         {period !== 'day' ? <SpendingCharts period={period} referenceDate={referenceDate} transactions={all} /> : null}
 
-        <Pressable onPress={() => onNavigate('smartlife_monthly_budget')} style={[styles.menuCard, {backgroundColor: '#faecea', marginTop: 16}]}>
+        <Touchable onPress={() => onNavigate('smartlife_monthly_budget')} style={[styles.menuCard, {backgroundColor: '#faecea', marginTop: 16}]}>
             <View style={[styles.menuIcon, {backgroundColor: '#d89182'}]}><MaterialIcon color="#fff" name="savings" size={20} /></View>
             <View style={{flex: 1}}>
               <Text style={styles.menuTitle}>กำหนดงบและกรอบรายสัปดาห์</Text>
               <Text style={styles.menuSubtitle}>{monthlyBudget ? `วงเงินเดือน ${money(monthlyBudget.amount)}${monthlyBudget.rolledOver ? ' (ต่อจากเดือนก่อน รอยืนยัน)' : ''} · AI แบ่งให้เป็นรายสัปดาห์` : 'ตั้งวงเงิน แล้ว AI คุมยอดรวมเป็นรายสัปดาห์'}</Text>
             </View>
             <MaterialIcon color={C.ink} name="chevron_right" size={21} />
-        </Pressable>
+        </Touchable>
 
-        <Pressable onPress={() => onNavigate('smartlife_line_bank')} style={[styles.menuCard, {backgroundColor: '#eef3ea'}]}>
+        <Touchable onPress={() => onNavigate('smartlife_line_bank')} style={[styles.menuCard, {backgroundColor: '#eef3ea'}]}>
             <View style={[styles.menuIcon, {backgroundColor: '#72956f'}]}><MaterialIcon color="#fff" name="notifications_active" size={20} /></View>
             <View style={{flex: 1}}>
               <Text style={styles.menuTitle}>อ่านแจ้งเตือนการเงิน</Text>
               <Text style={styles.menuSubtitle}>LINE และแอปธนาคารที่รองรับ • ตรวจเฉพาะรายการที่ไม่ชัดเจน</Text>
             </View>
             <MaterialIcon color={C.ink} name="chevron_right" size={21} />
-        </Pressable>
+        </Touchable>
 
-        {filter === 'income' ? <Pressable onPress={() => onNavigate('smartlife_add_income')} style={[styles.menuCard, {backgroundColor: '#eef3ea'}]}>
+        {filter === 'income' ? <Touchable onPress={() => onNavigate('smartlife_add_income')} style={[styles.menuCard, {backgroundColor: '#eef3ea'}]}>
           <View style={[styles.menuIcon, {backgroundColor: C.sage}]}><MaterialIcon color="#fff" name="add_card" size={20} /></View>
           <View style={{flex: 1}}>
             <Text style={styles.menuTitle}>เพิ่มรายรับ</Text>
             <Text style={styles.menuSubtitle}>กรอกจำนวน หมวดหมู่ วันที่ และโน้ตด้วยตัวเอง</Text>
           </View>
           <MaterialIcon color={C.ink} name="chevron_right" size={21} />
-        </Pressable> : <>
-          {filter === 'expense' ? <Pressable onPress={() => onNavigate('smartlife_add_expense')} style={[styles.menuCard, {backgroundColor: '#fcedea'}]}>
+        </Touchable> : <>
+          {filter === 'expense' ? <Touchable onPress={() => onNavigate('smartlife_add_expense')} style={[styles.menuCard, {backgroundColor: '#fcedea'}]}>
             <View style={[styles.menuIcon, {backgroundColor: '#c96e68'}]}><MaterialIcon color="#fff" name="add_card" size={20} /></View>
             <View style={{flex: 1}}>
               <Text style={styles.menuTitle}>เพิ่มรายจ่ายเอง</Text>
               <Text style={styles.menuSubtitle}>เลือกหมวดหลัก หรือตั้งชื่อหมวดรายจ่ายของคุณเอง</Text>
             </View>
             <MaterialIcon color={C.ink} name="chevron_right" size={21} />
-          </Pressable> : null}
-          <Pressable onPress={() => onNavigate(SMART_SCAN_PAGE)} style={[styles.menuCard, {backgroundColor: '#eceef7'}]}>
+          </Touchable> : null}
+          <Touchable onPress={() => onNavigate(SMART_SCAN_PAGE)} style={[styles.menuCard, {backgroundColor: '#eceef7'}]}>
             <View style={[styles.menuIcon, {backgroundColor: '#7a85b3'}]}><MaterialIcon color="#fff" name="receipt_long" size={20} /></View>
             <View style={{flex: 1}}>
               <Text style={styles.menuTitle}>สแกนใบเสร็จ</Text>
               <Text style={styles.menuSubtitle}>ให้ AI แยกหมวดรายจ่ายให้อัตโนมัติ</Text>
             </View>
             <MaterialIcon color={C.ink} name="chevron_right" size={21} />
-          </Pressable>
+          </Touchable>
         </>}
 
-        <View style={styles.sectionHead}><Text style={styles.sectionTitle}>{filter === 'income' ? 'รายการรายรับ' : filter === 'expense' ? 'รายการรายจ่าย' : 'รายการล่าสุด'}</Text>{filter === 'income' ? <Pressable onPress={() => onNavigate('smartlife_add_income')}><Text style={styles.allLink}>เพิ่มรายรับ</Text></Pressable> : filter === 'expense' ? <Pressable onPress={() => onNavigate('smartlife_add_expense')}><Text style={styles.allLink}>เพิ่มรายจ่าย</Text></Pressable> : null}</View>
+        <View style={styles.sectionHead}><Text style={styles.sectionTitle}>{filter === 'income' ? 'รายการรายรับ' : filter === 'expense' ? 'รายการรายจ่าย' : 'รายการล่าสุด'}</Text>{filter === 'income' ? <Touchable onPress={() => onNavigate('smartlife_add_income')}><Text style={styles.allLink}>เพิ่มรายรับ</Text></Touchable> : filter === 'expense' ? <Touchable onPress={() => onNavigate('smartlife_add_expense')}><Text style={styles.allLink}>เพิ่มรายจ่าย</Text></Touchable> : null}</View>
         <View style={styles.transactionList}>{shown.length ? shown.map((item, index) => <TransactionRow item={item} key={str(item, 'id', String(index))} onDelete={() => setDeleting(item)} onRecategorize={() => setRecategorizing(item)} />) : <View style={styles.empty}><MaterialIcon color="#a1aaa0" name="receipt_long" size={32} /><Text style={styles.emptyText}>ยังไม่มีรายการในช่วงนี้</Text></View>}</View>
       </>}
     </ScrollView><UserTabBar active="smartlife_finance_day" onNavigate={onNavigate} />
@@ -303,21 +304,21 @@ export default function FinanceScreen({onNavigate, page, uid}: Props) {
 }
 
 function Summary({amount, icon, label, tone}: {amount: number; icon: string; label: string; tone: 'income' | 'expense' | 'neutral'}) { const color = tone === 'income' ? C.sage : tone === 'expense' ? C.red : C.ink; return <View style={styles.summary}><View style={styles.summaryHead}><MaterialIcon color={tone === 'expense' ? C.accent : C.sage} name={icon} size={15} /><Text style={styles.summaryLabel}>{label}</Text></View><Text style={[styles.summaryAmount, {color}]}>{money(amount)}</Text></View>; }
-function TransactionRow({item, onDelete, onRecategorize}: {item: Item; onDelete: () => void; onRecategorize: () => void}) { const isIncome = item.type === 'income'; const category = normalizeExpenseCategory(str(item, 'category', '')); return <View style={styles.transaction}><Pressable accessibilityLabel={isIncome ? undefined : `เปลี่ยนหมวดหมู่ ปัจจุบัน ${category}`} accessibilityRole={isIncome ? undefined : 'button'} disabled={isIncome} onPress={onRecategorize} style={styles.transactionMain}><View style={[styles.transactionIcon, {backgroundColor: isIncome ? C.sageSoft : C.redSoft}]}><MaterialIcon color={isIncome ? C.sage : C.red} name={isIncome ? 'north' : categoryIcon(category)} size={18} /></View><View style={{flex: 1}}><Text numberOfLines={1} style={styles.transactionTitle}>{str(item, 'merchant', category)}</Text><View style={styles.transactionSubRow}><Text style={styles.transactionSub}>{category} · {date(item.occurredAt)}</Text>{isIncome ? null : <MaterialIcon color="#b3bcb2" name="edit" size={10} />}</View></View></Pressable><Text style={[styles.transactionAmount, {color: isIncome ? C.sage : C.red}]}>{isIncome ? '+' : '-'}{money(Number(item.amount ?? 0))}</Text><Pressable accessibilityLabel="ลบรายการ" onPress={onDelete} style={styles.delete}><MaterialIcon color="#ca7771" name="close" size={15} /></Pressable></View>; }
+function TransactionRow({item, onDelete, onRecategorize}: {item: Item; onDelete: () => void; onRecategorize: () => void}) { const isIncome = item.type === 'income'; const category = normalizeExpenseCategory(str(item, 'category', '')); return <View style={styles.transaction}><Touchable accessibilityLabel={isIncome ? undefined : `เปลี่ยนหมวดหมู่ ปัจจุบัน ${category}`} accessibilityRole={isIncome ? undefined : 'button'} disabled={isIncome} onPress={onRecategorize} style={styles.transactionMain}><View style={[styles.transactionIcon, {backgroundColor: isIncome ? C.sageSoft : C.redSoft}]}><MaterialIcon color={isIncome ? C.sage : C.red} name={isIncome ? 'north' : categoryIcon(category)} size={18} /></View><View style={{flex: 1}}><Text numberOfLines={1} style={styles.transactionTitle}>{str(item, 'merchant', category)}</Text><View style={styles.transactionSubRow}><Text style={styles.transactionSub}>{category} · {date(item.occurredAt)}</Text>{isIncome ? null : <MaterialIcon color="#b3bcb2" name="edit" size={10} />}</View></View></Touchable><Text style={[styles.transactionAmount, {color: isIncome ? C.sage : C.red}]}>{isIncome ? '+' : '-'}{money(Number(item.amount ?? 0))}</Text><Touchable accessibilityLabel="ลบรายการ" onPress={onDelete} style={styles.delete}><MaterialIcon color="#ca7771" name="close" size={15} /></Touchable></View>; }
 
 /** The saved-transaction twin of the scan screen's picker, on the same list. */
 function CategorySheet({current, onClose, onSelect, visible}: {current: string; onClose: () => void; onSelect: (category: string) => void; visible: boolean}) {
   return <Modal animationType="fade" onRequestClose={onClose} transparent visible={visible}>
-    <Pressable accessibilityLabel="ปิดตัวเลือกหมวดหมู่" onPress={onClose} style={styles.sheetOverlay}>
+    <Touchable accessibilityLabel="ปิดตัวเลือกหมวดหมู่" onPress={onClose} style={styles.sheetOverlay}>
       <View onStartShouldSetResponder={() => true} style={styles.sheet}>
         <Text style={styles.sheetTitle}>หมวดหมู่การใช้จ่าย</Text>
         <Text style={styles.sheetHint}>เลือกหมวดหมู่ใหม่ กราฟและสรุปจะอัปเดตตาม</Text>
         <ScrollView contentContainerStyle={styles.sheetOptions} style={styles.sheetScroll}>
-          {EXPENSE_CATEGORIES.map((entry) => { const active = entry.label === current; return <Pressable accessibilityLabel={`ตั้งหมวดหมู่ ${entry.label}`} accessibilityRole="button" accessibilityState={{selected: active}} key={entry.label} onPress={() => onSelect(entry.label)} style={[styles.sheetOption, active && styles.sheetOptionActive]}><MaterialIcon color={active ? '#fff' : '#6d786c'} name={entry.icon} size={14} /><Text style={[styles.sheetOptionText, active && styles.sheetOptionTextActive]}>{entry.label}</Text></Pressable>; })}
+          {EXPENSE_CATEGORIES.map((entry) => { const active = entry.label === current; return <Touchable accessibilityLabel={`ตั้งหมวดหมู่ ${entry.label}`} accessibilityRole="button" accessibilityState={{selected: active}} key={entry.label} onPress={() => onSelect(entry.label)} style={[styles.sheetOption, active && styles.sheetOptionActive]}><MaterialIcon color={active ? '#fff' : '#6d786c'} name={entry.icon} size={14} /><Text style={[styles.sheetOptionText, active && styles.sheetOptionTextActive]}>{entry.label}</Text></Touchable>; })}
         </ScrollView>
-        <Pressable accessibilityLabel="ยกเลิก" onPress={onClose} style={styles.sheetCancel}><Text style={styles.sheetCancelText}>ยกเลิก</Text></Pressable>
+        <Touchable accessibilityLabel="ยกเลิก" onPress={onClose} style={styles.sheetCancel}><Text style={styles.sheetCancelText}>ยกเลิก</Text></Touchable>
       </View>
-    </Pressable>
+    </Touchable>
   </Modal>;
 }
 

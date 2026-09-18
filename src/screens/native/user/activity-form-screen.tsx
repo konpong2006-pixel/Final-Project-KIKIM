@@ -1,5 +1,6 @@
-import {useEffect, useMemo, useState} from 'react';
+import {useEffect, useMemo, useRef, useState} from 'react';
 import {ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View} from 'react-native';
+import Animated, {useAnimatedStyle, useSharedValue, withSequence, withSpring, withTiming} from 'react-native-reanimated';
 import {LinearGradient} from 'expo-linear-gradient';
 import NativeDateTimePicker from '@/components/date-time-picker';
 import ScheduleConflictDialog from '@/components/schedule-conflict-dialog';
@@ -95,6 +96,32 @@ function formatTimeText(value: Date) {
 
 function thaiDateText(value: string) {
   return new Intl.DateTimeFormat('th-TH', {dateStyle: 'medium', timeZone: 'Asia/Bangkok'}).format(new Date(`${value}T12:00:00+07:00`));
+}
+
+function SaveButton({disabled, label, onPress, saving}: {disabled: boolean; label: string; onPress: () => void; saving: boolean}) {
+  const scale = useSharedValue(1);
+  const animStyle = useAnimatedStyle(() => ({transform: [{scale: scale.value}]}));
+  const hasSavedOnce = useRef(false);
+  const handlePress = () => {
+    if (disabled) return;
+    // Spring-pop to give tactile "confirmed" feedback (~180ms settle)
+    scale.value = withSequence(
+      withSpring(1.04, {damping: 5, stiffness: 320}),
+      withSpring(1, {damping: 10, stiffness: 180}),
+    );
+    hasSavedOnce.current = true;
+    onPress();
+  };
+  return (
+    <Animated.View style={[styles.saveShell, disabled && styles.disabled, animStyle]}>
+      <Pressable disabled={disabled} onPress={handlePress} style={styles.saveShell}>
+        <LinearGradient colors={['#6f966f', '#476d43']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.save}>
+          {saving ? <ActivityIndicator color="#fff" /> : <MaterialIcon color="#fff" name="check" size={19} />}
+          <Text style={styles.saveText}>{label}</Text>
+        </LinearGradient>
+      </Pressable>
+    </Animated.View>
+  );
 }
 
 export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormPage; uid: string; onNavigate: UserNavigate}) {
@@ -312,7 +339,7 @@ export default function ActivityFormScreen({page, uid, onNavigate}: {page: FormP
           <View style={styles.cardDivider} /><Text style={styles.colorLabel}>สีของรายการ</Text><View style={styles.colorRow}>{colors.map((item) => <Pressable accessibilityLabel={`เลือกสี ${item}`} key={item} onPress={() => setColor(item)} style={[styles.color, {backgroundColor: item}, color === item && styles.colorSelected]} />)}</View>
         </View>
 
-        <Pressable disabled={saving || !title.trim()} onPress={save} style={[styles.saveShell, (saving || !title.trim()) && styles.disabled]}><LinearGradient colors={['#6f966f', '#476d43']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={styles.save}>{saving ? <ActivityIndicator color="#fff" /> : <MaterialIcon color="#fff" name="check" size={19} />}<Text style={styles.saveText}>{saving ? 'กำลังบันทึก...' : entryMode === 'reminder' ? 'บันทึกการเตือน' : copy.save}</Text></LinearGradient></Pressable>
+        <SaveButton disabled={saving || !title.trim()} label={saving ? 'กำลังบันทึก...' : entryMode === 'reminder' ? 'บันทึกการเตือน' : copy.save} onPress={save} saving={saving} />
       </>}
     </View>
     <ScheduleConflictDialog

@@ -1,6 +1,7 @@
 /* eslint-disable react-hooks/set-state-in-effect */
-import {useCallback, useEffect, useMemo, useState} from 'react';
+import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
+import Animated, {useAnimatedStyle, useSharedValue, withDelay, withSpring, withTiming} from 'react-native-reanimated';
 import {Timestamp} from 'firebase/firestore';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 import AiActivityRecommendationCard from '@/components/ai-activity-recommendation-card';
@@ -127,14 +128,62 @@ export default function NotesScreen({onNavigate, page, planner, uid}: Props) {
       <View style={styles.tabs}>{tabs.map((tab) => <Pressable key={tab.page} onPress={() => planner ? setPlannerFilter(tab.value) : onNavigate(tab.page)} style={[styles.tab, active.page === tab.page && styles.tabActive]}><Text style={[styles.tabText, active.page === tab.page && styles.tabTextActive]}>{tab.label}</Text></Pressable>)}</View>
       <View style={styles.metrics}><Metric label={active.value === 'all' ? 'กำลังทำ' : `โน้ต${active.label}`} value={notes.length} /><Metric color={C.pink} label="เสร็จแล้ว" value={completeCount} /><Metric label="ปักหมุด" value={importantCount} /></View>
       <View style={styles.sectionHead}><Text style={styles.sectionTitle}>{active.value === 'all' ? 'โน้ตล่าสุด' : `โน้ต${active.label}`}</Text><Pressable onPress={() => planner ? setPlannerFilter('all') : onNavigate('smartlife_notes')}><Text style={styles.allLink}>ดูทั้งหมด</Text></Pressable></View>
-      {!data ? <View style={styles.loading}><ActivityIndicator color={C.sage} size="large" /><Text style={styles.loadingText}>กำลังโหลดโน้ตจาก Firebase</Text></View> : <View style={styles.noteList}>{notes.length ? notes.map((note, index) => <NoteRow busy={completingId === str(note, 'id', '')} category={categoryOf(note, active.value)} item={note} key={str(note, 'id', String(index))} onComplete={() => void markComplete(note)} onOpen={() => openNote(note)} />) : <View style={styles.empty}><MaterialIcon color="#9aa59a" name={search || folderId ? 'search_off' : 'task_alt'} size={34} /><Text style={styles.emptyText}>{search || folderId ? 'ไม่พบโน้ตที่ตรงกับที่ค้นหา' : 'ไม่มีโน้ตที่ค้างอยู่ในหมวดนี้'}</Text></View>}</View>}
+      {!data ? <View style={styles.loading}><ActivityIndicator color={C.sage} size="large" /><Text style={styles.loadingText}>กำลังโหลดโน้ตจาก Firebase</Text></View> : <View style={styles.noteList}>{notes.length ? notes.map((note, index) => <NoteRow busy={completingId === str(note, 'id', '')} category={categoryOf(note, active.value)} index={index} item={note} key={str(note, 'id', String(index))} onComplete={() => void markComplete(note)} onOpen={() => openNote(note)} />) : <View style={styles.empty}><MaterialIcon color="#9aa59a" name={search || folderId ? 'search_off' : 'task_alt'} size={34} /><Text style={styles.emptyText}>{search || folderId ? 'ไม่พบโน้ตที่ตรงกับที่ค้นหา' : 'ไม่มีโน้ตที่ค้างอยู่ในหมวดนี้'}</Text></View>}</View>}
     </ScrollView><UserTabBar active={planner ? 'smartlife_planner' : 'smartlife_notes'} onNavigate={onNavigate} />
   </View></ResponsiveSafeArea>;
 }
 
 function Metric({label, value, color = C.ink}: {color?: string; label: string; value: number}) { return <View style={styles.metric}><Text style={[styles.metricValue, {color}]}>{value}</Text><Text style={styles.metricLabel}>{label}</Text></View>; }
-function CompleteButton({busy, onPress}: {busy: boolean; onPress: () => void}) { return <Pressable accessibilityLabel="ทำเครื่องหมายว่าเสร็จ" disabled={busy} onPress={onPress} style={({pressed}) => [styles.completeButton, pressed && styles.pressed, busy && {opacity: .55}]}>{busy ? <ActivityIndicator color="#fff" size="small" /> : <MaterialIcon color="#fff" name="check" size={16} />}<Text style={styles.completeText}>เสร็จ</Text></Pressable>; }
-function NoteRow({busy, category, item, onComplete, onOpen}: {busy: boolean; category: 'study' | 'work' | 'idea' | 'personal' | 'all'; item: Item; onComplete: () => void; onOpen: () => void}) { const theme = category === 'work' ? {bg: C.pinkSoft, color: C.pink, icon: 'push_pin', label: 'งาน'} : category === 'idea' ? {bg: C.yellowSoft, color: C.yellow, icon: 'lightbulb', label: 'ไอเดีย'} : category === 'personal' ? {bg: '#eceeea', color: '#7d877b', icon: 'person_outline', label: 'ส่วนตัว'} : {bg: C.sageSoft, color: C.sage, icon: 'description', label: 'เรียน'}; const title = str(item, 'title'); return <View style={styles.noteRow}><Pressable accessibilityLabel={`เปิดโน้ต ${title}`} accessibilityRole="button" onPress={onOpen} style={({pressed}) => [styles.noteOpenArea, pressed && styles.pressed]}><View style={[styles.noteIcon, {backgroundColor: theme.bg}]}><MaterialIcon color={theme.color} name={theme.icon} size={19} /></View><View style={{flex: 1}}><View style={styles.noteTitleRow}>{item.pinned === true ? <MaterialIcon color="#c49497" name="push_pin" size={13} /> : null}{item.locked === true ? <MaterialIcon color="#8b948a" name="lock" size={13} /> : null}<Text numberOfLines={1} style={styles.noteTitle}>{title}</Text></View><Text numberOfLines={1} style={styles.noteSub}>{str(item, 'content', `อัปเดต ${date(item.updatedAt ?? item.createdAt)}`)}</Text><Text style={styles.noteCategory}>{theme.label}</Text></View></Pressable><CompleteButton busy={busy} onPress={onComplete} /></View>; }
+
+function CompleteButton({busy, onPress}: {busy: boolean; onPress: () => void}) {
+  const scale = useSharedValue(1);
+  const animStyle = useAnimatedStyle(() => ({transform: [{scale: scale.value}]}));
+  const handlePress = () => {
+    scale.value = withSpring(0.82, {damping: 6, stiffness: 280}, () => {
+      scale.value = withSpring(1, {damping: 8, stiffness: 200});
+    });
+    onPress();
+  };
+  return (
+    <Pressable accessibilityLabel="ทำเครื่องหมายว่าเสร็จ" disabled={busy} onPress={handlePress} style={({pressed}) => [styles.completeButton, pressed && styles.pressed, busy && {opacity: .55}]}>
+      <Animated.View style={[{alignItems: 'center', flexDirection: 'row', gap: 3}, animStyle]}>
+        {busy ? <ActivityIndicator color="#fff" size="small" /> : <MaterialIcon color="#fff" name="check" size={16} />}
+        <Text style={styles.completeText}>เสร็จ</Text>
+      </Animated.View>
+    </Pressable>
+  );
+}
+
+function NoteRow({busy, category, index, item, onComplete, onOpen}: {busy: boolean; category: 'study' | 'work' | 'idea' | 'personal' | 'all'; index: number; item: Item; onComplete: () => void; onOpen: () => void}) {
+  const theme = category === 'work' ? {bg: C.pinkSoft, color: C.pink, icon: 'push_pin', label: 'งาน'} : category === 'idea' ? {bg: C.yellowSoft, color: C.yellow, icon: 'lightbulb', label: 'ไอเดีย'} : category === 'personal' ? {bg: '#eceeea', color: '#7d877b', icon: 'person_outline', label: 'ส่วนตัว'} : {bg: C.sageSoft, color: C.sage, icon: 'description', label: 'เรียน'};
+  const title = str(item, 'title');
+  const opacity = useSharedValue(0);
+  const translateY = useSharedValue(14);
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    if (mountedRef.current) return;
+    mountedRef.current = true;
+    const delay = Math.min(index * 55, 220);
+    opacity.value = withDelay(delay, withTiming(1, {duration: 220}));
+    translateY.value = withDelay(delay, withSpring(0, {damping: 16, stiffness: 180}));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const animStyle = useAnimatedStyle(() => ({opacity: opacity.value, transform: [{translateY: translateY.value}]}));
+  return (
+    <Animated.View style={[styles.noteRow, animStyle]}>
+      <Pressable accessibilityLabel={`เปิดโน้ต ${title}`} accessibilityRole="button" onPress={onOpen} style={({pressed}) => [styles.noteOpenArea, pressed && styles.pressed]}>
+        <View style={[styles.noteIcon, {backgroundColor: theme.bg}]}><MaterialIcon color={theme.color} name={theme.icon} size={19} /></View>
+        <View style={{flex: 1}}>
+          <View style={styles.noteTitleRow}>{item.pinned === true ? <MaterialIcon color="#c49497" name="push_pin" size={13} /> : null}{item.locked === true ? <MaterialIcon color="#8b948a" name="lock" size={13} /> : null}<Text numberOfLines={1} style={styles.noteTitle}>{title}</Text></View>
+          <Text numberOfLines={1} style={styles.noteSub}>{str(item, 'content', `อัปเดต ${date(item.updatedAt ?? item.createdAt)}`)}</Text>
+          <Text style={styles.noteCategory}>{theme.label}</Text>
+        </View>
+      </Pressable>
+      <CompleteButton busy={busy} onPress={onComplete} />
+    </Animated.View>
+  );
+}
+
 
 const styles = StyleSheet.create({
   folderChip: {alignItems: 'center', backgroundColor: '#eef1eb', borderRadius: 99, flexDirection: 'row', gap: 5, paddingHorizontal: 11, paddingVertical: 7},

@@ -35,7 +35,7 @@ export default function RootLayout() {
         <InstitutionProvider>
           <TourProvider>
             <ThemeProvider value={DefaultTheme}>
-              <Stack screenOptions={{ headerShown: false }} />
+              <Stack screenOptions={{ animation: 'slide_from_right', headerShown: false }} />
               {/* Above the navigator so a toast is visible on whatever screen
                   raised it, and inside SafeAreaProvider so it clears the notch. */}
               <ToastHost />

@@ -5,6 +5,7 @@ import {router, useLocalSearchParams} from 'expo-router';
 import {financeDate} from '@/lib/ux-time';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
 import {Touchable} from '@/components/touchable';
+import {AnimatedNumber, Reveal} from '@/components/motion';
 import {SpendingCharts} from '@/components/spending-charts';
 import ConfirmDialog from '@/components/confirm-dialog';
 
@@ -190,8 +191,13 @@ export default function FinanceScreen({onNavigate, page, uid}: Props) {
   return <ResponsiveSafeArea style={styles.safe}><View style={styles.screen}><UserGradientBackdrop />
     <ScrollView ref={scrollViewRef} contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={C.sage} />} showsVerticalScrollIndicator={false}>
       {/* Refactored UI: finance overview follows the period-and-filter dashboard shown in the new design. */}
+<Reveal index={0}>
       <View style={styles.header}><View><Text style={styles.eyebrow}>{filter === 'income' ? `รายรับ${periodText(periodPage)}` : filter === 'expense' ? `รายจ่าย${periodText(periodPage)}` : `สรุป${periodText(periodPage)}`}</Text><Text style={styles.title}>การเงิน</Text></View><Touchable accessibilityLabel={headerAction.label} onPress={() => onNavigate(headerAction.page)} style={styles.receiptButton}><MaterialIcon color="#fff" name={headerAction.icon} size={22} /></Touchable></View>
+</Reveal>
+<Reveal index={1}>
       <View onLayout={periodTabsOnLayout} ref={periodTabsRef} style={styles.periodBar}>{periods.map((item) => <Touchable key={item.page} onPress={() => { selectRange(periodForPage(item.page), referenceDate); }} style={[styles.periodItem, periodPage === item.page && styles.periodActive]}><Text style={[styles.periodText, periodPage === item.page && styles.periodTextActive]}>{item.label}</Text></Touchable>)}</View>
+</Reveal>
+<Reveal index={2}>
       <View onLayout={rangeBarOnLayout} ref={rangeBarRef} style={styles.rangeBar}>
         <Touchable accessibilityLabel="Previous period" onPress={() => selectRange(period, shiftPeriod(referenceDate, period, -1))} style={styles.rangeButton}>
           <MaterialIcon color={C.ink} name="chevron_left" size={22} />
@@ -204,18 +210,30 @@ export default function FinanceScreen({onNavigate, page, uid}: Props) {
           <MaterialIcon color={C.ink} name="chevron_right" size={22} />
         </Touchable>
       </View>
+</Reveal>
+<Reveal index={3}>
       <View style={styles.filterBar}>{(['all', 'income', 'expense'] as Filter[]).map((item) => <Touchable key={item} onPress={() => selectRange(period, referenceDate, item)} style={[styles.filterItem, filter === item && styles.filterActive]}><Text style={[styles.filterText, filter === item && styles.filterTextActive]}>{item === 'all' ? 'ภาพรวม' : item === 'income' ? 'รายรับ' : 'รายจ่าย'}</Text></Touchable>)}</View>
+</Reveal>
       {loadError ? <View style={styles.loading}><Text style={styles.loadingText}>โหลดข้อมูลไม่สำเร็จ จึงยังสรุปยอดไม่ได้ ไม่ใช่ยอดเป็นศูนย์</Text><Touchable accessibilityRole="button" onPress={() => void load()} style={styles.sheetCancel}><Text style={styles.sheetCancelText}>ลองอีกครั้ง</Text></Touchable></View> : !data ? <View style={styles.loading}><ActivityIndicator color={C.sage} size="large" /><Text style={styles.loadingText}>กำลังโหลดข้อมูลจาก Firebase</Text></View> : <>
-        <View style={styles.balanceCard}><View style={styles.balanceCircle} /><View style={styles.balanceTop}><View><View style={styles.balanceLabelRow}><MaterialIcon color={C.accent} name="credit_card" size={14} /><Text style={styles.balanceLabel}>{mainLabel}</Text></View><Text style={styles.balanceAmount}>{money(mainAmount)}</Text><Text style={styles.balancePeriod}>/ {periodText(periodPage)}</Text></View></View><View style={styles.progress}><View style={[styles.progressFill, {width: `${Math.min(expense / Math.max(income, expense, 1) * 100, 100)}%`}]} /></View><View style={styles.categoryTags}>{categoryTotals.length ? categoryTotals.map(([category, amount]) => <View key={category} style={styles.categoryTag}><Text style={styles.categoryTagText}>{category} {money(amount)}</Text></View>) : <View style={styles.categoryTag}><Text style={styles.categoryTagText}>ยังไม่มีค่าใช้จ่าย</Text></View>}</View></View>
+<Reveal index={4}>
+        <View style={styles.balanceCard}><View style={styles.balanceCircle} /><View style={styles.balanceTop}><View><View style={styles.balanceLabelRow}><MaterialIcon color={C.accent} name="credit_card" size={14} /><Text style={styles.balanceLabel}>{mainLabel}</Text></View><AnimatedNumber format={money} style={styles.balanceAmount} value={mainAmount} /><Text style={styles.balancePeriod}>/ {periodText(periodPage)}</Text></View></View><View style={styles.progress}><View style={[styles.progressFill, {width: `${Math.min(expense / Math.max(income, expense, 1) * 100, 100)}%`}]} /></View><View style={styles.categoryTags}>{categoryTotals.length ? categoryTotals.map(([category, amount]) => <View key={category} style={styles.categoryTag}><Text style={styles.categoryTagText}>{category} {money(amount)}</Text></View>) : <View style={styles.categoryTag}><Text style={styles.categoryTagText}>ยังไม่มีค่าใช้จ่าย</Text></View>}</View></View>
+</Reveal>
+<Reveal index={5}>
         {budgetLine ? <Touchable onPress={() => onNavigate('smartlife_monthly_budget')} style={[styles.budgetStrip, budgetLine.over && styles.budgetStripOver]}>
           <View style={[styles.budgetStripIcon, budgetLine.over && styles.budgetStripIconOver]}><MaterialIcon color={budgetLine.over ? C.red : C.sage} name={budgetLine.over ? 'error' : 'savings'} size={17} /></View>
           <View style={{flex: 1}}><Text style={[styles.budgetStripTitle, budgetLine.over && styles.budgetStripTitleOver]}>{budgetLine.title}</Text><Text style={styles.budgetStripDetail}>{budgetLine.detail}</Text></View>
           <MaterialIcon color={C.muted} name="chevron_right" size={20} />
         </Touchable> : null}
+</Reveal>
+<Reveal index={6}>
         <View style={styles.summaryRow}>{filter === 'income' ? <><Summary amount={income} icon="north" label="รับแล้ว" tone="income" /><Summary amount={Math.max(0, income - shown.reduce((sum, item) => sum + Number(item.amount ?? 0), 0))} icon="schedule" label="รอรับ" tone="neutral" /></> : filter === 'expense' ? <><Summary amount={expense} icon="south" label="ใช้ไปแล้ว" tone="expense" /><Summary amount={Math.max(0, balance)} icon="schedule" label="เหลือ" tone="neutral" /></> : <><Summary amount={income} icon="north" label="รายรับ" tone="income" /><Summary amount={expense} icon="south" label="รายจ่าย" tone="expense" /></>}</View>
+</Reveal>
 
+<Reveal index={7}>
         {period !== 'day' ? <SpendingCharts period={period} referenceDate={referenceDate} transactions={all} /> : null}
+</Reveal>
 
+<Reveal index={8}>
         <Touchable onPress={() => onNavigate('smartlife_monthly_budget')} style={[styles.menuCard, {backgroundColor: '#faecea', marginTop: 16}]}>
             <View style={[styles.menuIcon, {backgroundColor: '#d89182'}]}><MaterialIcon color="#fff" name="savings" size={20} /></View>
             <View style={{flex: 1}}>
@@ -224,7 +242,9 @@ export default function FinanceScreen({onNavigate, page, uid}: Props) {
             </View>
             <MaterialIcon color={C.ink} name="chevron_right" size={21} />
         </Touchable>
+</Reveal>
 
+<Reveal index={9}>
         <Touchable onPress={() => onNavigate('smartlife_line_bank')} style={[styles.menuCard, {backgroundColor: '#eef3ea'}]}>
             <View style={[styles.menuIcon, {backgroundColor: '#72956f'}]}><MaterialIcon color="#fff" name="notifications_active" size={20} /></View>
             <View style={{flex: 1}}>
@@ -233,6 +253,7 @@ export default function FinanceScreen({onNavigate, page, uid}: Props) {
             </View>
             <MaterialIcon color={C.ink} name="chevron_right" size={21} />
         </Touchable>
+</Reveal>
 
         {filter === 'income' ? <Touchable onPress={() => onNavigate('smartlife_add_income')} style={[styles.menuCard, {backgroundColor: '#eef3ea'}]}>
           <View style={[styles.menuIcon, {backgroundColor: C.sage}]}><MaterialIcon color="#fff" name="add_card" size={20} /></View>
@@ -303,7 +324,7 @@ export default function FinanceScreen({onNavigate, page, uid}: Props) {
   </View></ResponsiveSafeArea>;
 }
 
-function Summary({amount, icon, label, tone}: {amount: number; icon: string; label: string; tone: 'income' | 'expense' | 'neutral'}) { const color = tone === 'income' ? C.sage : tone === 'expense' ? C.red : C.ink; return <View style={styles.summary}><View style={styles.summaryHead}><MaterialIcon color={tone === 'expense' ? C.accent : C.sage} name={icon} size={15} /><Text style={styles.summaryLabel}>{label}</Text></View><Text style={[styles.summaryAmount, {color}]}>{money(amount)}</Text></View>; }
+function Summary({amount, icon, label, tone}: {amount: number; icon: string; label: string; tone: 'income' | 'expense' | 'neutral'}) { const color = tone === 'income' ? C.sage : tone === 'expense' ? C.red : C.ink; return <View style={styles.summary}><View style={styles.summaryHead}><MaterialIcon color={tone === 'expense' ? C.accent : C.sage} name={icon} size={15} /><Text style={styles.summaryLabel}>{label}</Text></View><AnimatedNumber format={money} style={[styles.summaryAmount, {color}]} value={amount} /></View>; }
 function TransactionRow({item, onDelete, onRecategorize}: {item: Item; onDelete: () => void; onRecategorize: () => void}) { const isIncome = item.type === 'income'; const category = normalizeExpenseCategory(str(item, 'category', '')); return <View style={styles.transaction}><Touchable accessibilityLabel={isIncome ? undefined : `เปลี่ยนหมวดหมู่ ปัจจุบัน ${category}`} accessibilityRole={isIncome ? undefined : 'button'} disabled={isIncome} onPress={onRecategorize} style={styles.transactionMain}><View style={[styles.transactionIcon, {backgroundColor: isIncome ? C.sageSoft : C.redSoft}]}><MaterialIcon color={isIncome ? C.sage : C.red} name={isIncome ? 'north' : categoryIcon(category)} size={18} /></View><View style={{flex: 1}}><Text numberOfLines={1} style={styles.transactionTitle}>{str(item, 'merchant', category)}</Text><View style={styles.transactionSubRow}><Text style={styles.transactionSub}>{category} · {date(item.occurredAt)}</Text>{isIncome ? null : <MaterialIcon color="#b3bcb2" name="edit" size={10} />}</View></View></Touchable><Text style={[styles.transactionAmount, {color: isIncome ? C.sage : C.red}]}>{isIncome ? '+' : '-'}{money(Number(item.amount ?? 0))}</Text><Touchable accessibilityLabel="ลบรายการ" onPress={onDelete} style={styles.delete}><MaterialIcon color="#ca7771" name="close" size={15} /></Touchable></View>; }
 
 /** The saved-transaction twin of the scan screen's picker, on the same list. */

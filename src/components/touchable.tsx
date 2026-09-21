@@ -28,6 +28,7 @@ export function Touchable({style, ...props}: PressableProps) {
         const hovered = Boolean((state as PressableStateCallbackType & {hovered?: boolean}).hovered);
         const web = Platform.OS === 'web';
         return [
+          webTransition,
           typeof style === 'function' ? style(state) : style,
           web && state.pressed && touchableStyles.pressZoom,
           web && hovered && !state.pressed && touchableStyles.hoverZoom,
@@ -37,6 +38,10 @@ export function Touchable({style, ...props}: PressableProps) {
     />
   );
 }
+
+// Smooth the hover/press scale on web so it eases instead of snapping; react-native-web
+// forwards these CSS transition props, and native ignores them.
+const webTransition = Platform.OS === 'web' ? ({transitionDuration: '140ms', transitionProperty: 'transform, opacity', transitionTimingFunction: 'cubic-bezier(0.22, 1, 0.36, 1)'} as object) : {};
 
 const touchableStyles = StyleSheet.create({
   hoverZoom: Platform.OS === 'web' ? {cursor: 'pointer', transform: [{scale: 1.03}]} as object : {},

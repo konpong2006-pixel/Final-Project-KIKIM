@@ -7,6 +7,7 @@ import {ActivityIndicator, Animated, KeyboardAvoidingView, Modal, NativeModules,
 import {LinearGradient} from 'expo-linear-gradient';
 
 import {AsyncActionOverlay, type AsyncActionStatus} from '@/components/async-action-ui';
+import {Reveal} from '@/components/motion';
 import {useTourTarget} from '@/hooks/use-tour-target';
 import {useTour} from '@/providers/tour-provider';
 import {appCheckErrorMessage, isAppCheckError} from '@/lib/app-check';
@@ -2099,7 +2100,7 @@ export default function AssistantScreen({autoAsk, autoListen, uid, onNavigate}: 
           {hasConversation ? <View style={local.chatStack}>
             {/* Refactored UI: conversations appear only after the first user interaction. */}
             {visibleMessages.map((message) => (
-              <MessageBubble busy={busy} completingTaskId={completingTaskId} key={message.id} message={message} onAsk={sendMessage} onCompleteTask={(messageIdValue, task) => void completePendingTask(messageIdValue, task)} onConfirm={confirmAction} onFeedback={rateAssistant} onReject={rejectAction} onSpeak={(target) => void speakAssistantMessage(target)} savingActionId={savingActionId} speaking={speakingMessageId === message.id} />
+              <Reveal key={message.id}><MessageBubble busy={busy} completingTaskId={completingTaskId} key={message.id} message={message} onAsk={sendMessage} onCompleteTask={(messageIdValue, task) => void completePendingTask(messageIdValue, task)} onConfirm={confirmAction} onFeedback={rateAssistant} onReject={rejectAction} onSpeak={(target) => void speakAssistantMessage(target)} savingActionId={savingActionId} speaking={speakingMessageId === message.id} /></Reveal>
             ))}
             <InlineAdaptivePanel
               busyKey={inlineAdaptiveBusyKey}

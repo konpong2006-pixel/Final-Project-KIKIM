@@ -4,6 +4,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { Href, Redirect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Platform, StyleSheet, View } from 'react-native';
+import Animated, { Easing, FadeIn, ReduceMotion } from 'react-native-reanimated';
 
 import LegacyPageDom, { LegacyAuthRequest, LegacyAuthResult, LegacyOcrResult, LegacyScanRequest, LegacyScanResult } from '@/components/legacy/legacy-page-dom';
 import { legacyPageParams, legacyPages } from '@/generated/legacy-pages';
@@ -69,7 +70,7 @@ function authErrorMessage(error: unknown) {
   return messages[error.code] ?? 'ไม่สามารถดำเนินการได้ กรุณาลองอีกครั้ง';
 }
 
-export default function LegacyPageRoute() {
+function LegacyPageRouteContent() {
   const params = useLocalSearchParams<{ autoAsk?: string; autoListen?: string; id?: string; page: string; section: string }>();
   const router = useRouter();
   const {initializing, role, signOut, user} = useAuth();
@@ -253,3 +254,9 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   loading: { alignItems: 'center', backgroundColor: '#e9ebe2', flex: 1, justifyContent: 'center' },
 });
+
+// The web build has no native stack transition, so a screen would otherwise cut in
+// abruptly. Native keeps its own slide, so this only fades on web.
+export default function LegacyPageRoute() {
+  return <Animated.View entering={Platform.OS === 'web' ? FadeIn.duration(280).easing(Easing.out(Easing.quad)).reduceMotion(ReduceMotion.System) : undefined} style={{flex: 1}}><LegacyPageRouteContent /></Animated.View>;
+}

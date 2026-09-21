@@ -2,6 +2,7 @@
 import {forwardRef, useCallback, useEffect, useMemo, useState} from 'react';
 import {ActivityIndicator, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
+import {AnimatedNumber, Reveal} from '@/components/motion';
 import AiActivityRecommendationCard from '@/components/ai-activity-recommendation-card';
 import SleepLogCard from '@/components/sleep-log-card';
 import {SpendingDonut} from '@/components/spending-charts';
@@ -52,7 +53,7 @@ const SoftPress = forwardRef<View, {children: React.ReactNode; onLayout?: () => 
 );
 
 function StatCard({icon, value, label, tint = colors.sageSoft}: {icon: string; value: string | number; label: string; tint?: string}) {
-  return <View style={styles.statCard}><View style={[styles.statIcon, {backgroundColor: tint}]}><MaterialIcon color={colors.sageDark} name={icon} size={18} /></View><Text adjustsFontSizeToFit minimumFontScale={.7} numberOfLines={1} style={styles.statValue}>{value}</Text><Text style={styles.statLabel}>{label}</Text></View>;
+  return <View style={styles.statCard}><View style={[styles.statIcon, {backgroundColor: tint}]}><MaterialIcon color={colors.sageDark} name={icon} size={18} /></View>{typeof value === 'number' ? <AnimatedNumber adjustsFontSizeToFit minimumFontScale={.7} numberOfLines={1} style={styles.statValue} value={value} /> : <Text adjustsFontSizeToFit minimumFontScale={.7} numberOfLines={1} style={styles.statValue}>{value}</Text>}<Text style={styles.statLabel}>{label}</Text></View>;
 }
 
 const QUICK_ACTIONS = [
@@ -245,6 +246,7 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
       </View>
 
       {!data ? <View style={styles.loading}><ActivityIndicator color={colors.sage} size="large" /><Text style={styles.muted}>กำลังโหลดข้อมูลจาก Firebase</Text></View> : <>
+        <Reveal index={0} slide={false}>
         <SoftPress onLayout={aiCardOnLayout} onPress={() => onNavigate('smartlife_ai_assistant')} ref={aiCardRef} style={styles.aiCard}><LinearGradient colors={['#769674', '#8fa69a', '#a8b7aa']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={StyleSheet.absoluteFill} />
           <View style={styles.aiTop}><View style={styles.aiHeading}><MaterialIcon color="#fff" name="smart_toy" size={21} /><Text style={styles.aiTitle}>AI Assistant</Text></View>
             {/* Its own tap target: opens the assistant and starts listening right
@@ -259,33 +261,50 @@ export default function DashboardScreen({onNavigate, uid}: Props) {
           </Pressable>
           <View style={styles.quickAnswer}><Text style={styles.quickQuestion}>“เหลือเงินกินข้าวเท่าไหร่?”</Text><View style={styles.quickAnswerRight}><Text style={styles.quickValue}>{allowanceAnswer}</Text><MaterialIcon color={colors.pine} name="chevron_right" size={16} /></View></View>
         </SoftPress>
+        </Reveal>
+        <Reveal index={1}>
         <View style={{marginBottom: 15}}><AiActivityRecommendationCard onNavigate={onNavigate} uid={uid} /></View>
+        </Reveal>
 
+        <Reveal index={2}>
         <View style={[styles.priorityCard, {overflow: 'hidden'}]}><LinearGradient colors={['rgba(255,255,255,.98)', '#eef4ea']} end={{x: 1, y: 1}} start={{x: 0, y: 0}} style={StyleSheet.absoluteFill} />
           <View style={styles.priorityHeader}><View style={styles.priorityTitleRow}><MaterialIcon color={colors.sageDark} name="auto_awesome" size={18} /><Text style={styles.priorityTitle}>AI จัดลำดับวันนี้</Text></View><View style={styles.dynamicBadge}><Text style={styles.dynamicText}>Dynamic</Text></View></View>
           <Text style={styles.priorityCaption}>ระบบดันสอบและงานด่วนขึ้นก่อนตามบริบทของวัน</Text>
           {urgent.length ? urgent.map((item, index) => <View key={string(item, 'id', String(index))} style={styles.priorityItem}><View style={[styles.rank, index === 1 && styles.rankSoft]}><Text style={styles.rankText}>{index + 1}</Text></View><View style={styles.priorityCopy}><Text numberOfLines={1} style={styles.priorityItemTitle}>{string(item, 'title')}</Text><Text style={styles.priorityItemSub}>{time(item.startAt)} · {string(item, 'type', 'งานสำคัญ')} · คะแนน {priorityScore(item)}</Text><View style={styles.reasonWrap}>{priorityReasons(item).map((reason) => <View key={reason} style={styles.reasonChip}><Text style={styles.reasonText}>{reason}</Text></View>)}</View></View><View style={styles.priorityActions}><View style={styles.urgency}><Text style={styles.urgencyText}>{index === 0 ? 'ด่วน' : 'สำคัญ'}</Text></View><Pressable accessibilityLabel={`ทำ ${string(item, 'title')} ให้เสร็จ`} disabled={Boolean(completingId)} onPress={() => void markComplete(item)} style={({pressed}) => [styles.doneButton, pressed && styles.pressed]}>{completingId === string(item, 'id', '') ? <ActivityIndicator color="#fff" size="small" /> : <MaterialIcon color="#fff" name="check" size={15} />}<Text style={styles.doneText}>เสร็จ</Text></Pressable></View></View>) : <View style={styles.priorityItem}><View style={styles.rank}><MaterialIcon color="#fff" name="check" size={15} /></View><View style={styles.priorityCopy}><Text style={styles.priorityItemTitle}>วันนี้ไม่มีงานด่วน</Text><Text style={styles.priorityItemSub}>AI จะอัปเดตเมื่อมีรายการใหม่</Text></View></View>}
         </View>
+        </Reveal>
 
+        <Reveal index={3}>
         <QuickActions onNavigate={onNavigate} />
+        </Reveal>
 
         {showDevTools && pending.length === 0 && transactions.length === 0 ? <Pressable disabled={seeding} onPress={seedAiDynamicData} style={({pressed}) => [styles.seedCard, pressed && styles.pressed, seeding && {opacity: .6}]}><View style={styles.seedIcon}><MaterialIcon color="#8a611c" name="database" size={20} /></View><View style={{flex: 1}}><View style={styles.seedHeadingRow}><Text style={styles.seedTitle}>เติมข้อมูลทดสอบ AI Dynamic</Text><View style={styles.devTag}><Text style={styles.devTagText}>DEV</Text></View></View><Text style={styles.seedSub}>เพิ่มตาราง งาน โน้ต และการเงินเข้า Firebase ของบัญชีนี้</Text></View><Text style={styles.seedAction}>{seeding ? 'กำลังเพิ่ม...' : 'เพิ่มเลย'}</Text></Pressable> : null}
 
+        <Reveal index={4}>
         <View style={styles.stats}><StatCard icon="calendar_today" label="คลาสเรียน" value={schedules.length} /><StatCard icon="task_alt" label="งานที่ต้องทำ" tint={colors.noteSoft} value={pending.length} /><StatCard icon="account_balance_wallet" label={allowance ? 'งบวันนี้' : 'ยังไม่ได้ตั้งงบ'} tint={colors.financeSoft} value={allowanceValue} /></View>
+        </Reveal>
 
+        <Reveal index={5}>
         <View style={styles.sectionHeading}><Text style={styles.sectionTitle}>ตารางวันนี้</Text><SoftPress onPress={() => onNavigate('smartlife_calendar_day')}><Text style={styles.seeAll}>ดูทั้งหมด</Text></SoftPress></View>
         <View style={styles.scheduleCard}>{schedules.length ? schedules.slice(0, 3).map((item, index) => <View key={string(item, 'id', String(index))} style={[styles.classRow, index > 0 && styles.classBorder]}><View style={styles.timePill}><Text style={styles.classTime}>{time(item.startAt)}</Text></View><View style={[styles.courseLine, {backgroundColor: string(item, 'color', index % 2 ? colors.finance : colors.sage)}]} /><View style={styles.courseCopy}><Text style={styles.courseTitle}>{string(item, 'title')}</Text><View style={styles.roomRow}><MaterialIcon color="#899284" name="location_on" size={14} /><Text style={styles.roomText}>{string(item, 'location', string(item, 'courseCode'))}</Text></View></View></View>) : <View style={styles.empty}><MaterialIcon color="#a4ada0" name="event_available" size={30} /><Text style={styles.emptyText}>วันนี้ยังไม่มีคลาสเรียน</Text></View>}</View>
+        </Reveal>
 
+        <Reveal index={6}>
         <View style={styles.focusGrid}>
-          <SoftPress onPress={() => onNavigate('smartlife_finance_day')} style={styles.focusCard}><View style={styles.panelHeading}><MaterialIcon color={colors.finance} name="account_balance_wallet" size={17} /><Text style={styles.panelTitle}>งบใช้ได้วันนี้</Text></View><View style={styles.budgetLine}><Text style={styles.budgetValue}>{allowanceValue}</Text><Text style={styles.budgetUnit}>{allowance ? '/ วันนี้' : 'ยังไม่ได้ตั้งงบ'}</Text></View><View style={styles.progress}><View style={[styles.progressFill, {width: `${monthBudgetLeftPercent}%`}]} /></View><View style={styles.tagWrap}>{transactions.filter((item) => item.type === 'expense').slice(0, 3).map((item, index) => <View key={string(item, 'id', String(index))} style={styles.tag}><Text numberOfLines={1} style={styles.tagText}>{string(item, 'category', 'ทั่วไป')} {money(Number(item.amount ?? 0))}</Text></View>)}</View></SoftPress>
+          <SoftPress onPress={() => onNavigate('smartlife_finance_day')} style={styles.focusCard}><View style={styles.panelHeading}><MaterialIcon color={colors.finance} name="account_balance_wallet" size={17} /><Text style={styles.panelTitle}>งบใช้ได้วันนี้</Text></View><View style={styles.budgetLine}>{allowance ? <AnimatedNumber format={money} style={styles.budgetValue} value={allowance.amount} /> : <Text style={styles.budgetValue}>{allowanceValue}</Text>}<Text style={styles.budgetUnit}>{allowance ? '/ วันนี้' : 'ยังไม่ได้ตั้งงบ'}</Text></View><View style={styles.progress}><View style={[styles.progressFill, {width: `${monthBudgetLeftPercent}%`}]} /></View><View style={styles.tagWrap}>{transactions.filter((item) => item.type === 'expense').slice(0, 3).map((item, index) => <View key={string(item, 'id', String(index))} style={styles.tag}><Text numberOfLines={1} style={styles.tagText}>{string(item, 'category', 'ทั่วไป')} {money(Number(item.amount ?? 0))}</Text></View>)}</View></SoftPress>
         </View>
+        </Reveal>
 
+        <Reveal index={7}>
         {notes[0] ? <SoftPress onPress={() => onNavigate('smartlife_notes_study')} style={styles.noteLink}><View style={styles.noteIcon}><MaterialIcon color={colors.note} name="note_alt" size={20} /></View><View style={{flex: 1}}><Text style={styles.noteEyebrow}>โน้ตที่เชื่อมกับตารางวันนี้</Text><Text numberOfLines={1} style={styles.noteTitle}>{string(notes[0], 'title')}</Text></View><MaterialIcon color={colors.sageDark} name="chevron_right" size={23} /></SoftPress> : null}
+        </Reveal>
 
+        <Reveal index={8}>
         <View style={styles.weeklySpendingCard}>
           <View style={styles.weeklySpendingHead}><View><Text style={styles.weeklySpendingEyebrow}>สรุปการใช้เงิน</Text><Text style={styles.weeklySpendingTitle}>รายจ่ายสัปดาห์นี้</Text></View><Pressable accessibilityLabel="ดูรายละเอียดรายจ่ายรายสัปดาห์" onLayout={weeklySpendingOnLayout} onPress={() => onNavigate('smartlife_finance_week')} ref={weeklySpendingRef} style={styles.weeklySpendingLink}><Text style={styles.weeklySpendingLinkText}>ดูทั้งหมด</Text><MaterialIcon color={colors.sageDark} name="chevron_right" size={18} /></Pressable></View>
           <SpendingDonut byCategory={weeklySpending.byCategory} compact total={weeklySpending.total} />
         </View>
+        </Reveal>
       </>}
     </ScrollView>
     <UserTabBar active="index" onNavigate={onNavigate} />

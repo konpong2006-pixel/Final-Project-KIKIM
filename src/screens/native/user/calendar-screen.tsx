@@ -1,12 +1,10 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {ActivityIndicator, LayoutAnimation, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, UIManager, useWindowDimensions, View, } from 'react-native';
+import {ActivityIndicator, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, useWindowDimensions, View, } from 'react-native';
+import Animated, {FadeIn, FadeOut, LinearTransition} from 'react-native-reanimated';
 import {CalendarList, CalendarProvider, WeekCalendar, type DateData} from 'react-native-calendars';
 import {Timestamp} from 'firebase/firestore';
 
-if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
-  UIManager.setLayoutAnimationEnabledExperimental(true);
-}
 
 import {registerThaiCalendarLocale, THAI_MONTH_NAMES} from '@/lib/calendar-locale';
 import {ResponsiveSafeArea} from '@/components/layout/responsive-safe-area';
@@ -331,7 +329,6 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
     if (!event?.id) return;
     setDeleting(null);
     const failed = () => { load().catch(() => undefined); setDeleteError(true); };
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     if (event.entityType === 'schedule') {
       const courseCode = seriesKey(event);
       const seriesId = typeof event.seriesId === 'string' && event.seriesId.trim() ? event.seriesId : undefined;
@@ -347,7 +344,6 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
     if (!event.id || event.entityType !== 'activity' || completingId) return;
     const id = event.id;
     setCompletingId(id);
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     setEvents((current) => current.filter((item) => item.id !== id));
     try {
       await activities.update(uid, id, {status: 'completed'});
@@ -608,7 +604,7 @@ export default function CalendarScreen({onNavigate, page, planner, uid}: Props) 
 // opening the day sheet first to reach the identical row.
 function AgendaList({completingId, events, onComplete, onDelete, onOpen, onPostpone}: {completingId: string; events: EventItem[]; onComplete: (event: EventItem) => void; onDelete: (event: EventItem) => void; onOpen: () => void; onPostpone: (event: EventItem) => void}) {
   if (!events.length) return <EmptyAgenda />;
-  return <View style={styles.eventList}>{events.map((event, index) => <EventRow completing={completingId === event.id} event={event} key={String(event.id ?? index)} onComplete={event.entityType === 'activity' ? () => onComplete(event) : undefined} onDelete={() => onDelete(event)} onPostpone={event.entityType === 'activity' ? () => onPostpone(event) : undefined} onPress={onOpen} />)}</View>;
+  return <Animated.View layout={LinearTransition.duration(200)} style={styles.eventList}>{events.map((event, index) => <EventRow completing={completingId === event.id} event={event} key={String(event.id ?? index)} onComplete={event.entityType === 'activity' ? () => onComplete(event) : undefined} onDelete={() => onDelete(event)} onPostpone={event.entityType === 'activity' ? () => onPostpone(event) : undefined} onPress={onOpen} />)}</Animated.View>;
 }
 
 const HOUR_HEIGHT = 62;
@@ -659,12 +655,14 @@ function EventRow({completing = false, event, onComplete, onDelete, onPostpone, 
   const color = typeof event.color === 'string' ? event.color : event.entityType === 'schedule' ? C.green : C.blue;
   const priority = priorityInfo(event.priority);
   return (
+    <Animated.View entering={FadeIn.duration(200)} exiting={FadeOut.duration(160)} layout={LinearTransition.duration(200)}>
     <Pressable disabled={!onPress} onPress={onPress} style={({pressed}) => [styles.eventRow, pressed && styles.pressed]}>
       <View style={[styles.eventColor, {backgroundColor: color}]} />
       <View style={styles.eventTime}><Text style={styles.eventStart}>{formatTime(event.startAt)}</Text><Text style={styles.eventEnd}>{formatTime(event.endAt)}</Text></View>
       <View style={styles.eventCopy}><Text numberOfLines={1} style={styles.eventTitle}>{eventTitle(event)}</Text><View style={styles.eventMetaRow}><Text numberOfLines={1} style={styles.eventMeta}>{textEvent(event.location, textEvent(event.courseCode, textEvent(event.type, 'กิจกรรม')))}</Text>{priority ? <View style={[styles.priorityBadge, {backgroundColor: priority.backgroundColor}]}><Text style={[styles.priorityBadgeText, {color: priority.color}]}>{priority.label}</Text></View> : null}</View></View>
       <View style={styles.eventActions}>{onPostpone ? <Pressable accessibilityLabel={`เลื่อน ${eventTitle(event)}`} disabled={completing} onPress={(pressEvent) => { pressEvent.stopPropagation(); onPostpone(); }} style={styles.postponeEventButton}><MaterialIcon color={C.secondary} name="schedule" size={15} /><Text style={styles.postponeEventText}>เลื่อน</Text></Pressable> : null}{onComplete ? <Pressable accessibilityLabel={`ทำ ${eventTitle(event)} ให้เสร็จ`} disabled={completing} onPress={(pressEvent) => { pressEvent.stopPropagation(); onComplete(); }} style={styles.completeEventButton}>{completing ? <ActivityIndicator color="#fff" size="small" /> : <MaterialIcon color="#fff" name="check" size={16} />}<Text style={styles.completeEventText}>เสร็จ</Text></Pressable> : null}{onDelete ? <Pressable accessibilityLabel={`ลบ ${eventTitle(event)}`} onPress={(pressEvent) => { pressEvent.stopPropagation(); onDelete(); }} style={styles.deleteButton}><MaterialIcon color={C.accent} name="delete_outline" size={20} /></Pressable> : !onComplete ? <MaterialIcon color={C.tertiary} name="chevron_right" size={20} /> : null}</View>
     </Pressable>
+    </Animated.View>
   );
 }
 

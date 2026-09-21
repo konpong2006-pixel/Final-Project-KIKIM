@@ -1,5 +1,5 @@
 import {useEffect, useState} from 'react';
-import {Animated, Easing, Platform, StyleSheet, Text, View} from 'react-native';
+import {AccessibilityInfo, Animated, Easing, Platform, StyleSheet, Text, View} from 'react-native';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 
 import {Touchable} from '@/components/touchable';
@@ -77,6 +77,7 @@ export default function ToastHost() {
   // render to build the animated style, which the compiler forbids for refs.
   const [progress] = useState(() => new Animated.Value(0));
   const [iconBounce] = useState(() => new Animated.Value(0));
+  const [shake] = useState(() => new Animated.Value(0));
 
   useEffect(() => {
     listeners.add(setToast);
@@ -97,6 +98,25 @@ export default function ToastHost() {
       Animated.spring(iconBounce, {damping: 9, mass: 0.6, stiffness: 220, toValue: 1, useNativeDriver}),
     ]).start();
 
+    // A failed save or a rejected input gets a short sideways shake once the
+    // card has landed, so it reads as "no" without waiting to be read. Skipped
+    // when the OS asks for reduced motion.
+    let cancelled = false;
+    shake.setValue(0);
+    if (toast.tone === 'error') {
+      AccessibilityInfo.isReduceMotionEnabled().then((reduced) => {
+        if (cancelled || reduced) return;
+        Animated.sequence([
+          Animated.delay(120),
+          Animated.timing(shake, {duration: 45, toValue: 1, useNativeDriver}),
+          Animated.timing(shake, {duration: 70, toValue: -1, useNativeDriver}),
+          Animated.timing(shake, {duration: 70, toValue: 0.6, useNativeDriver}),
+          Animated.timing(shake, {duration: 60, toValue: -0.3, useNativeDriver}),
+          Animated.timing(shake, {duration: 45, toValue: 0, useNativeDriver}),
+        ]).start();
+      }).catch(() => undefined);
+    }
+
     const timer = setTimeout(() => {
       Animated.timing(progress, {duration: 190, easing: Easing.in(Easing.quad), toValue: 0, useNativeDriver}).start(({finished}) => {
         // Only clear if this is still the toast that was showing, so a newer
@@ -104,8 +124,8 @@ export default function ToastHost() {
         if (finished && current?.id === toast.id) publish(null);
       });
     }, VISIBLE_MS);
-    return () => clearTimeout(timer);
-  }, [iconBounce, progress, toast]);
+    return () => { cancelled = true; shake.stopAnimation(); clearTimeout(timer); };
+  }, [iconBounce, progress, shake, toast]);
 
   if (!toast) return null;
   const tone = TONES[toast.tone];
@@ -117,6 +137,7 @@ export default function ToastHost() {
           transform: [
             {translateY: progress.interpolate({inputRange: [0, 1], outputRange: [-20, 0]})},
             {scale: progress.interpolate({inputRange: [0, 1], outputRange: [0.93, 1]})},
+            {translateX: shake.interpolate({inputRange: [-1, 1], outputRange: [-7, 7]})},
           ],
         }]}
       >
